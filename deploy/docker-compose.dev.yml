@@ -1,0 +1,126 @@
+# =====================================================================
+# study-OCR 开发环境基础服务（S0-4）
+# 用法：
+#   cp deploy/.env.example deploy/.env   # 首次
+#   docker compose -f deploy/docker-compose.dev.yml up -d
+#   python scripts/check_services.py
+# 说明：容器一律绑定 127.0.0.1，不对局域网暴露；数据全部落命名卷，重建容器不丢。
+# =====================================================================
+
+name: study-ocr-dev
+
+services:
+  # -------------------------------------------------------------------
+  # PostgreSQL 16（业务库；用 pgvector 基础镜像，等价 postgres:16，多带一个扩展）
+  # -------------------------------------------------------------------
+  postgres:
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    container_name: study-ocr-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?请在 deploy/.env 设置 POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 deploy/.env 设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?请在 deploy/.env 设置 POSTGRES_DB}
+      # 统一 UTF8；locale 用 C，避免 Windows/macOS 宿主机 locale 差异导致排序与索引行为不一致
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 只在数据卷首次初始化时执行一次；改 SQL 后要生效必须 down -v（会清库，慎用）
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------
+  # Redis 7（缓存 + ARQ 队列；开 AOF 保证重启后队列不丢）
+  # -------------------------------------------------------------------
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    container_name: study-ocr-redis
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --requirepass
+      - ${REDIS_PASSWORD:?请在 deploy/.env 设置 REDIS_PASSWORD}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6380}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      # 开发环境：--no-auth-warning 只是压掉命令行明文口令的告警，生产不该这样传口令
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------
+  # MinIO（票据影像密文对象存储；9000=S3 API，9001=控制台）
+  # -------------------------------------------------------------------
+  minio:
+    image: ${MINIO_IMAGE:-minio/minio:latest}
+    container_name: study-ocr-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?请在 deploy/.env 设置 MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?请在 deploy/.env 设置 MINIO_ROOT_PASSWORD}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9002}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9003}:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------
+  # 一次性初始化：幂等创建 bucket（重复 up 不报错）
+  # -------------------------------------------------------------------
+  minio-init:
+    image: ${MINIO_MC_IMAGE:-minio/mc:latest}
+    container_name: study-ocr-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      MINIO_BUCKET: ${MINIO_BUCKET:-study-ocr-invoices}
+      MINIO_ENDPOINT: http://minio:9000
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set local "$$MINIO_ENDPOINT" "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null
+        # --ignore-existing：已存在也不报错，保证幂等
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+        # 票据影像是敏感数据：bucket 一律私有，禁止匿名读
+        mc anonymous set none "local/$$MINIO_BUCKET" >/dev/null 2>&1 || true
+        echo "[minio-init] bucket ready: $$MINIO_BUCKET"
+    restart: "no"
+
+volumes:
+  pgdata:
+    name: study-ocr-pgdata
+  redisdata:
+    name: study-ocr-redisdata
+  miniodata:
+    name: study-ocr-miniodata

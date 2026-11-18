@@ -19,7 +19,7 @@
 | M5 对照实验与性能测试 | 未开始 |
 | M6 论文定稿与答辩 | 未开始 |
 
-已完成任务：S0-1 仓库与工程骨架、S0-2 AGENTS.md、S0-3 SCHEMA.md + API.md。
+已完成任务：S0-1 仓库与工程骨架、S0-2 AGENTS.md、S0-3 SCHEMA.md + API.md、S0-4 基础服务三件套（`python scripts/check_services.py` 5 项全 OK）。
 详细进度与遗留问题见 [docs/PROGRESS.md](docs/PROGRESS.md)。
 
 ## 目录结构
@@ -63,14 +63,17 @@ study-OCR/
 
 ## 启动步骤
 
-> 待 S0-4（基础服务）、S0-5（后端最小可运行）、S0-6（前端最小可运行）完成后补齐本节；
+> 基础服务（S0-4）已可用；后端（S0-5）、前端（S0-6）完成后补齐。
 > S0-7 会用 `scripts/smoke.py` 与 `scripts/cold_start.sh` 把本节补成"新机器 10 分钟跑起来"的版本。
 
 ```bash
-# 占位：以下命令在对应任务完成前不可用
-# 1) 基础服务
-# docker compose -f deploy/docker-compose.dev.yml up -d
-# 2) 后端
+# 1) 基础服务（PostgreSQL 16 / Redis 7 / MinIO）—— 已可用
+cp deploy/.env.example deploy/.env          # 首次；.env 不入库
+docker compose -f deploy/docker-compose.dev.yml up -d
+python scripts/check_services.py            # 5 项全 OK 才算通
+# 宿主机端口：PG 5433 / Redis 6380 / MinIO 9002（控制台 9003）
+# 与本机已有的 study-agent（5432/6379/9000/9001）不冲突，细节见 deploy/README.md
+# 2) 后端（待 S0-5）
 # py -3.11 -m venv .venv && .venv\Scripts\activate
 # pip install -r backend/requirements.txt
 # alembic upgrade head

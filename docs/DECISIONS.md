@@ -279,3 +279,20 @@
 - **理由**：票据 PDF（多页扫描件）常见 5–15MB，10MB 会让正常票据被拒；上限的真正约束是 Nginx 与内存，而不是业务。
 - **代价**：单请求内存峰值上升（流式写入可缓解）；超过上限返回 `413/41300` 而非 422，前端要能识别。
 - **验证**：S2-6 用 19.9MB / 20.1MB 两个文件各测一次，前者 202、后者 413。
+---
+
+## D-019 基础服务端口错开与本机镜像优先
+
+- **日期**：2026-11-18（S0-4）
+- **背景**：本机已有一套 `study-agent` 的容器占着 5432 / 6379 / 9000 / 9001；同时 Docker Hub 直连超时，
+  `docker pull` 拉不到新镜像，但本机已缓存 `pgvector/pgvector:pg16`、`redis:7-alpine`、`minio/minio:latest`、`minio/mc:latest`。
+- **备选**：① 沿用默认端口，两套环境互斥（跑 OCR 就得停 study-agent）② 端口错开，两套并存
+  ③ 改用 Podman/其它 runtime（无必要）
+- **决策**：② + 镜像 tag 走 `.env` 变量、默认取本机已缓存版本
+- **理由**：毕设期间两套项目都要能随时演示，互斥会频繁打断；端口只是宿主侧映射，改一下没有技术代价。
+  镜像默认值取"离线可用"的 tag，保证没网也能 `up -d`——本课题真正的环境风险是网络，不是版本洁癖。
+- **代价**：所有连接串要带非默认端口（PG 5433 / Redis 6380 / MinIO 9002），
+  第一份 `DATABASE_URL` 写错就会排查半天，因此在 `deploy/.env.example` 与 README 里都写在显眼处；
+  镜像 tag 未钉到具体 release，生产化前需换成固定 tag（S7-2）。
+- **验证**：`docker compose -f deploy/docker-compose.dev.yml up -d` 与 `python scripts/check_services.py`
+  5 项全 OK；`down` 不删卷再 `up` 后 bucket 仍在、`minio-init` 不报错（幂等）。
