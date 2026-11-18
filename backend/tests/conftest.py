@@ -6,6 +6,14 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
+
+# 合成样本生成器在仓库根 scripts/ 下（AGENTS §3：脚本一律放根 scripts/），
+# 测试直接 import 它们，避免把测试复制一份到 scripts 里。
+_SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
 
 # ---- 必须在 import app.* 之前设置 ----
 os.environ.setdefault("ENVIRONMENT", "test")
