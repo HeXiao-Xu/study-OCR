@@ -80,11 +80,61 @@ docker compose -f deploy/docker-compose.dev.yml down -v
 | `port is already allocated` | 端口被占。改 `deploy/.env` 的 `POSTGRES_PORT` 等，再 `up -d` |
 | `pgcrypto 未安装` | 数据卷不是新建的。`down -v` 后重来（会清库） |
 | `minio-init` 反复重启 | 检查 `MINIO_ROOT_USER/PASSWORD` 是否 ≥8 位；`logs minio-init` 看具体错误 |
-| 拉不到镜像 | 本机已缓存 `pgvector/pgvector:pg16`、`redis:7-alpine`、`minio/minio:latest`、`minio/mc:latest`；离线可直接起，别改镜像名 |
+| 拉不到镜像 / `registry-1.docker.io` 超时 | 走镜像源全名拉取：`bash scripts/pull_image.sh <镜像名>`（详见上一节）；兜底用本机已缓存镜像 |
 | Redis 报 `NOAUTH` | `deploy/.env` 的 `REDIS_PASSWORD` 与容器内不一致；改完 `up -d` 重建容器 |
 | 自检第 5 项失败 | 先跑 `docker compose -f deploy/docker-compose.dev.yml logs minio-init`，再手动 `run --rm minio-init` 看 `mc` 的报错 |
 
+## 镜像拉取（直连 Docker Hub 会超时，必须走镜像源）
+
+**现象**：`docker pull postgres:16` 卡住几十秒后报
+`Get "https://registry-1.docker.io/v2/": net/http: request canceled`。
+
+**原因**：Docker Desktop 虽然配了 `registry-mirrors`，但 `docker pull <裸镜像名>` 在 mirror 列表里
+逐个尝试失败后仍会**回退到 registry-1.docker.io**，而该地址在本网络下不可达；报错只显示最后一次尝试，
+看起来像"镜像源没生效"。
+
+**解法：用镜像源全名拉，再 `docker tag` 成标准名。** 这样不会触发那段回退逻辑。
+仓库里已封装成脚本：
+
+```bash
+bash scripts/pull_image.sh postgres:16          # 自动依次尝试多个镜像源、成功即打标准 tag
+bash scripts/pull_image.sh nginx:alpine
+bash scripts/pull_image.sh minio/minio:latest docker.1ms.run   # 也可手动指定用哪个源
+```
+
+脚本行为：本地已有该镜像 → 直接 `[skip]`；否则按 `docker.m.daocloud.io` → `docker.xuanyuan.me` →
+`docker.1ms.run` → 华为 SWR 的顺序尝试，成功后自动 `docker tag`，失败才返回非 0。
+
+**本机实测（2026-11-18）**：
+
+| 源 | 结果 |
+|---|---|
+| `docker.m.daocloud.io` | ✅ 可用（`postgres:16`、`nginx:alpine` 均拉取成功） |
+| `docker.xuanyuan.me` | 未逐个验证，脚本里作为备选 |
+| `docker.1ms.run` | ⚠️ 小镜像可拉（hello-world 成功），大镜像层出现 `unknown blob` |
+| `swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io` | ⚠️ 只缓存了部分镜像（本机 minio 来自这里），`library/postgres:16` 报 manifest not found |
+
+**手工等价命令**：
+
+```bash
+docker pull docker.m.daocloud.io/library/postgres:16   # 官方镜像要带 library/ 前缀
+docker tag  docker.m.daocloud.io/library/postgres:16 postgres:16
+docker rmi  docker.m.daocloud.io/library/postgres:16   # 可选：清掉别名，只留标准名
+```
+
+> 非官方镜像（`minio/minio:latest`、`minio/mc:latest`）没有 `library/` 前缀，
+> 直接 `docker pull docker.m.daocloud.io/minio/minio:latest` 即可。
+
+**兜底**：实在拉不到就用本机已缓存的镜像——`deploy/.env` 里四个 `*_IMAGE` 都是变量，
+改成已有 tag 即可（本机当前有 `postgres:16`、`redis:7-alpine`、`minio/minio:latest`、
+`minio/mc:latest`、`nginx:alpine`、`pgvector/pgvector:pg16`）。
+
 ## 镜像版本
 
-`deploy/.env` 里四个镜像都用变量，默认值是**本机已缓存、离线可用**的 tag；
-有网、想钉版本时只改 `.env` 即可（compose 文件不用动）。导入生产前建议钉到具体 release tag。
+`deploy/.env` 里四个镜像都用变量，改版本只动 `.env`，compose 文件不用改。
+当前默认：`postgres:16`、`redis:7-alpine`、`minio/minio:latest`、`minio/mc:latest`。
+
+> `minio/minio` 与 `minio/mc` 用的是 `latest`（MinIO 官方按日期发 RELEASE tag，且本机缓存的
+> 就是这个 tag）。**S7-2 生产化前要钉到具体 RELEASE tag**，并重跑一次自检——MinIO 跨版本行为有变化风险。
+> 本机另有一个 `pgvector/pgvector:pg16`（基于 postgres:16，多带 pgvector 扩展），本课题不需要，
+> 留作备用镜像。

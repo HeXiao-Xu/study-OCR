@@ -294,5 +294,13 @@
 - **代价**：所有连接串要带非默认端口（PG 5433 / Redis 6380 / MinIO 9002），
   第一份 `DATABASE_URL` 写错就会排查半天，因此在 `deploy/.env.example` 与 README 里都写在显眼处；
   镜像 tag 未钉到具体 release，生产化前需换成固定 tag（S7-2）。
+- **补充：镜像拉取的实测结论（2026-11-18）**
+  - `docker pull postgres:16` 会因 mirror 逐个失败后**回退到 registry-1.docker.io** 而超时，
+    报错只显示最后一次尝试，容易误判为"镜像源没配"；
+  - 解法是**用镜像源全名拉取再 `docker tag` 成标准名**，绕过回退逻辑；已封装为 `scripts/pull_image.sh`；
+  - 实测：`docker.m.daocloud.io` 可用（postgres:16、nginx:alpine 均成功）；`docker.1ms.run` 小镜像可、
+    大镜像层出现 `unknown blob`；华为 SWR 只缓存部分镜像（本机 minio 来自它，但 `library/postgres:16` 无 tag）。
+  - 因此**默认镜像仍取标准名**（`postgres:16`），能否拉到由脚本负责；离线时退回 `.env` 变量指向本机缓存。
 - **验证**：`docker compose -f deploy/docker-compose.dev.yml up -d` 与 `python scripts/check_services.py`
-  5 项全 OK；`down` 不删卷再 `up` 后 bucket 仍在、`minio-init` 不报错（幂等）。
+  5 项全 OK；`down` 不删卷再 `up` 后 bucket 仍在、`minio-init` 不报错（幂等）；
+  把 PG 镜像从 `pgvector/pgvector:pg16` 换成 `postgres:16` 后重建，自检仍 5/5。
