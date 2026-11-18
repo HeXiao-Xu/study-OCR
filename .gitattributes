@@ -1,0 +1,15 @@
+# 统一换行：仓库内一律 LF，避免 Windows 上 CRLF/LF 抖动产生无意义 diff
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.zip binary
+*.docx binary
+*.pptx binary
+*.xlsx binary
+*.pem binary
+*.key binary
+*.p12 binary
