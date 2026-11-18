@@ -210,7 +210,7 @@ deploy/   scripts/   samples/（图片不入库）   secrets/（整目录不入�
 
 | 模块 | 锚点文件 | 回填任务 |
 |---|---|---|
-| 后端骨架（config / logging+trace_id / 统一异常 / 响应壳） | 待回填 | S0-5 |
+| 后端骨架 | `backend/app/core/{config,logging,exceptions,health}.py` + `backend/app/schemas/common.py` + `backend/app/main.py`（`create_app()` 工厂、`X-Trace-Id` 中间件、`request.state.trace_id`、异常处理器；`/health` 双路径 + 503 降级；`Settings` 缺项启动即抛 `ConfigError`） | S0-5 ✅ |
 | 数据模型与迁移 | 待回填 | S2-1 |
 | 认证与权限依赖 | 待回填 | S2-2 |
 | 分页与筛选 | 待回填 | S2-4 |

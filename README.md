@@ -73,12 +73,15 @@ docker compose -f deploy/docker-compose.dev.yml up -d
 python scripts/check_services.py            # 5 项全 OK 才算通
 # 宿主机端口：PG 5433 / Redis 6380 / MinIO 9002（控制台 9003）
 # 与本机已有的 study-agent（5432/6379/9000/9001）不冲突，细节见 deploy/README.md
-# 2) 后端（待 S0-5）
-# py -3.11 -m venv .venv && .venv\Scripts\activate
-# pip install -r backend/requirements.txt
-# alembic upgrade head
-# uvicorn app.main:app --reload --port 8000    # 工作目录 backend/
-# curl http://localhost:8000/api/v1/health
+# 2) 后端（已可用；数据库迁移在 S2-1 才引入）
+py -3.11 -m venv .venv
+.venv/Scripts/python.exe -m pip install -r backend/requirements.txt
+cp backend/.env.example backend/.env        # 首次；.env 不入库
+cd backend && ../.venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8000
+# 另开一个终端：
+curl http://127.0.0.1:8000/api/v1/health     # {"code":0,...,"checks":{"db":ok,"redis":ok,"minio":ok}}
+curl http://127.0.0.1:8000/docs              # OpenAPI 文档
+cd backend && ../.venv/Scripts/python.exe -m pytest -q
 # 3) 前端
 # cd web && npm install && npm run dev
 ```

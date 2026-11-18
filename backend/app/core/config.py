@@ -1,0 +1,128 @@
+"""配置中心。
+
+唯一允许读取环境变量的地方（AGENTS.md §10.2）：业务代码只用 `get_settings()`，
+禁止在别处 `os.environ[...]` 或自己再建一份配置。
+
+设计要点：
+- 必填项缺失/非法时**启动即失败**并给出清单，而不是等到第一个请求才 500；
+- `environment` 决定一些安全默认值（prod 下拒绝弱 JWT_SECRET）；
+- 值统一从 `.env`（或进程环境）读，`.env` 不进仓库（见 .gitignore）。
+"""
+from __future__ import annotations
+
+import json
+from functools import lru_cache
+from typing import Annotated, Literal
+
+from pydantic import Field, field_validator
+from pydantic import ValidationError as PydanticValidationError
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+class ConfigError(RuntimeError):
+    """配置缺失或非法。启动阶段抛出，要求运维/开发者立刻修正。"""
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=(".env",),
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    # ---------- 应用 ----------
+    app_name: str = "study-ocr"
+    app_version: str = "0.1.0"
+    environment: Literal["dev", "test", "prod"] = "dev"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    api_prefix: str = "/api/v1"
+    # CORS：逗号分隔或 JSON 数组；默认只放行本地前端
+    # NoDecode：禁止 pydantic-settings 把 dotenv 里的字符串当 JSON 先解析一遍，
+    # 否则 .env 里写 `CORS_ORIGINS=http://a,http://b` 会在校验器之前就炸。
+    cors_origins: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
+    )
+
+    # ---------- 依赖服务（必填，无默认值）----------
+    database_url: str
+    redis_url: str
+    minio_endpoint: str
+    minio_access_key: str
+    minio_secret_key: str
+    minio_bucket: str
+    minio_secure: bool = False
+
+    # ---------- 安全 ----------
+    jwt_secret: str
+    max_upload_mb: int = 20  # D-018：单文件上限，前后端共用
+
+    # ---------- 其他 ----------
+    health_timeout_s: float = 2.0  # 健康检查单项超时，避免 /health 被拖死
+    trace_id_header: str = "X-Trace-Id"
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _parse_origins(cls, value: object) -> object:
+        """支持 `a,b` 这种写法，省得在 .env 里写 JSON。"""
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            if text.startswith("["):
+                return json.loads(text)
+            return [item.strip() for item in text.split(",") if item.strip()]
+        return value
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def _check_jwt_secret(cls, value: str) -> str:
+        if len(value) < 32:
+            raise ValueError("JWT_SECRET 至少 32 个字符（HS256 的安全下限）")
+        return value
+
+    @field_validator("minio_bucket")
+    @classmethod
+    def _check_bucket(cls, value: str) -> str:
+        if not value or "/" in value:
+            raise ValueError("MINIO_BUCKET 不能为空且不能含 '/'")
+        return value
+
+    @property
+    def is_prod(self) -> bool:
+        return self.environment == "prod"
+
+
+# 生产环境明确禁止的值（示例文件里的占位符）
+_WEAK_JWT_SECRETS = {
+    "change_me_jwt_secret",
+    "change_me_jwt_secret_at_least_32_chars_long",
+    "secret",
+    "changeme",
+    "please_change_me",
+}
+
+
+def _format_validation_error(exc: PydanticValidationError) -> str:
+    """把 Pydantic 的报错整理成"缺什么、哪一项不合法"的可读清单。"""
+    lines: list[str] = []
+    for err in exc.errors():
+        field = ".".join(str(part) for part in err.get("loc", ())) or "(root)"
+        lines.append(f"  - {field.upper()}: {err.get('msg')}")
+    return "\n".join(lines)
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """读取并校验配置。缺失/非法直接抛 ConfigError，让进程起不来。"""
+    try:
+        settings = Settings()
+    except PydanticValidationError as exc:
+        raise ConfigError(
+            "配置校验失败，请检查 backend/.env（可从 backend/.env.example 复制）：\n"
+            + _format_validation_error(exc)
+        ) from exc
+
+    if settings.is_prod and settings.jwt_secret in _WEAK_JWT_SECRETS:
+        raise ConfigError("prod 环境禁止使用示例 JWT_SECRET，请更换为随机值")
+    return settings

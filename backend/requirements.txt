@@ -1,0 +1,30 @@
+# =====================================================================
+# 后端直接依赖（全部固定版本；AGENTS.md §2.2）
+#
+# 装法：
+#   py -3.11 -m venv .venv
+#   .venv/Scripts/python.exe -m pip install -r backend/requirements.txt
+#
+# 完整传递依赖锁定见 requirements.lock.txt（pip freeze 产物）：
+#   .venv/Scripts/python.exe -m pip install -r backend/requirements.lock.txt
+#
+# 注意：OCR 相关依赖（paddleocr==2.7.3 / paddlepaddle==2.6.*）**故意不在本文件里**，
+# 它们在 S1-3 单独引入——那一步要下载几百 MB，不能拖累后端骨架的启动与验收。
+# =====================================================================
+
+# --- Web 框架 ---
+fastapi==0.163.2
+uvicorn[standard]==0.54.0
+pydantic==2.14.3
+pydantic-settings==2.16.3
+
+# --- 数据与对象存储（S0-5 只用于健康检查；ORM 在 S2-1 引入）---
+psycopg[binary]==3.3.9
+redis==8.1.0
+minio==7.2.20
+urllib3==2.8.0
+
+# --- 测试 ---
+httpx==0.28.1
+pytest==9.2.0
+pytest-asyncio==1.5.0

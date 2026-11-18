@@ -6,8 +6,8 @@
 ## 当前状态
 
 - 阶段：**阶段 0（项目启动）**，M0 前段
-- 最近完成：**S0-4 基础服务三件套**（PostgreSQL 16 / Redis 7 / MinIO，5 项自检全通过）
-- 下一步：**S0-5 后端最小可运行**（config / logging+trace_id / 统一异常 / `/api/v1/health`）
+- 最近完成：**S0-5 后端最小可运行**（config / JSON 日志+trace_id / 统一异常 / `/health` 双路径 / 24 个测试全绿）
+- 下一步：**S0-6 前端最小可运行**（Vue3 + Vite + TS 骨架、axios 封装、路由守卫）
 - 已知阻塞：无
 - 环境提醒：后端必须用 **Python 3.11**（`py -3.11 -m venv .venv`）；本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
 
@@ -19,7 +19,7 @@
 [x] S0-2 写项目宪法 AGENTS.md
 [x] S0-3 写契约文档 SCHEMA.md + API.md ★关键
 [x] S0-4 起基础服务（PostgreSQL 16 + Redis 7 + MinIO）
-[ ] S0-5 后端最小可运行：config + 日志/trace_id + 统一异常
+[x] S0-5 后端最小可运行：config + 日志/trace_id + 统一异常
 [ ] S0-6 前端最小可运行 + axios 封装 + 路由守卫
 [ ] S0-7 冒烟脚本与 README 完整化
 
@@ -96,6 +96,7 @@
 |---|---|---|---|
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
+| S0-5 | `backend/app/{main.py,core/{config,logging,exceptions,health}.py,schemas/common.py,api/v1/health.py}`、`backend/{requirements.txt,requirements.lock.txt,pyproject.toml,.env.example}`、`backend/tests/{conftest,test_config,test_health,test_errors_trace}.py` | ① `pytest -q` 24 passed；② 起 uvicorn 后 `/api/v1/health` 真实连三件套返回 200（db/redis/minio 全 ok）；③ 不存在路由返回 `40400` 且响应头 `X-Trace-Id` 与 body 一致；④ 同一 trace_id 能在日志里串起错误日志 + 访问日志；⑤ 缺配置启动即抛 `ConfigError` 并列出缺哪几项 | ✅ 通过 |
 | S0-4 | `deploy/docker-compose.dev.yml`（pg16 + redis7 + minio + 幂等 minio-init，全量 healthcheck）、`deploy/.env.example`、`deploy/init/01_extensions.sql`（pgcrypto）、`deploy/README.md`、`scripts/check_services.py`（纯标准库，5 项检查） | `docker compose up -d` 后 `python scripts/check_services.py` 输出 5/5 OK；`down` 不删卷再 `up` 后 bucket 仍在、`minio-init` 幂等不报错 | ✅ 通过 |
 | S0-3 | `docs/SCHEMA.md`（641 行，16 张表，5 组，含「定稿清单」20 项）、`docs/API.md`（646 行，36 个接口，9 组，含 §12 定稿记录）、`docs/DECISIONS.md`（D-001~D-018）、`docs/EVAL.md`、`docs/PROGRESS.md`、`samples/README.md`，并把《完整方案》《实施计划》《AGENTS.md》纳入 `docs/` | ① 表数 16、业务不变式索引齐备；② 接口数 36、分组齐全、全部标注权限/类型/幂等/任务号；③ 两文档字段名交叉核对；④ **契约内无残留 `TODO 待定`** | ✅ 通过。S0-3 结束后无阻塞项 |
 
@@ -120,6 +121,15 @@
 
 ### 2026-11-18
 
+- **S0-5 完成**：后端最小可运行。
+  · `create_app()` 工厂 + `Settings`（pydantic-settings，缺项启动即抛 `ConfigError` 并列出缺哪几项；prod 拒绝示例 JWT_SECRET）；
+  · JSON 结构化日志（stdlib only，不引 loguru/structlog），`trace_id` 用 contextvar + 中间件注入，
+    **同一条链路可 grep**：错误日志、访问日志、业务日志都带同一个 trace_id；
+  · 统一错误壳 `{code,message,data,trace_id}`：404→40400、422→42200、未捕获→50000 且**堆栈只进日志**；
+  · `/health` 与 `/api/v1/health` 同一实现，检查 DB/Redis/MinIO，任一挂了返回 **503 degraded**（探针可直接判活）；
+  · 24 个单测覆盖：配置校验 7、健康检查 5、错误壳与 trace 12。
+  · 修掉一个真 bug：未捕获异常时 `Exception` 处理器在最外层 ServerErrorMiddleware 里执行，
+    此时 contextvar 已 reset → 日志和响应里的 trace_id 变成 `-`；改用 `request.state.trace_id` 传递。
 - **S0-4 完成**：基础服务三件套起在本机。
   · 端口与已有 study-agent 错开：PG **5433** / Redis **6380** / MinIO **9002**（控制台 9003），全部只绑 `127.0.0.1`；
   · 数据全落命名卷（`study-ocr-pgdata/redisdata/miniodata`），不用相对路径绑定挂载（Windows 上必炸）；

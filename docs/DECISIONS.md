@@ -304,3 +304,21 @@
 - **验证**：`docker compose -f deploy/docker-compose.dev.yml up -d` 与 `python scripts/check_services.py`
   5 项全 OK；`down` 不删卷再 `up` 后 bucket 仍在、`minio-init` 不报错（幂等）；
   把 PG 镜像从 `pgvector/pgvector:pg16` 换成 `postgres:16` 后重建，自检仍 5/5。
+
+---
+
+## D-020 后端骨架的四处实现取舍
+
+- **日期**：2026-11-18（S0-5）
+- **背景**：骨架代码虽小，但有四处"以后很难改"的选择，先定下来。
+- **决策**：
+
+| # | 取舍 | 选择 | 理由 |
+|---|---|---|---|
+| 1 | 日志设施 | **只用 stdlib `logging` + 自写 `JsonFormatter`** | 任务卡明确禁止 loguru/structlog 混用；stdlib 足够输出单行 JSON，少一个依赖就少一处版本冲突 |
+| 2 | 响应壳组装 | **各接口显式调 `envelope()`**，不靠 `response_model` 自动包装 | 自动包装会与 FastAPI 的 `response_model` 序列化打架，还要处理泛型 `Envelope[T]`；显式组装一眼看得出返回什么，也便于错误处理器复用 |
+| 3 | trace_id 传递 | contextvar **+** `request.state.trace_id` 双通道 | 未捕获异常由最外层 `ServerErrorMiddleware` 兜底，此时 contextvar 已被中间件 reset，只靠 contextvar 会导致**日志与响应里的 trace_id 变成 `-`**（实测踩到，见 PROGRESS 变更日志） |
+| 4 | 健康检查 | 两条路径同一实现；检查 DB/Redis/MinIO；任一项失败 → **503 + status=degraded**；单项超时 2s | 容器探针只认状态码；探测本身不能变成新故障源 |
+
+- **代价**：响应壳靠人工调用，忘记包一层就会返回裸 JSON（用测试兜住：每个新接口都要有一条断言 `set(body)=={code,message,data,trace_id}` 的用例）。
+- **验证**：24 个单测（配置 7 / 健康 5 / 错误与 trace 12）；起 uvicorn 后 `/api/v1/health` 真实连三件套返回 200；同一 trace_id 能在日志里串起错误日志与访问日志。

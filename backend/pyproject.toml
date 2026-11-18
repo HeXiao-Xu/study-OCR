@@ -1,0 +1,16 @@
+[project]
+name = "study-ocr-backend"
+version = "0.1.0"
+description = "基于 OCR 的高校报销票据识别与加密系统 — 后端"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+# backend/ 作为导入根：测试里统一 `from app.xxx import ...`
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
+markers = [
+    "integration: 需要真实 Docker 三件套（默认跳过，用 -m integration 单独跑）",
+    "slow: 慢用例（模型推理等），默认不跑",
+]
