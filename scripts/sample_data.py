@@ -117,6 +117,11 @@ def gen_uscc(rng: random.Random) -> str:
 # ---------------------------------------------------------------------------
 # 其他字段
 # ---------------------------------------------------------------------------
+def gen_digital_invoice_no(rng: random.Random) -> str:
+    """数电票的 20 位发票号码（前两位为年份后两位，如 26xxxxxxxxxxxxxxxxxx）。"""
+    return "26" + "".join(rng.choice("0123456789") for _ in range(18))
+
+
 def gen_invoice_code(rng: random.Random) -> str:
     width = rng.choice([10, 12])
     return "".join(rng.choice("0123456789") for _ in range(width))

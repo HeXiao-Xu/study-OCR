@@ -43,11 +43,13 @@ CANONICAL_FIELDS = {
 
 # 版式清单：(ticket_type, form_factor, 张数, dev 张数)
 LAYOUTS: list[tuple[str, str, int, int]] = [
+    # 2026 年的主流票种是数电票（2024-12 起全国推广），放在第一位
+    ("vat_digital", "landscape", 10, 6),
     ("vat_general", "landscape", 10, 6),
-    ("vat_general", "portrait_screenshot", 8, 5),
-    ("train_ticket", "portrait_strip", 8, 5),
-    ("flight_itinerary", "landscape", 7, 4),
-    ("taxi_ticket", "receipt", 7, 4),
+    ("vat_general", "portrait_screenshot", 10, 6),
+    ("train_ticket", "portrait_strip", 10, 6),
+    ("flight_itinerary", "landscape", 10, 6),
+    ("taxi_ticket", "receipt", 10, 6),
 ]
 
 

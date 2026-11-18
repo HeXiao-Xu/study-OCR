@@ -26,6 +26,7 @@ from sample_data import (
     gen_amounts,
     gen_check_code,
     gen_company,
+    gen_digital_invoice_no,
     gen_date,
     gen_flight_no,
     gen_id_card,
@@ -295,7 +296,97 @@ def render_taxi_ticket(rng: random.Random) -> RenderedTicket:
                           fields=_register(canvas, pairs))
 
 
+# ---------------------------------------------------------------------------
+# 5) 电子发票（普通发票）——数电票，2024-12 起全国推广后的主流票种
+#
+# 版面几何来自一份真实数电票 PDF 的**坐标量测**（只取相对位置，未读取任何字段值）：
+#   页面 210×140mm；标题居中 y≈6%；发票号码 x≈74% y≈8%；开票日期同列 y≈12%；
+#   购销方信息 y≈23%–33%；表头 y≈38%；合计 y≈66%；价税合计 y≈70%；开票人 y≈93%。
+# 与旧版 `vat_general` 的关键差异：**没有发票代码、没有校验码**，发票号码是 20 位。
+# ---------------------------------------------------------------------------
+def render_vat_digital(rng: random.Random) -> RenderedTicket:
+    width, height = 1240, 827  # 210×140mm @150dpi
+    canvas = Canvas(width, height)
+    canvas.border(margin=10, width=2)
+
+    amounts = gen_amounts(rng)
+    invoice_no = gen_digital_invoice_no(rng)
+    day = gen_date(rng)
+    buyer = gen_company(rng)
+    buyer_tax = gen_uscc(rng)
+    seller = gen_company(rng)
+    seller_tax = gen_uscc(rng)
+    issuer = gen_person(rng)
+    pairs: list[tuple[str, Drawn, str]] = []
+
+    canvas.text((width / 2, 48), "电子发票（普通发票）", 40, label="title", bold=True, anchor="mm")
+
+    # 右上角：发票号码 / 开票日期（真实版面在此列）
+    right_x = 912
+    pairs.append(("invoice_no", _kv(canvas, right_x, 60, "发票号码：", invoice_no, key_size=18,
+                                    value_size=19, label="invoice_no", latin_value=True), invoice_no))
+    pairs.append(("invoice_date", _kv(canvas, right_x, 98, "开票日期：", date_text(day), key_size=18,
+                                     value_size=19, label="invoice_date"), date_iso(day)))
+
+    # 购销方信息（左右两栏）
+    left_x, mid_x = 35, 700
+    canvas.text((left_x, 186), "购买方信息", 20, label="label", bold=True)
+    canvas.text((mid_x, 186), "销售方信息", 20, label="label", bold=True)
+    tax_key = "统一社会信用代码/纳税人识别号："
+    pairs.append(("buyer_name", _kv(canvas, left_x, 216, "名称：", buyer, key_size=18,
+                                    value_size=20, label="buyer_name"), buyer))
+    pairs.append(("buyer_tax_no", _kv(canvas, left_x, 246, tax_key, buyer_tax, key_size=16,
+                                     value_size=19, label="buyer_tax_no", latin_value=True), buyer_tax))
+    pairs.append(("seller_name", _kv(canvas, mid_x, 216, "名称：", seller, key_size=18,
+                                     value_size=20, label="seller_name"), seller))
+    pairs.append(("seller_tax_no", _kv(canvas, mid_x, 246, tax_key, seller_tax, key_size=16,
+                                      value_size=19, label="seller_tax_no", latin_value=True), seller_tax))
+
+    # 明细表（真实版面：表头 y≈38%，表格一直延伸到 y≈64% 附近）
+    headers = ["项目名称", "规格型号", "单位", "数量", "单价", "金额", "税率", "税额"]
+    half = (amounts["amount"] / 2).quantize(Decimal("0.01"))
+    rows = [
+        [_GOODS[rng.randrange(len(_GOODS))], _SPECS[rng.randrange(len(_SPECS))], "件", "1",
+         money_text(half), money_text(half), "6%",
+         money_text((amounts["tax_amount"] / 2).quantize(Decimal("0.01")))],
+        [_GOODS[rng.randrange(len(_GOODS))], _SPECS[rng.randrange(len(_SPECS))], "件", "1",
+         money_text(amounts["amount"] - half), money_text(amounts["amount"] - half), "6%",
+         money_text(amounts["tax_amount"] - (amounts["tax_amount"] / 2).quantize(Decimal("0.01")))],
+    ]
+    table_top = 300
+    canvas.table((left_x, table_top, width - 35, 520), headers, rows, 17, row_height=36)
+
+    # 合计（金额/税额）
+    y_total = 545
+    canvas.text((left_x + 8, y_total), "合计", 19, label="label")
+    amount_item = canvas.text_right(width - 300, y_total, money_text(amounts["amount"]), 21,
+                                    label="amount", latin=True)
+    tax_item = canvas.text_right(width - 40, y_total, money_text(amounts["tax_amount"]), 21,
+                                 label="tax_amount", latin=True)
+    pairs.append(("amount", amount_item, f"{amounts['amount']:.2f}"))
+    pairs.append(("tax_amount", tax_item, f"{amounts['tax_amount']:.2f}"))
+
+    # 价税合计（大写 + 小写）
+    y_sum = 580
+    canvas.text((left_x + 8, y_sum), "价税合计（大写）", 19, label="label")
+    canvas.text((left_x + 230, y_sum), amount_to_chinese_upper(amounts["total_amount"]), 19,
+                label="total_amount_upper")
+    canvas.text((width - 330, y_sum), "（小写）", 19, label="label")
+    total_item = canvas.text_right(width - 40, y_sum, money_text(amounts["total_amount"]), 23,
+                                   label="total_amount", bold=True, latin=True)
+    pairs.append(("total_amount", total_item, f"{amounts['total_amount']:.2f}"))
+
+    # 备注 / 开票人 / 二维码占位
+    canvas.text((left_x + 8, 620), "备注：本发票为合成样本，仅用于算法评测", 16, label="footer")
+    canvas.qrcode_placeholder((width - 170, 610, width - 50, 730))
+    _kv(canvas, left_x + 8, 762, "开票人：", issuer, key_size=17, value_size=18, label="issuer")
+
+    return RenderedTicket(canvas=canvas, ticket_type="vat_digital", form_factor="landscape",
+                          fields=_register(canvas, pairs))
+
+
 RENDERERS = {
+    ("vat_digital", "landscape"): render_vat_digital,
     ("vat_general", "landscape"): lambda rng: render_vat_general(rng, portrait=False),
     ("vat_general", "portrait_screenshot"): lambda rng: render_vat_general(rng, portrait=True),
     ("train_ticket", "portrait_strip"): render_train_ticket,

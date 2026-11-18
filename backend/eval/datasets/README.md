@@ -34,7 +34,7 @@
 | 键 | 含义 |
 |---|---|
 | `image` | 相对仓库根的路径（换机器也能定位） |
-| `ticket_type` | `vat_general` / `train_ticket` / `flight_itinerary` / `taxi_ticket` |
+| `ticket_type` | `vat_digital`（数电票，2026 主流）/ `vat_general`（旧版增值税电子普通发票）/ `train_ticket` / `flight_itinerary` / `taxi_ticket` |
 | `form_factor` | `landscape` / `portrait_strip` / `portrait_screenshot` / `receipt` |
 | `width` / `height` | **扰动后**的图像尺寸（贴背景会改变尺寸，所以不能写模板尺寸） |
 | `split` | `dev`（开发调参）/ `test`（只在 S6 报告指标时用） |
@@ -57,18 +57,23 @@
 
 ## 字段与票种的对应
 
-| 字段 | vat_general | train_ticket | flight_itinerary | taxi_ticket |
-|---|---|---|---|---|
-| `invoice_code` | ✅ | — | — | ✅ |
-| `invoice_no` | ✅ | — | — | ✅ |
-| `invoice_date` | ✅ | ✅（乘车日期） | ✅（填开日期） | ✅ |
-| `buyer_name` / `buyer_tax_no` | ✅ | — | — | — |
-| `seller_name` | ✅ | — | ✅（承运人） | ✅（出租公司） |
-| `seller_tax_no` | ✅ | — | — | — |
-| `amount` / `tax_amount` | ✅ | — | — | — |
-| `total_amount` | ✅ | ✅（票价） | ✅（合计） | ✅（金额） |
-| `check_code` | ✅ | — | — | — |
-| `passenger_name` | — | ✅ | ✅ | — |
+| 字段 | vat_digital | vat_general | train_ticket | flight_itinerary | taxi_ticket |
+|---|---|---|---|---|---|
+| `invoice_code` | **—（数电票已取消）** | ✅ | — | — | ✅ |
+| `invoice_no` | ✅（**20 位**） | ✅（8 位） | — | — | ✅（8 位） |
+| `invoice_date` | ✅ | ✅ | ✅（乘车日期） | ✅（填开日期） | ✅ |
+| `buyer_name` / `buyer_tax_no` | ✅ | ✅ | — | — | — |
+| `seller_name` | ✅ | ✅ | — | ✅（承运人） | ✅（出租公司） |
+| `seller_tax_no` | ✅ | ✅ | — | — | — |
+| `amount` / `tax_amount` | ✅ | ✅ | — | — | — |
+| `total_amount` | ✅ | ✅ | ✅（票价） | ✅（合计） | ✅（金额） |
+| `check_code` | **—（数电票已取消）** | ✅ | — | — | — |
+| `passenger_name` | — | — | ✅ | ✅ | — |
+
+> **数电票与旧版票的字段差异**（S1-5 的抽取规则要按票种分支）：
+> 数电票只有 20 位发票号码，没有发票代码、没有校验码；购销方信息以"名称 / 统一社会信用代码"成对出现。
+> `check_annotations.py` 会按 `ticket_type` 校验号码位数（数电票 20 位、其余 8 位），
+> 并**拒绝**数电票样本里出现 `invoice_code` / `check_code`（防止模板写错却没人发现）。
 
 > 行程单的"票价 + 民航发展基金"没有拆成 `amount`/`tax_amount`：那会把语义扭成"税额"。
 > 只标 `total_amount`，保持字段语义干净。

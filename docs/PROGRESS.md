@@ -6,7 +6,7 @@
 ## 当前状态
 
 - 阶段：**阶段 0（项目启动）**，M0 前段
-- 最近完成：**S1-1 票据样本集与标注规范**（合成集 40 张 + 5 项自动验收全过；真实样本已建档）
+- 最近完成：**S1-1 票据样本集与标注规范**（合成集 **60 张 / 5 票种 / 6 版式**，5 项自动验收全过；2 份真实样本已建档）
 - 下一步：**S1-2 图像预处理与透视校正**（第一步真正处理像素：EXIF/去噪/四角点/透视/照度/印章标记）
 - 已知阻塞：无
 - 环境提醒：后端必须用 **Python 3.11**（`py -3.11 -m venv .venv`）；本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
@@ -96,7 +96,7 @@
 |---|---|---|---|
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
-| S1-1 | `scripts/{sample_fonts,sample_data,invoice_layout,invoice_templates,perturb,make_samples,check_annotations,verify_samples}.py`、`scripts/ocr_probe.ps1`、`backend/eval/datasets/{annotations_synth_v1.jsonl,README.md}`、`samples/MANIFEST.md`、`docs/{spec,plan}/s1-1-samples.md`、3 个测试文件 | ① `make_samples.py` 生成 40 张（dev 24 / test 16，4 类 × 5 形态）；② `check_annotations.py --strict` 全过；③ `verify_samples.py` **5 项全过**（渲染一致性 4.1×、OCR 字段命中率 干净 0.89 / 困难 0.86、标注自洽、成像覆盖、划分完整）；④ `pytest` 50 passed（新增 26 条）；⑤ 系统 OCR 能读出合成票的字段值 | ✅ 通过 |
+| S1-1 | `scripts/{sample_fonts,sample_data,invoice_layout,invoice_templates,perturb,make_samples,check_annotations,verify_samples}.py`、`scripts/ocr_probe.ps1`、`backend/eval/datasets/{annotations_synth_v1.jsonl,README.md}`、`samples/MANIFEST.md`、`docs/{spec,plan}/s1-1-samples.md`、3 个测试文件 | ① `make_samples.py` 生成 **60 张**（dev 36 / test 24，**5 票种 × 6 版式**，含 2026 主流的数电票 `vat_digital`）；② `check_annotations.py --strict` 全过；③ `verify_samples.py` **5 项全过**（渲染一致性 4.1×、OCR 字段命中率 干净 0.89 / 困难 0.86、标注自洽、成像覆盖、划分完整）；④ `pytest` 50 passed（新增 26 条）；⑤ 系统 OCR 能读出合成票的字段值 | ✅ 通过 |
 | S0-7 | `scripts/smoke.py`（配置/端口/三件套/后端/迁移/前端六类检查，`--strict` 与 `-v`）、完整 `README.md`（环境要求、8 步快速开始、端口表、常用命令、**9 条 Windows 坑**、故障排查表、文档索引、已知限制）、`docs/DECISIONS.md` D-022（基础设施 ADR） | ① `smoke.py` 在后端未起时给出"后端没起 + 启动命令"而不是 traceback；② 故意写错 PG 口令 → 报"认证失败 + 两处 .env 要对齐"（与"服务没起"区分开）；③ 停掉整个 docker 栈 → 每项都提示 `docker compose up -d`；④ 全起后 OK 7 / WARN 1（迁移，S2-1 前正常）/ FAIL 0，退出码 0；⑤ `--strict` 下 WARN 使退出码为 1 | ✅ 通过 |
 | S0-6 | `web/`（Vue 3.5 + Vite 8 + TS 6 + Element Plus + Pinia + Vue Router：`src/{main.ts,App.vue,api/http.ts,api/system.ts,router/index.ts,stores/user.ts,views/*}`、`package.json` 精确版本、`.env.{development,production,example}`）、`scripts/ui_smoke.mjs` | ① `npm run typecheck` 无错、`npm run build` 成功；② 干净浏览器访问 `/` → 守卫重定向到 `/login?redirect=/` 且登录页渲染；③ `/debug` 显示后端 health（4 个 tag 全 ok）+ trace_id；④ 点「触发一个 404」→ 弹出后端 message「资源不存在」并把 trace_id 回填；⑤ 停掉 MinIO → 页面显示 degraded + 一个 fail，恢复后回到全 ok；⑥ 控制台无 CORS 报错 | ✅ 通过 |
 | S0-5 | `backend/app/{main.py,core/{config,logging,exceptions,health}.py,schemas/common.py,api/v1/health.py}`、`backend/{requirements.txt,requirements.lock.txt,pyproject.toml,.env.example}`、`backend/tests/{conftest,test_config,test_health,test_errors_trace}.py` | ① `pytest -q` 24 passed；② 起 uvicorn 后 `/api/v1/health` 真实连三件套返回 200（db/redis/minio 全 ok）；③ 不存在路由返回 `40400` 且响应头 `X-Trace-Id` 与 body 一致；④ 同一 trace_id 能在日志里串起错误日志 + 访问日志；⑤ 缺配置启动即抛 `ConfigError` 并列出缺哪几项 | ✅ 通过 |
@@ -126,13 +126,19 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 |---|---|---|---|
 | 1 | 真实样本 R-001 的票种与字段未人工补录 | 只能做定性对照，不能进评测 | 你方便时告知票种，我补进 MANIFEST |
 | 2 | 合成集只有 40 张，`test` 仅 16 张 | 指标置信区间宽，只能做配置间相对比较 | S6 前若需要可 `--n 80` 扩量（脚本已支持） |
-| 3 | 版式与真实票仍有差距（字体、栏线、防伪底纹未模拟） | 真实票据上指标会低于合成集 | 论文如实写"合成集为主 + 1 张真实样本定性对照" |
+| 3 | 版式与真实票仍有差距（字体、栏线、防伪底纹未模拟） | 真实票据上指标会低于合成集 | 论文如实写"合成集为主 + 真实样本定性对照" |
+| 4 | 数电票版式靠"真实 PDF 的坐标量测"复刻，未逐像素对照 | 合成数电票可能比真票"整齐"，检测框分布偏乐观 | S1-2 预处理阶段把 R-002 的 PDF 转图后与合成图并排比一次（人工） |
+| 5 | 抽取规则需要按票种分支（数电票没有代码/校验码） | 影响 S1-5/S2-8 的规则设计 | S1-5 实现时按 `ticket_type` 分派 |
 
 ## 变更日志
 
 ### 2026-11-18
 
-- **S1-1 完成**：合成票据集与标注规范。
+- **S1-1 完成（含一次范围修正）**：合成票据集与标注规范。
+  · **修正**：真实样本 R-002 是**数电票**（20 位号码、无发票代码、无校验码、210×140mm），
+    而首版模板做的是旧版增值税电子普通发票。按 D-023 新增 `vat_digital` 版式为主流票种，
+    旧版降级为"历史形态"，合成集由 40 张扩为 **60 张**（6 版式 × 10 张，dev 36 / test 24）；
+    数电票模板的版面几何取自真实 PDF 的**坐标量测**（只取相对位置，未读取字段值）。
   · 生成器 6 个模块：字体探测、字段值生成（金额大写 / 统一社会信用代码校验位 / 假身份证号）、
     版式原语（**绘制即记录坐标**）、5 种票面、扰动（背景桌面 + 几何 + 光度 + 印章/折痕）、CLI；
   · **几何扰动同步变换标注框**（单测钉死 90° 旋转的期望位置），这是"图歪框正"这类隐形 bug 的唯一防线；

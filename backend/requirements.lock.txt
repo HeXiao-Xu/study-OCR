@@ -5,8 +5,10 @@ argon2-cffi==25.1.0
 argon2-cffi-bindings==26.2.0
 certifi==2026.10.23
 cffi==2.1.1
+charset-normalizer==3.5.2
 click==8.5.1
 colorama==0.4.6
+cryptography==50.0.2
 fastapi==0.163.2
 h11==0.16.0
 httpcore==1.0.9
@@ -18,6 +20,8 @@ minio==7.2.20
 numpy==2.3.5
 opentelemetry-api==1.45.2
 packaging==26.3
+pdfminer.six==20260107
+pdfplumber==0.11.10
 pillow==12.3.0
 pluggy==1.7.0
 psycopg==3.3.9
@@ -28,6 +32,8 @@ pydantic==2.14.3
 pydantic-settings==2.16.3
 pydantic_core==2.50.4
 Pygments==2.21.0
+pypdf==7.1.0
+pypdfium2==5.15.2
 pytest==9.2.0
 pytest-asyncio==1.5.0
 python-dotenv==1.2.4

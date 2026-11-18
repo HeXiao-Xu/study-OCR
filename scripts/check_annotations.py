@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FILE = ROOT / "backend" / "eval" / "datasets" / "annotations_synth_v1.jsonl"
 
 REQUIRED_KEYS = {"image", "ticket_type", "form_factor", "width", "height", "split", "annotator", "seed", "perturbations", "boxes", "fields"}
-TICKET_TYPES = {"vat_general", "train_ticket", "flight_itinerary", "taxi_ticket"}
+TICKET_TYPES = {"vat_digital", "vat_general", "train_ticket", "flight_itinerary", "taxi_ticket"}
 FORM_FACTORS = {"landscape", "portrait_strip", "portrait_screenshot", "receipt"}
 CANONICAL_FIELDS = {
     "invoice_code", "invoice_no", "invoice_date", "buyer_name", "buyer_tax_no",
@@ -35,7 +35,7 @@ CANONICAL_FIELDS = {
 LAYOUT_LABELS = {"title", "label", "status_bar", "table_header", "table_row", "qrcode", "footer",
                  "seal_zone", "crease", "paper_zone", "station_from", "station_to", "station_arrow",
                  "depart_time", "seat", "id_card_masked", "train_no", "flight_no", "cabin", "plate",
-                 "total_amount_upper"}
+                 "total_amount_upper", "issuer"}
 
 _MONEY_RE = re.compile(r"^[¥￥]?-?\d{1,3}(,\d{3})*(\.\d{2})?$")
 _USCC_CHARSET = "0123456789ABCDEFGHJKLMNPQRTUWXY"
@@ -127,12 +127,20 @@ def check_record(record: dict, index: int, problems: Problems) -> str | None:
             problems.add(where, f"fields[{name}] 统一社会信用代码校验位不通过：{value}")
         if name == "invoice_date" and not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
             problems.add(where, f"fields[invoice_date] 归一值应为 YYYY-MM-DD：{value}")
-        if name == "invoice_no" and not re.match(r"^\d{8}$", value):
-            problems.add(where, f"fields[invoice_no] 应为 8 位数字：{value}")
+        if name == "invoice_no":
+            # 数电票的发票号码是 20 位（2024-12 起全国推广的版式）；旧版纸票/定额票是 8 位
+            expected_len = 20 if record.get("ticket_type") == "vat_digital" else 8
+            if not re.match(rf"^\d{{{expected_len}}}$", value):
+                problems.add(where, f"fields[invoice_no] 应为 {expected_len} 位数字：{value}")
         if name == "invoice_code" and not re.match(r"^(\d{10}|\d{12})$", value):
             problems.add(where, f"fields[invoice_code] 应为 10/12 位数字：{value}")
         if name == "check_code" and not re.match(r"^\d{20}$", value):
             problems.add(where, f"fields[check_code] 应为 20 位数字：{value}")
+
+    if record.get("ticket_type") == "vat_digital":
+        for absent in ("invoice_code", "check_code"):
+            if absent in fields:
+                problems.add(where, f"数电票不应有 {absent}（该版式已取消这两个字段）")
 
     # 金额三件套等式（合成数据的硬约束）
     if {"amount", "tax_amount", "total_amount"} <= fields.keys():
