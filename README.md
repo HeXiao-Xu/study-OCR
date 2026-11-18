@@ -82,9 +82,16 @@ cd backend && ../.venv/Scripts/python.exe -m uvicorn app.main:app --reload --por
 curl http://127.0.0.1:8000/api/v1/health     # {"code":0,...,"checks":{"db":ok,"redis":ok,"minio":ok}}
 curl http://127.0.0.1:8000/docs              # OpenAPI 文档
 cd backend && ../.venv/Scripts/python.exe -m pytest -q
-# 3) 前端
-# cd web && npm install && npm run dev
+# 3) 前端（已可用）
+cd web && npm install
+npm run dev                                  # http://127.0.0.1:5173
+# 打开 /debug 看后端 health 结果与 trace_id（未登录会先跳 /login，
+# 开发态可用登录页的「写入占位 token 并进入」按钮，或访问 /debug?dev_token=smoke）
+npm run typecheck && npm run build           # 类型检查 + 生产构建
 ```
+
+> 前端**不用** Vite proxy，直接在开发态跨域访问后端（CORS 由后端 `CORS_ORIGINS` 统一放行 5173）。
+> 两者只能选一个，否则会出现"看起来 404、其实是转了两道"的问题（见 DECISIONS D-021）。
 
 ## 文档索引
 

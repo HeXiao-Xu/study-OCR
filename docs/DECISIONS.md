@@ -322,3 +322,20 @@
 
 - **代价**：响应壳靠人工调用，忘记包一层就会返回裸 JSON（用测试兜住：每个新接口都要有一条断言 `set(body)=={code,message,data,trace_id}` 的用例）。
 - **验证**：24 个单测（配置 7 / 健康 5 / 错误与 trace 12）；起 uvicorn 后 `/api/v1/health` 真实连三件套返回 200；同一 trace_id 能在日志里串起错误日志与访问日志。
+
+---
+
+## D-021 前端四处取舍（token 存哪、CORS 还是 proxy、错误要不要携带 payload、开发态冒烟入口）
+
+- **日期**：2026-11-18（S0-6）
+- **背景**：S0-6 搭前端骨架时遇到四个"以后很难改"的选择；其中 token 存储方式是任务卡明确要求记录的（S4 讨论私钥存储会引用它）。
+- **决策**：
+
+| # | 取舍 | 选择 | 理由与代价 |
+|---|---|---|---|
+| 1 | token 存哪 | **localStorage**（键 `study_ocr_token`） | 前后端分离 + 开发期跨域时，httpOnly Cookie 要处理 SameSite/Secure/CORS 携带，毕设成本高。**代价：XSS 可读**——因此要求所有动态内容走 Vue 插值（天然转义），禁止 `v-html` 渲染用户可控内容。这条会成为 S4 讨论"私钥能不能放浏览器"时的引用点：token 都这么处理，私钥更不能放前端。 |
+| 2 | 跨域方式 | **只用后端 CORS**，不配 Vite proxy | 跨域配置只在一处（后端 `CORS_ORIGINS`），前端不需要知道后端端口；生产同源时把 `VITE_API_BASE` 改成 `/api/v1` 即可。任务卡的坑就是"两个都配会出难以理解的 404"。 |
+| 3 | 错误响应要不要带数据 | `ApiError` 增加 `payload` 字段，透传后端信封 | 实测踩到：`/health` 依赖挂了返回 **503 + 完整信封**，若拦截器只取 `message`，页面就只剩"未请求"，降级详情全丢。带 `payload` 后前端能渲染降级表（`degraded` 标签 + `fail` 行）。409 的 `current_version`、422 的字段明细同理。 |
+| 4 | 开发态冒烟入口 | 允许 `?dev_token=xxx` 在 `main.ts` 里写入 localStorage 并抹掉参数，**整段包在 `import.meta.env.DEV` 内** | 无头浏览器冒烟需要直接打开受保护页面（S7 冷启动检查会复用）。`import.meta.env.DEV` 是编译期常量，生产构建会被摇掉（可验证：`npm run build` 后在 `dist/` 里搜 `dev_token` 应无命中）。代价：开发态存在"URL 带 token"的便利口子，团队内约定不在真实环境使用。 |
+
+- **验证**：`npm run typecheck` + `npm run build` 通过；无头 Edge（CDP）实测：未登录访问 `/` → `/login?redirect=/`；`/debug?dev_token=smoke` → 4 个 tag 全 ok；点「触发一个 404」→ 弹出后端「资源不存在」且 trace_id 回填；停 MinIO → 显示 `degraded` + 一个 `fail`，恢复后回全 ok；控制台无 CORS 报错。

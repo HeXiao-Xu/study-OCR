@@ -221,7 +221,7 @@ deploy/   scripts/   samples/（图片不入库）   secrets/（整目录不入�
 | 密码封装（canonical / sm / signature / envelope / keystore） | 待回填 | S4-1 ~ S4-6 |
 | 审计哈希链 | 待回填 | S4-7 |
 | 评测脚本与指标函数 | 待回填 | S1-6 |
-| 前端 http 封装与页面骨架 | 待回填 | S0-6 |
+| 前端 http 封装与页面骨架 | `web/src/api/http.ts`（拦截器注入 token、统一解包、401 跳登录、`ApiError` 带 `payload`）+ `web/src/router/index.ts`（守卫 + `meta.roles` 预留）+ `web/src/stores/user.ts`（token 在 localStorage）+ `web/src/views/Debug.vue`（联调自检页）+ `scripts/ui_smoke.mjs`（无头浏览器冒烟） | S0-6 ✅ |
 
 ## 11. 任务执行协议（功能先 spec 后 plan，再写码）
 

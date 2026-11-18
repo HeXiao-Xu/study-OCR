@@ -6,8 +6,8 @@
 ## 当前状态
 
 - 阶段：**阶段 0（项目启动）**，M0 前段
-- 最近完成：**S0-5 后端最小可运行**（config / JSON 日志+trace_id / 统一异常 / `/health` 双路径 / 24 个测试全绿）
-- 下一步：**S0-6 前端最小可运行**（Vue3 + Vite + TS 骨架、axios 封装、路由守卫）
+- 最近完成：**S0-6 前端最小可运行**（Vue3+Vite+TS、axios 封装、路由守卫、/debug 联调自检页；typecheck/build/无头浏览器冒烟全过）
+- 下一步：**S0-7 冒烟脚本与 README 完整化**（`scripts/smoke.py` + 冷启动检查），S0 阶段收口
 - 已知阻塞：无
 - 环境提醒：后端必须用 **Python 3.11**（`py -3.11 -m venv .venv`）；本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
 
@@ -20,7 +20,7 @@
 [x] S0-3 写契约文档 SCHEMA.md + API.md ★关键
 [x] S0-4 起基础服务（PostgreSQL 16 + Redis 7 + MinIO）
 [x] S0-5 后端最小可运行：config + 日志/trace_id + 统一异常
-[ ] S0-6 前端最小可运行 + axios 封装 + 路由守卫
+[x] S0-6 前端最小可运行 + axios 封装 + 路由守卫
 [ ] S0-7 冒烟脚本与 README 完整化
 
 ## 阶段 1：OCR 技术验证（M0 后半）
@@ -96,6 +96,7 @@
 |---|---|---|---|
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
+| S0-6 | `web/`（Vue 3.5 + Vite 8 + TS 6 + Element Plus + Pinia + Vue Router：`src/{main.ts,App.vue,api/http.ts,api/system.ts,router/index.ts,stores/user.ts,views/*}`、`package.json` 精确版本、`.env.{development,production,example}`）、`scripts/ui_smoke.mjs` | ① `npm run typecheck` 无错、`npm run build` 成功；② 干净浏览器访问 `/` → 守卫重定向到 `/login?redirect=/` 且登录页渲染；③ `/debug` 显示后端 health（4 个 tag 全 ok）+ trace_id；④ 点「触发一个 404」→ 弹出后端 message「资源不存在」并把 trace_id 回填；⑤ 停掉 MinIO → 页面显示 degraded + 一个 fail，恢复后回到全 ok；⑥ 控制台无 CORS 报错 | ✅ 通过 |
 | S0-5 | `backend/app/{main.py,core/{config,logging,exceptions,health}.py,schemas/common.py,api/v1/health.py}`、`backend/{requirements.txt,requirements.lock.txt,pyproject.toml,.env.example}`、`backend/tests/{conftest,test_config,test_health,test_errors_trace}.py` | ① `pytest -q` 24 passed；② 起 uvicorn 后 `/api/v1/health` 真实连三件套返回 200（db/redis/minio 全 ok）；③ 不存在路由返回 `40400` 且响应头 `X-Trace-Id` 与 body 一致；④ 同一 trace_id 能在日志里串起错误日志 + 访问日志；⑤ 缺配置启动即抛 `ConfigError` 并列出缺哪几项 | ✅ 通过 |
 | S0-4 | `deploy/docker-compose.dev.yml`（pg16 + redis7 + minio + 幂等 minio-init，全量 healthcheck）、`deploy/.env.example`、`deploy/init/01_extensions.sql`（pgcrypto）、`deploy/README.md`、`scripts/check_services.py`（纯标准库，5 项检查） | `docker compose up -d` 后 `python scripts/check_services.py` 输出 5/5 OK；`down` 不删卷再 `up` 后 bucket 仍在、`minio-init` 幂等不报错 | ✅ 通过 |
 | S0-3 | `docs/SCHEMA.md`（641 行，16 张表，5 组，含「定稿清单」20 项）、`docs/API.md`（646 行，36 个接口，9 组，含 §12 定稿记录）、`docs/DECISIONS.md`（D-001~D-018）、`docs/EVAL.md`、`docs/PROGRESS.md`、`samples/README.md`，并把《完整方案》《实施计划》《AGENTS.md》纳入 `docs/` | ① 表数 16、业务不变式索引齐备；② 接口数 36、分组齐全、全部标注权限/类型/幂等/任务号；③ 两文档字段名交叉核对；④ **契约内无残留 `TODO 待定`** | ✅ 通过。S0-3 结束后无阻塞项 |
@@ -121,6 +122,16 @@
 
 ### 2026-11-18
 
+- **S0-6 完成**：前端最小可运行。
+  · 技术栈按 AGENTS 落地：Vue 3.5 / Vite 8 / TS 6 / Element Plus 2.14 / Pinia / Vue Router，`package.json` 全部精确版本；
+  · `api/http.ts` 是唯一出口：注入 `Authorization`、统一解包 `{code,message,data,trace_id}`、401 清会话跳登录、
+    403 提示、其余弹后端 message；错误归一成 `ApiError`，并**携带后端 payload**（否则 503 降级信息会被丢）；
+  · 路由守卫：未登录跳 `/login?redirect=...`；`meta.roles` 先声明不生效（S2-3 实装，避免假的安全感）；
+  · `/debug` 联调自检页：展示 health 三依赖、版本、trace_id（可复制）、原始响应壳，并能一键触发 404 验证错误路径；
+  · 新增 `scripts/ui_smoke.mjs`：无头 Edge + CDP 读**渲染后**正文与控制台（Windows 版 Edge 的 `--dump-dom` 不输出到 stdout），
+    支持 `--expect` / `--click` / `--eval` / `--wait`，供 S7 冷启动检查复用。
+  · 过程中修掉两个问题：① 前端把 503 当纯错误丢掉 payload → 降级态显示成"未请求"，改为 `ApiError.payload` 透传；
+    ② 冒烟脚本无 `--expect` 时 0.4s 就断言，早于异步请求返回 → 改为先固定宽限再轮询。
 - **S0-5 完成**：后端最小可运行。
   · `create_app()` 工厂 + `Settings`（pydantic-settings，缺项启动即抛 `ConfigError` 并列出缺哪几项；prod 拒绝示例 JWT_SECRET）；
   · JSON 结构化日志（stdlib only，不引 loguru/structlog），`trace_id` 用 contextvar + 中间件注入，
