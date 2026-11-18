@@ -9,9 +9,9 @@
 > **整理规则**
 > - 表与字段全部来自方案原文：**不增表、不删表、不改名**（16 张表，5 组，见 §0.4）；
 > - 方案 5.2 用逗号串写的关键字段已逐条拆成字段表格；方案 6.x 中"必须落库但没进 5.2 表格"的列（如 `signatures.version`、`envelopes.ciphertext_storage_key`、`report_forms.canonical_json` 的存储形态）一并补齐，每个这类字段在说明列注明出处；
-> - 方案未明示的类型 / 可空性 / 默认值，按 PostgreSQL 16 惯例与 §0 全局约定推断，统一标 ⚠，**S2-1 建迁移前必须逐项复核**（清单见文末「待复核清单」）；
+> - 方案未明示的类型 / 可空性 / 默认值，按 PostgreSQL 16 惯例与 §0 全局约定推断，统一标 ⚠；**这些 ⚠ 项已在 S0-3 逐项拍板**，结论见文末「定稿清单」，S2-1 建迁移时照此落地（只剩 Alembic 写法需复核）；
 > - 本文件只写契约：不写建表 SQL、不写 Python；除 §7 的索引示例外不出现任何 DDL；
-> - 图例：**✅** 方案原文明确 ｜ **⚠** 按惯例推断，待复核 ｜ **TODO** 方案未定，后续任务定稿。
+> - 图例：**✅** 方案原文明确 ｜ **⚠** 按惯例推断、已在 S0-3 定稿（见文末清单）｜ **TODO** 已清零，不再使用（新发现的问题当场拍板并记 `DECISIONS.md`）。
 
 ---
 
@@ -179,13 +179,14 @@ erDiagram
 | sha256 | TEXT | 否 | — | **明文**的 SHA-256（64 位小写十六进制），用于去重与纳入签名域 ✅ | **UNIQUE** ✅ |
 | storage_key | TEXT | 否 | — | MinIO 对象名 `invoices/{yyyy}/{mm}/{uuid}.bin`，内容是 **SM4-CBC 密文** ✅ | UNIQUE ⚠ |
 | is_cipher | BOOLEAN | 否 | `true` | 是否已按信封加密落盘；`false` 仅允许出现在本地调试配置下 ✅ | — |
-| envelope_id | BIGINT | 是 | — | 文件级信封，FK→`envelopes.id` ⚠。**与 `envelopes.file_id` 互指，建表时至少一侧不建外键或用 `DEFERRABLE INITIALLY DEFERRED`**（见「待复核清单」） | — |
 | page_count | INTEGER | 否 | `1` ⚠ | 页数（PDF > 1，图片 = 1）✅ | — |
 | created_at | TIMESTAMPTZ | 否 | `now()` | 落库时间 ✅ | — |
 
 **存什么**：上传文件的元数据与去重键——明文哈希、MinIO 对象名（指向 SM4 密文）、是否已加密、页数。**谁写**：上传接口（"先算哈希 → 查重 → 封装 → 写 MinIO → 落库"，方案 6.6）。**关键不变式**：`sha256` 唯一，是**第一道重复报销防线**（方案 6.7 文件级）；`storage_key` 指向的对象是密文，明文只在内存中存在一次。
 
 > 文件行**不可变**（不设 `updated_at`）：内容一变，`sha256` 就变，应生成新行而不是改旧行。
+>
+> **不设 `envelope_id` 列**（D-012）：文件级信封通过 `envelopes.file_id` 反查，只保留单向外键，避免与 `envelopes` 互相指向造成建表死锁；`envelopes (file_id) WHERE file_id IS NOT NULL` 的部分唯一索引保证“一个文件最多一个信封”。
 
 ### 3.2 invoices
 
@@ -210,18 +211,18 @@ erDiagram
 | ocr_status | TEXT | 否 | `'pending'` | 枚举见 §9.5 ✅ | idx ⚠ |
 | extract_status | TEXT | 否 | `'raw'` | 枚举见 §9.5 ✅ | idx ⚠ |
 | overall_confidence | NUMERIC(4,3) | 是 | — | 整单置信度（字段置信度聚合，方案 6.4）✅ | CHECK 0–1 ⚠ |
-| quality_flag | TEXT | 是 | — | 影像质量标记，枚举见 §9.5 ⚠ | — |
+| quality_flag | TEXT | 是 | — | 影像质量标记 `ok` / `low`（**不设 `fail`**：不可识别由 `ocr_status='failed'` 表达，避免同一事实两处编码），见 §9.5d ✅ | CHECK |
 | duplicate_of | BIGINT | 是 | — | 疑似重复的既有票据 id（自引用，**软提示不硬拦**，方案 6.7 语义级）✅ | idx ⚠ |
 | status | TEXT | 否 | `'draft'` | 枚举见 §9.5 ✅ | 部分唯一索引的条件列 ✅ |
-| version | INTEGER | 否 | `0` | **乐观锁计数器**（应用层 `UPDATE ... WHERE version = ?`，冲突 → `409`；与 `signatures.version` 无关）⚠ 见「待复核清单」第 19 项 | — |
+| version | INTEGER | 否 | `0` | **乐观锁计数器**（应用层 `UPDATE ... WHERE version = ?`，冲突 → `409`；与 `signatures.version` 无关）⚠ 见「定稿清单」第 19 项 | — |
 | created_at | TIMESTAMPTZ | 否 | `now()` | 创建时间 ✅ | 组成 idx ✅ |
 | updated_at | TIMESTAMPTZ | 否 | `now()` | 应用层 onupdate ⚠ | — |
 
 **存什么**：一张票据的业务主体、票面要素、识别与确认状态、质量标记。**谁写**：识别流水线写状态与置信度，人工确认接口写字段汇总与状态，报销接口写 `status='in_report'`。**关键不变式**：`(invoice_code, invoice_no)` 在非作废票据内唯一（同一张票不能报两次）；`status='void'` 释放该唯一约束，允许重新提交（方案 7.5）；`file_id` 唯一（一个文件最多对应一张票）。
 
-> 票据级状态**只走 5 个值**（`draft/confirmed/in_report/archived/void`）。方案 6.6 状态图里的 `signed/encrypted/submitted/approved/rejected` 是**报销单级**状态，落在 `report_forms.status`，不要混进 `invoices.status`（⚠ 见「待复核清单」第 1 项）。
+> 票据级状态**只走 5 个值**（`draft/confirmed/in_report/archived/void`）。方案 6.6 状态图里的 `signed/encrypted/submitted/approved/rejected` 是**报销单级**状态，落在 `report_forms.status`，不要混进 `invoices.status`（⚠ 见「定稿清单」第 1 项）。
 >
-> 红冲 / 负数票：金额目前**不加非负约束**（除 `total_amount`），是否允许负值 TODO 待定；若要支持红冲，需同时放开 `total_amount >= 0`。
+> 红冲 / 负数票：**本期不支持**（D-013）——`total_amount >= 0` 保留，论文“范围限定”写明；若将来支持，需同时放开约束并加 `is_red` 标记。
 
 ### 3.3 invoice_fields
 
@@ -236,7 +237,7 @@ erDiagram
 | confidence | NUMERIC(4,3) | 是 | — | 字段置信度 `base × agreement × rule_factor`（方案 6.4）✅ | `CHECK BETWEEN 0 AND 1` ✅ |
 | bbox_json | JSONB | 是 | — | 位置框 **`[x1,y1,x2,y2]`（原图坐标系，两点外接框）**——前端画框只认这一种格式（AGENTS.md §5）；由 `ocr_lines.box_json` 的四点坐标取外接矩形得到 ✅ | — |
 | source | TEXT | 否 | `'ocr'` ⚠ | 枚举见 §9.8（5 值，含二次识别的 `ocr_retry`）✅ | idx ⚠ |
-| source_page_no | INTEGER | 否 | `1` | 命中行所在页码（回查 `ocr_lines` 的唯一键是 `(invoice_id, page_no, line_no)`，缺页码会歧义）⚠ 见「待复核清单」第 3 项 | — |
+| source_page_no | INTEGER | 否 | `1` | 命中行所在页码（回查 `ocr_lines` 的唯一键是 `(invoice_id, page_no, line_no)`，缺页码会歧义）⚠ 见「定稿清单」第 3 项 | — |
 | source_line_no | INTEGER | 是 | — | 页内行号，回查 `ocr_lines` 用 ✅ | — |
 | rule_id | BIGINT | 是 | — | 命中的校验规则，FK→`field_rules.id` ✅ | — |
 | need_review | BOOLEAN | 否 | `false` | 是否需要人工确认（`confidence < 0.85` 置 true，方案 3.4 规则 1）✅ | idx ⚠ |
@@ -322,7 +323,7 @@ erDiagram
 | created_at | TIMESTAMPTZ | 否 | `now()` | 创建时间 ⚠（方案 5.2 未列） | — |
 | updated_at | TIMESTAMPTZ | 否 | `now()` | 应用层 onupdate ⚠ | — |
 
-**存什么**：字段校验规则库——正则以 `validator` 名称 + `error_msg` 呈现，落库供抽取流水线与前端提示共用。**谁写**：种子脚本（与方案 6.3 "校验规则库"表一一对应）、管理接口。**关键不变式**：`template_id` 为空即"通用规则"（§0 说明"可空＝通用"）；`priority` 决定同字段多规则命中时的展示顺序；`pattern` 是**正则源码字符串**，语法错误应在写入时校验（TODO 校验时机）。
+**存什么**：字段校验规则库——正则以 `validator` 名称 + `error_msg` 呈现，落库供抽取流水线与前端提示共用。**谁写**：种子脚本（与方案 6.3 "校验规则库"表一一对应）、管理接口。**关键不变式**：`template_id` 为空即"通用规则"（§0 说明"可空＝通用"）；`priority` 决定同字段多规则命中时的顺序（**数值小者先，默认 100，同分按 `id` 升序**，D-014）；`pattern` 是**正则源码字符串**，写入时由服务层 `re.compile` 校验语法、非法直接 422（不落库）。
 
 ---
 
@@ -333,7 +334,7 @@ erDiagram
 | 字段 | 类型 | 可空 | 默认值 | 说明 | 索引 |
 |---|---|---|---|---|---|
 | id | BIGINT | 否 | IDENTITY | 主键 | PK ✅ |
-| report_no | TEXT | 否 | — | **业务单号**（`RPT-YYYYMM-序号`，服务端生成，对外展示与审计引用都用它）；方案 5.2 未列，但 6.5.1 的签名域含"单号"、实施计划 S5-1 要求"既有单号" ⚠ 见「待复核清单」第 20 项 | **UNIQUE** ⚠ |
+| report_no | TEXT | 否 | — | **业务单号**（`RPT-YYYYMM-序号`，服务端生成，对外展示与审计引用都用它）；方案 5.2 未列，但 6.5.1 的签名域含"单号"、实施计划 S5-1 要求"既有单号" ⚠ 见「定稿清单」第 20 项 | **UNIQUE** ⚠ |
 | applicant_id | BIGINT | 否 | — | 申请人，FK→`users.id` ✅ | idx(applicant_id, created_at DESC) ⚠ |
 | title | TEXT | 否 | — | 报销单标题（如"2026-11 差旅报销"）✅ | — |
 | reason | TEXT | 是 | — | 事由 ✅ | — |
@@ -345,7 +346,7 @@ erDiagram
 | digest_hex | TEXT | 是 | — | `SM3(canonical_bytes)` 的 64 位小写十六进制；**只用于展示与快速比对，不是验签依据**（方案 6.5.2 原注）✅ | CHECK 格式 ⚠ |
 | submitted_at | TIMESTAMPTZ | 是 | — | 首次提交财务的时间 ✅ | — |
 | idempotency_key | TEXT | 是 | — | 幂等键（前端生成 UUID，重复点击返回已有单号）✅ | **UNIQUE** ✅ |
-| version | INTEGER | 否 | `0` | **乐观锁计数器**（审核决策、驳回重提都带它，防并发覆盖）⚠ 见「待复核清单」第 19 项 | — |
+| version | INTEGER | 否 | `0` | **乐观锁计数器**（审核决策、驳回重提都带它，防并发覆盖）⚠ 见「定稿清单」第 19 项 | — |
 | created_at | TIMESTAMPTZ | 否 | `now()` | 创建时间 ✅ | — |
 | updated_at | TIMESTAMPTZ | 否 | `now()` | 应用层 onupdate ⚠ | — |
 
@@ -451,7 +452,7 @@ erDiagram
 
 > **能力边界（论文必须写清）**：哈希链防的是"改了不被发现"，**不防"被读"**；也不防"同时持有审计密钥的人整体重写"。**不是区块链，不要说成区块链**（方案 6.5.7）。
 >
-> 并发写入注意：哈希链必须串行追加，`prev_hash` 取"当前最后一条 `entry_hash`"时需加行锁或单写者队列 ⚠（否则并发会分叉，见「待复核清单」）。
+> **并发写入定稿（D-015）**：哈希链必须串行追加。实现为在写审计的同一事务里先取事务级咨询锁 `SELECT pg_advisory_xact_lock(<固定常量>)`，再 `SELECT entry_hash FROM audit_logs ORDER BY id DESC LIMIT 1` 取 `prev_hash`，事务结束自动释放锁。选它而不选「锁最后一行」的原因：末尾行可能不存在（首条），`FOR UPDATE` 对空结果不阻塞，仍会分叉。
 
 ---
 
@@ -486,6 +487,15 @@ CREATE UNIQUE INDEX uq_invoice_fields_invoice_field ON invoice_fields (invoice_i
 
 -- 同一页同一行号只有一条：识别重跑是覆盖不是追加（幂等）
 CREATE UNIQUE INDEX uq_ocr_lines_invoice_page_line ON ocr_lines (invoice_id, page_no, line_no);
+
+-- 同一张票在一张报销单里只能出现一次（否则合计与签名域可被重复计算）
+CREATE UNIQUE INDEX uq_report_items_form_invoice ON report_items (form_id, invoice_id);
+
+-- 一个文件最多一个信封（文件级）
+CREATE UNIQUE INDEX uq_envelopes_file ON envelopes (file_id) WHERE file_id IS NOT NULL;
+
+-- 一张报销单最多一个载荷信封（报销单级）
+CREATE UNIQUE INDEX uq_envelopes_form ON envelopes (form_id) WHERE form_id IS NOT NULL;
 ```
 
 ### 7.2 普通索引（查询路径）
@@ -497,6 +507,9 @@ CREATE INDEX ix_review_logs_form ON review_logs (form_id);
 CREATE INDEX ix_audit_created ON audit_logs (created_at DESC);
 -- 模板 JSONB 检索：按字段名查"哪个模板定义了该字段的定位策略"
 CREATE INDEX ix_templates_specs ON ticket_templates USING GIN (field_specs_json);
+-- 待确认队列（原方案 5.3 的 idx_invoices_status 把 extract_status 的值混进了 status，这里拆成两条）
+CREATE INDEX ix_invoices_need_confirm ON invoices (uploader_id) WHERE extract_status = 'need_confirm';
+CREATE INDEX ix_invoices_draft ON invoices (uploader_id) WHERE status = 'draft';
 ```
 
 > 上表字段清单里"索引"列的 `idx ⚠` 是占位写法，含义是"该列需要一条普通索引，列与顺序由 S2-1 定"，落库时统一用 `ix_` 前缀；`UNIQUE` / `GIN` / `PK` 之外的标记不构成命名承诺。
@@ -526,6 +539,9 @@ CREATE INDEX ix_templates_specs ON ticket_templates USING GIN (field_specs_json)
 | `ocr_jobs` | `retry_count >= 0`、`elapsed_ms >= 0` | ⚠ |
 | `audit_logs` | `prev_hash ~ '^[0-9a-f]{64}$'`、`entry_hash ~ '^[0-9a-f]{64}$'` | 方案 6.5.7 ⚠ |
 | `users` | `length(username) BETWEEN 3 AND 64` | ⚠ |
+| `certificates` | `(owner_type = 'server' AND owner_id IS NULL) OR (owner_type = 'user' AND owner_id IS NOT NULL)` | 多态引用（D-012） |
+| `key_records` | `user_id IS NOT NULL OR key_type = 'envelope'` | 财务服务器信封密钥无归属人（D-012） |
+| `invoices` | `quality_flag IN ('ok','low')` | D-014 |
 
 > 枚举的 CHECK（`role`、`status`、`source` 等）不在此表重复，统一见 §9；建迁移时每张表的枚举列各生成一条 `ck_<table>_<column>`。
 
@@ -568,7 +584,7 @@ CREATE INDEX ix_templates_specs ON ticket_templates USING GIN (field_specs_json)
 | 9.5 | `invoices.ocr_status` | `pending` / `running` / `succeeded` / `failed` | 方案 5.2 ✅ |
 | 9.5b | `invoices.extract_status` | `raw` / `need_confirm` / `confirmed` | 方案 5.2 ✅ |
 | 9.5c | `invoices.status` | `draft` / `confirmed` / `in_report` / `archived` / `void` | 方案 5.2 ✅（**不含** 6.6 状态图里的 signed/encrypted/submitted/approved/rejected，那些属于报销单） |
-| 9.5d | `invoices.quality_flag` | `ok` / `low` | ⚠ 推断（方案 6.1 只出现"质量标记 low"）；是否加 `fail` TODO 待定 |
+| 9.5d | `invoices.quality_flag` | `ok` / `low` ✅ 定稿（D-014） | 方案 6.1 只出现 `low`；`fail` 不设，不可识别用 `ocr_status='failed'` |
 | 9.6 | `invoices.invoice_type` | `vat_general` / `train_ticket` / `flight_itinerary` / `taxi_ticket` / `unknown` | 方案 5.2 ✅（与 `ticket_templates.type_code` 同值集） |
 | 9.8 | `invoice_fields.source` | `ocr` / `rule` / `semantic` / `manual` / **`ocr_retry`** ✅ 已定 5 值 | 方案 5.2 + 6.4（二次识别必须能与首次区分） |
 | 9.9 | `ocr_jobs.stage`；`ocr_jobs.status` | `preprocess`/`detect`/`recognize`/`extract`；`pending`/`running`/`succeeded`/`failed` ⚠ | 方案 5.2 ✅（status 值集 ⚠ 推断） |
@@ -583,7 +599,7 @@ CREATE INDEX ix_templates_specs ON ticket_templates USING GIN (field_specs_json)
 | 9.18 | `review_logs.decision` | `approve` / `reject` | 方案 5.2 ✅ |
 | 9.19 | `audit_logs.actor_role` | `submitter` / `reviewer` / `admin` / `system` | 方案 5.2 三角色 ✅ + `system` ⚠（定时锚定任务） |
 | 9.19b | `audit_logs.action` | `upload` / `confirm_field` / `sign` / `seal` / `submit` / `verify` / `decrypt` / `review` / `revoke_cert` | 方案 5.2 ✅ |
-| 9.19c | `audit_logs.target_type` | TODO 待定（建议：`invoice` / `invoice_field` / `form` / `signature` / `envelope` / `certificate` / `key` / `user`） | 方案未给值集，只给了"多态引用"语义 |
+| 9.19c | `audit_logs.target_type` | `invoice` / `invoice_field` / `form` / `report_item` / `signature` / `envelope` / `certificate` / `key` / `user` / `template` / `eval_run` ✅ 定稿 | 方案只给"多态引用"语义；值集需覆盖全部受审计对象，否则新动作会写出脏值 |
 
 > **常量落点**：以上枚举在代码侧只允许定义为 `backend/app/models/enums.py` 的 `StrEnum`，CHECK 文本由同一份常量生成，禁止在迁移里手抄字符串（AGENTS.md §4.2）。
 >
@@ -591,33 +607,36 @@ CREATE INDEX ix_templates_specs ON ticket_templates USING GIN (field_specs_json)
 
 ---
 
-## 待复核清单（S2-1 建迁移前逐项确认）
+## 定稿清单（S0-3 逐项拍板，S2-1 建迁移时照此落地）
 
-> 每项都必须在建迁移前给出结论，勾选即代表"已确认并落到迁移里"。带 ⚠ 的推断项至少复核类型与默认值；带 TODO 的需要先拍板。
+> 原「定稿清单」的 20 项已在 S0-3 统一拍板，全部 ☑。结论一并写进了上文字段表、§7 索引与 §9 枚举。
+> 这里保留决策轨迹：**为什么这么定** 比“定了什么”更重要 —— 答辩问“这里为什么这么做”要能说出来。
+> 与代码冲突时以本文件为准；若将来要推翻某条，先改本文件并在 `DECISIONS.md` 追加一条“被 D-xxx 取代”。
 
-| # | 待复核项 | 现状 / 风险 | 处理建议 | 确认 |
+| # | 事项 | 结论 | 依据 / 影响 | 确认 |
 |---|---|---|---|---|
-| 1 | `invoices.status` 的 5 值与方案 6.6 状态图不一致 | 6.6 把 `signed/encrypted/submitted/approved/rejected` 画进了票据级状态，与 5.2 五值冲突 | 以 5.2 为准：票据级只留 5 值，报销单级状态进 `report_forms.status`；6.6 图在论文里重画 | ☐ |
-| 2 | `invoice_fields.source` 是否加 `ocr_retry` | 5.2 四值，6.4 明文使用 `source="ocr_retry"` | **已定：5 值**（`ocr/rule/semantic/manual/ocr_retry`），见 §9.8 | ☑ |
-| 3 | 多页票据的字段定位缺页码 | `invoice_fields` 只有 `source_line_no`，第 2 页起的行号会歧义 | **已定：加 `source_page_no INTEGER NOT NULL DEFAULT 1`**（不改存 `ocr_lines.id`，保持与 `ocr_lines` 唯一键同构） | ☑ |
-| 4 | `invoice_files.envelope_id` ↔ `envelopes.file_id` 循环外键 | 两侧互指会导致建表顺序死锁 | 只保留 `envelopes.file_id` 外键；`invoice_files.envelope_id` 不建外键（应用层校验） | ☐ |
-| 5 | `certificates.owner_id` 多态引用 | `owner_type='server'` 时无 `users` 行 | 不建外键 + `CHECK (owner_type='server' OR owner_id IS NOT NULL)`；或用 `owner_type` 分列 | ☐ |
-| 6 | `key_records.user_id` 可空 | 财务服务器密钥无归属用户 | 允许 NULL，并 `CHECK (user_id IS NOT NULL OR key_type='envelope')` | ☐ |
-| 7 | `users.status` 值集 | 方案只写"status" | 暂定 `active`/`disabled`/`locked` | ☐ |
-| 8 | `invoices.quality_flag` 值集 | 方案只出现 `low` | 暂定 `ok` / `low`；是否加 `fail`（不可识别）需与前端约定 | ☐ |
-| 9 | `ocr_lines.block_id` 类型 | PaddleOCR 无稳定 block 标识 | 暂定 TEXT（`b{页}-{序号}`），由流水线自行编号 | ☐ |
-| 10 | `invoices.amount` / `tax_amount` 是否允许负值 | 红冲票存在，但当前只有 `total_amount >= 0` | 确认是否支持红冲；若支持，需放开 `total_amount` 约束并加 `is_red` 标记 | ☐ |
-| 11 | `field_rules.priority` 语义与默认值 | 方案只给列名 | 暂定数值小者先、默认 100；同分时按 `id` 升序 | ☐ |
-| 12 | `report_items` 是否加 `(form_id, invoice_id)` 唯一 | 方案未明确 | 建议加，否则同一张票可在一单内重复计金额 | ☐ |
-| 13 | 方案 5.3 的 `idx_invoices_status` 条件有误 | `status IN ('need_confirm','draft')` 把 `extract_status` 的值混进了 `invoice_status` | 改为 `extract_status='need_confirm'` 单独建带条件索引；本文件 §7 未收录该错误版本 | ☐ |
-| 14 | `audit_logs` 哈希链的并发写入 | 并发取 `prev_hash` 会分叉 | 单写者队列或 `SELECT … FOR UPDATE` 锁最后一行；在 S2-1 记入实现约束 | ☐ |
-| 15 | `report_forms.canonical_json` 的 `TEXT` 类型 | 容易被"优化"成 JSONB | **不得改**：JSONB 会重排键序与数字格式，验签必失败（方案 6.5.1 第 7 条） | ☐ |
-| 16 | `signatures.verified / verify_result` 一致性约束 | 两列可能各自为政 | 加 `CHECK (verified = (verify_result = 'ok'))`；未验签时 `verify_result` 为 NULL 且 `verified=false` | ☐ |
-| 17 | 行级隔离是否上 RLS | 方案 3.4 规则 7 要求带 `uploader_id` 过滤，未说用 RLS | 先应用层强制；RLS 作为可选加固，列入"展望" | ☐ |
-| 18 | 软删除策略 | 本文件 16 张表均未设 `deleted_at`：票据走 `void`、用户走 `disabled`、签名走 `void` | 确认不走通用软删除（审计与唯一约束更清晰） | ☐ |
-| 19 | `invoices.version` / `report_forms.version` 乐观锁计数列 | 方案 5.2 未列，但实施计划 S3-6 要求"PATCH 带 version、冲突 409"、S5-5 审核决策需防并发 | **已定：两表各加 `version INTEGER NOT NULL DEFAULT 0`**，应用层 `WHERE version = ?` 自增；与 `signatures.version`（签名次数）无关 | ☑ |
-| 20 | `report_forms.report_no` 业务单号 | 方案 5.2 未列，但 6.5.1 签名域含"单号"、S5-1/S5-5 的响应需要既有单号 | **已定：`report_no TEXT NOT NULL UNIQUE`**，格式 `RPT-YYYYMM-序号`（按月自增，生成逻辑放 service，唯一索引兜底） | ☑ |
+| 1 | 票据级状态与方案 6.6 状态图冲突 | **以 5 值为准**（`draft/confirmed/in_report/archived/void`）；`signed/encrypted/submitted/approved/rejected` 是报销单级，落 `report_forms.status` | D-011；论文里把 6.6 拆成“票据状态机”与“报销单状态机”两张图 | ☑ |
+| 2 | `invoice_fields.source` 是否加 `ocr_retry` | **5 值**：`ocr` / `rule` / `semantic` / `manual` / `ocr_retry` | 二次识别必须能与首次区分，否则无法评估二次识别收益 | ☑ |
+| 3 | 多页票据字段定位缺页码 | **新增 `source_page_no INTEGER NOT NULL DEFAULT 1`** | 与 `ocr_lines` 唯一键 `(invoice_id, page_no, line_no)` 同构，回查才不歧义 | ☑ |
+| 4 | `invoice_files.envelope_id` ↔ `envelopes.file_id` 循环 | **删除 `invoice_files.envelope_id`**；只用 `envelopes.file_id` + 部分唯一索引 | D-012；单向外键，建表无顺序问题 | ☑ |
+| 5 | `certificates.owner_id` 多态 | **不建外键** + `CHECK`（`server` 必须 NULL、`user` 必须非 NULL） | 多态引用无法用单一外键表达，校验下沉到 CHECK | ☑ |
+| 6 | `key_records.user_id` 可空 | **允许 NULL** + `CHECK (user_id IS NOT NULL OR key_type = 'envelope')` | 财务服务器信封密钥没有归属用户 | ☑ |
+| 7 | `users.status` 值集 | **`active` / `disabled` / `locked`** | `locked` 用于连续登录失败；不物理删用户（审计与签名要追溯） | ☑ |
+| 8 | `invoices.quality_flag` 值集 | **`ok` / `low`**，不设 `fail` | D-014；不可识别由 `ocr_status='failed'` 表达 | ☑ |
+| 9 | `ocr_lines.block_id` 类型 | **`TEXT`**，格式 `b{页码}-{块序号}`（如 `b1-3`），由版面分块自行编号 | PaddleOCR 无稳定 block id；仅用于展示与拼段 | ☑ |
+| 10 | 是否支持红冲 / 负数票 | **本期不支持**，`total_amount >= 0` 保留 | D-013；写进论文“范围限定” | ☑ |
+| 11 | `field_rules.priority` 语义 | **默认 100，数值小者先，同分按 `id` 升序**；`pattern` 写入时 `re.compile` 校验 | 规则命中顺序可预测才可复现 | ☑ |
+| 12 | `report_items` 是否加唯一 | **加 `UNIQUE (form_id, invoice_id)`** | D-012；防同一票在一单内重复计金额 | ☑ |
+| 13 | 方案 5.3 的 `idx_invoices_status` 条件写错 | **拆成两条带条件索引**（`extract_status='need_confirm'`、`status='draft'`），已写入 §7.2 | 原写法的两个值属于不同列，索引永远不会命中 | ☑ |
+| 14 | 审计哈希链并发分叉 | **事务级咨询锁 `pg_advisory_xact_lock`** 串行化追加 | D-015；`FOR UPDATE` 对空表不阻塞，首条仍会分叉 | ☑ |
+| 15 | `canonical_json` 用 `TEXT` 不用 `JSONB` | **保持 `TEXT`，不得“优化”成 JSONB** | JSONB 会重排键序与数字格式，验签必失败 | ☑ |
+| 16 | `signatures.verified` 与 `verify_result` 脱节 | **加 `CHECK (verified = (verify_result = 'ok'))`**；未验签时 `verify_result` 为 NULL、`verified=false`（CHECK 遇 NULL 不违反） | 防“显示已验签但结果是失败”的脏行 | ☑ |
+| 17 | 行级隔离是否上 RLS | **应用层强制过滤**；RLS 作为“展望” | D-016；RLS 与连接池 / `SET LOCAL` 配合易踩坑，毕设工期不划算 | ☑ |
+| 18 | 是否走通用软删除 | **不设 `deleted_at`**：票据走 `void`、用户走 `disabled`、签名走 `void` | 语义显式、索引干净、审计可追溯 | ☑ |
+| 19 | `invoices.version` / `report_forms.version` | **各加 `INTEGER NOT NULL DEFAULT 0`** 乐观锁计数 | 与 `signatures.version`（签名次数）是两回事，别混 | ☑ |
+| 20 | `report_forms.report_no` | **`TEXT NOT NULL UNIQUE`**，格式 `RPT-YYYYMM-序号` | 签名域含“单号”；对外展示与审计引用都用它 | ☑ |
 
----
+> 迁移前只剩一件事要复核：以上 CHECK / 索引在 **Alembic 里的写法**（部分索引要 `postgresql_where=`，CHECK 要显式命名 `ck_*`）。
+> 这属于 S2-1 的实现细节，不再是契约待定项。
 
 > **维护规则（AGENTS.md §9）**：本文件由用户维护，AI 只能读不能擅自改；需求变更**先改本文件**，再生成 Alembic 迁移；已提交的迁移文件禁止修改。任何"代码里已经这么写了"都不是修改本文件的理由——反过来，代码与本文件冲突时以本文件为准。

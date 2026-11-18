@@ -96,21 +96,24 @@
 |---|---|---|---|
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
-| S0-3 | `docs/SCHEMA.md`（622 行，16 张表，5 组）、`docs/API.md`（618 行，36 个接口，9 个业务分组）、`docs/DECISIONS.md`（D-001~D-010）、`docs/EVAL.md`、`docs/PROGRESS.md`、`samples/README.md`，并把《完整方案》《实施计划》《AGENTS.md》纳入 `docs/` | ① 表数 16、三处业务不变式索引齐备；② 接口数 36、分组齐全、全部标注权限/类型/幂等/任务号；③ 两文档字段名交叉核对，缺口全部落在「待复核清单」/「待定项清单」并有定稿任务 | ✅ 通过。剩余待定项见下 |
+| S0-3 | `docs/SCHEMA.md`（641 行，16 张表，5 组，含「定稿清单」20 项）、`docs/API.md`（646 行，36 个接口，9 组，含 §12 定稿记录）、`docs/DECISIONS.md`（D-001~D-018）、`docs/EVAL.md`、`docs/PROGRESS.md`、`samples/README.md`，并把《完整方案》《实施计划》《AGENTS.md》纳入 `docs/` | ① 表数 16、业务不变式索引齐备；② 接口数 36、分组齐全、全部标注权限/类型/幂等/任务号；③ 两文档字段名交叉核对；④ **契约内无残留 `TODO 待定`** | ✅ 通过。S0-3 结束后无阻塞项 |
 
 ## 遗留问题（TECH DEBT）
 
-> 完整清单以 `docs/SCHEMA.md` 文末「待复核清单」与 `docs/API.md` §12「待定项清单」为准，这里只列**会影响后续任务节奏**的几项。
+> **S0-3 已把上一版 7 项全部拍板**（结论见下表），完整决策轨迹在 `docs/SCHEMA.md`「定稿清单」与 `docs/DECISIONS.md` D-011 ~ D-018。
+> 这里改为“已定口径”，供回溯；新的遗留问题再往下追加。
 
-| # | 问题 | 影响 | 计划处理 |
+| # | 原问题 | 已定结论 | 落地位置 |
 |---|---|---|---|
-| 1 | `invoices.status` 与《完整方案》6.6 状态图口径不一致（6.6 把报销单级状态画进了票据级） | 论文状态机图要重画；迁移以 SCHEMA 的 5 值为准 | S2-1（并回改方案 6.6 的图） |
-| 2 | `invoice_files.envelope_id` ↔ `envelopes.file_id` 循环外键 | 建表顺序会死锁 | S2-1：只保留 `envelopes.file_id` 外键 |
-| 3 | `audit_logs` 哈希链并发写入可能分叉 | 链完整性校验会误报断链 | S2-1/S4-7：单写者队列或 `FOR UPDATE` 锁最后一行 |
-| 4 | 单文件大小上限 10MB vs 20MB 两处口径不一（方案 3.2 A1 写 20MB，实施计划写 10MB） | 前端与后端校验不一致 | S2-6 定稿，写进 `.env.example` 与 API.md |
-| 5 | 金额字段人工修改的权限边界未定（是否允许 admin 兜底、是否二次确认） | 影响 S3-6 权限矩阵 | S3-6 |
-| 6 | 财务服务器私钥口令的托管方式（请求体传入 vs 服务端环境变量） | 影响 S5-4 接口形态与安全说明 | S5-4 |
-| 7 | 是否支持红冲/负数票 | 影响 `total_amount >= 0` 约束与 `is_red` 标记 | S1-5 前定（当前按不支持处理） |
+| 1 | `invoices.status` 与方案 6.6 状态图口径冲突 | 票据级只留 5 值，报销单级状态落 `report_forms`；论文把 6.6 拆成两张状态机图 | SCHEMA 定稿 #1 / D-011 |
+| 2 | `invoice_files.envelope_id` 循环外键 | **删除该列**，只保留 `envelopes.file_id` + 部分唯一索引 | SCHEMA 定稿 #4 / D-012 |
+| 3 | 审计哈希链并发分叉 | 追加时取事务级咨询锁 `pg_advisory_xact_lock` | SCHEMA 定稿 #14 / D-015 |
+| 4 | 单文件上限 10MB vs 20MB 口径不一 | **20MB**（`MAX_UPLOAD_MB=20`），单一来源 | API 上传入参 / D-018 |
+| 5 | 金额字段人工修改权限未定 | **仅 `reviewer` 可改且需 `confirm_amount=true`**；`admin` 404 | API PATCH 备注 / D-017 |
+| 6 | 财务服务器私钥口令托管方式 | 走**环境变量** `FINANCE_KEY_PASSPHRASE`，不经 HTTP | API 验签入参 / D-016 |
+| 7 | 是否支持红冲 / 负数票 | **本期不支持**，`total_amount >= 0` 保留 | SCHEMA 定稿 #10 / D-013 |
+
+当前**无阻塞项**。S2-1 建迁移前还需人工复核的只有一项：部分索引与 CHECK 在 Alembic 里的写法（属实现细节，见 SCHEMA 定稿清单末尾）。
 
 ## 变更日志
 
@@ -118,6 +121,7 @@
 
 - **S0-1 完成**：初始化 monorepo 骨架；`.gitignore` 覆盖 Python/Node/IDE/日志，并**强制排除** `secrets/`、`samples/` 影像与 `backend/eval/results/` 生成物；补 `.gitattributes`（统一 LF，避免 Windows CRLF 抖动）；README 写明环境要求（**必须 Python 3.11**）、目录说明、文档索引与启动步骤占位。
 - **S0-2 完成**：`AGENTS.md` 落盘。除常规技术栈/规范/禁止事项外，把两条高压线写死——OCR（EXIF 先修、降级链、`unclip_ratio ≤ 1.8`、坐标与置信度不丢）与密码（只许 `secrets`、`mode=1`、`sign_with_sm3` 不许混用、Encrypt-then-MAC、不依赖 C3、私钥不落库）。
+- **S0-3 定稿**：待复核 20 项 + 接口待定 14 项 + 遗留问题 7 项已逐条拍板，见 SCHEMA「定稿清单」、API §12.1、DECISIONS D-011~D-018。
 - **S0-3 完成**：`docs/SCHEMA.md`（16 表）与 `docs/API.md`（36 接口）定稿草案；同步产出 `DECISIONS.md`（D-001~D-010，含与开题不符的三处调整理由）、`EVAL.md`（指标口径与数字纪律）、`PROGRESS.md`、`samples/README.md`。
 - 契约阶段敲定的具体口径：
   - 角色只有三个：`submitter` / `reviewer` / `admin`；**财务服务器不是用户**，是 `certificates.owner_type='server'` 的证书主体；

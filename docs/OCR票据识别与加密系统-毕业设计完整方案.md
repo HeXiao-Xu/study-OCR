@@ -1101,6 +1101,11 @@ entry_hash = HMAC_SM3(audit_key, prev_hash ‖ ts ‖ actor_id ‖ action ‖ ta
 
 ### 6.6 报销业务闭环与状态机
 
+> **口径注记（S0-3 定稿，D-011）**：下图把**票据**与**报销单**两级状态画在了同一条链上，这只是一个流程示意。
+> 落库时两级必须分开：`invoices.status` 只有 `draft / confirmed / in_report / archived / void` 五值；
+> `signed / encrypted / submitted / approved / rejected` 属于 `report_forms.status`。
+> **论文里要拆成两张状态机图**（票据生命周期 / 报销单生命周期），评审问"一张票被驳回后属于什么状态"时要能立刻回答。
+
 ```mermaid
 stateDiagram-v2
     [*] --> uploaded: 上传（落盘即密文）

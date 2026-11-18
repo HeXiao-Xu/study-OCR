@@ -2,7 +2,7 @@
 
 > **来源**：《OCR票据识别与加密系统-毕业设计完整方案》第 3 章（3.2 功能清单 A–G、3.4 关键业务规则）、第 6 章（6.3 抽取输出、6.4 人工确认、6.5 密码模块、6.6 状态机）、附录 B（关键接口草案）、附录 C1（统一响应与错误码）；字段名以 `docs/SCHEMA.md` 为准（已生成，冲突时以 SCHEMA.md 为唯一依据）。
 > **本文件是前后端的共同语言**：接口变更必须先改这里、再写代码；与本文件冲突的实现视为 bug。
-> **状态**：当前为 **S0-3 草案**。标 `TODO 待定` 的部分由对应任务号定稿；文中任务号（S2-2 / S3-x / S4-x / S5-x / S6-x）出自《AI协作开发实施计划》。
+> **状态**：**S0-3 草案（待定项已清零）**。S0-3 把上一版全部 `TODO 待定` 逐条拍板，剩余 3 项实现细节见 §12.2；文中任务号（S2-2 / S3-x / S4-x / S5-x / S6-x）出自《AI协作开发实施计划》。
 
 ## 0. 全局约定
 
@@ -34,8 +34,8 @@
 
 ## 1. 认证（S2-2）
 
-> 三条接口均套统一壳。注册仅产生 `submitter`；`reviewer` 由 `admin` 在后台指定，`admin` 由初始化脚本创建，**均不支持自助注册**。
-> `POST /auth/refresh`、`POST /auth/logout` 暂不列入（见 §12，S2-2 定稿）。
+> 五条接口均套统一壳。注册仅产生 `submitter`；`reviewer` 由 `admin` 在后台指定，`admin` 由初始化脚本创建，**均不支持自助注册**。
+> 会话形状已定稿（D-016）：`access_token` 30 分钟 + `refresh_token` 7 天；`refresh_token` 存 Redis 白名单（key `auth:refresh:{jti}`），`logout` 删白名单即失效。不做无状态黑名单（登出必须真的能吊销）。
 
 ### POST /api/v1/auth/register
 - 权限：公开 ｜ 类型：同步 ｜ 幂等：否 ｜ 实现：S2-2
@@ -53,7 +53,7 @@
 - 备注：用户名不区分大小写；服务端固定创建 `role=submitter`，请求体不接受角色字段
 
 ### POST /api/v1/auth/login
-- 权限：公开 ｜ 类型：同步 ｜ 幂等：是（无副作用；并发会话策略 TODO 待定）｜ 实现：S2-2
+- 权限：公开 ｜ 类型：同步 ｜ 幂等：是（无副作用；同一账号允许多端登录，各自持有独立 `jti`）｜ 实现：S2-2
 - 入参（JSON）：
 
 | 字段 | 类型 | 必填 | 约束 |
@@ -61,9 +61,9 @@
 | username | string | 是 | 3–64 字符，trim + 小写后匹配 |
 | password | string | 是 | 8–128 字符 |
 
-- 出参：**200**，`data` = `{access_token, token_type: "bearer", expires_in: 1800, user: UserOut}`
-- 错误：`401/40101` 用户名或密码错误（账号不存在与密码错误**同码同文案**，不泄露账号是否存在）
-- 备注：`refresh_token` 是否下发见 §12（S2-2 定稿）；登录失败计入审计 `action=login_failed`
+- 出参：**200**，`data` = `{access_token, token_type: "bearer", expires_in: 1800, refresh_token, refresh_expires_in: 604800, user: UserOut}`
+- 错误：`401/40101` 用户名或密码错误（账号不存在与密码错误**同码同文案**，不泄露账号是否存在）；`403/40301` 账号已 `disabled` / `locked`
+- 备注：`refresh_token` 存 Redis 白名单；登录失败计入审计 `action=login_failed`（`detail_json` 只记用户名哈希，不记口令）
 
 ### GET /api/v1/auth/me
 - 权限：登录用户（三角色）｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S2-2
@@ -71,6 +71,20 @@
 - 出参：**200**，`data` = UserOut（同上）
 - 错误：`401/40101` 未提供凭据 / 令牌过期 / 用户已禁用；`404/40400` 用户不存在
 - 备注：按 `sub` 回表取用户，**不信 token 内的 `role`**
+
+### POST /api/v1/auth/refresh
+- 权限：持有有效 `refresh_token` ｜ 类型：同步 ｜ 幂等：否（每次轮换，旧 `jti` 作废）｜ 实现：S2-2
+- 入参（JSON）：`{refresh_token}`
+- 出参：**200**，`data` = `{access_token, token_type: "bearer", expires_in: 1800, refresh_token, refresh_expires_in: 604800}`
+- 错误：`401/40101` 令牌过期 / `jti` 不在白名单 / 已被轮换
+- 备注：**轮换式刷新** —— 成功即删旧 `jti`、写新 `jti`，令牌被窃取后只能“抢用一次”
+
+### POST /api/v1/auth/logout
+- 权限：登录用户 ｜ 类型：同步 ｜ 幂等：是（重复登出仍返回 200）｜ 实现：S2-2
+- 入参（JSON）：`{refresh_token}`（可选）
+- 出参：**200**，`data` = `{"logged_out": true}`
+- 错误：`401/40101` 未登录
+- 备注：删 Redis 白名单中的 `jti`；写审计 `action=logout`
 
 ## 2. 票据上传与识别（S2-5 / S2-6 / S3-x）
 
@@ -83,7 +97,7 @@
 
 | 字段 | 类型 | 必填 | 约束 |
 |---|---|---|---|
-| file | file | 是 | `image/jpeg`·`image/png`·`application/pdf`，≤20MB（方案 3.2 A1；实施计划写 10MB，**以配置为准，S2-6 定稿**）；MIME 白名单 + 魔数双校验；PDF ≤5 页 |
+| file | file | 是 | `image/jpeg`·`image/png`·`application/pdf`，**≤20MB**（D-018；单一来源为配置 `MAX_UPLOAD_MB=20`）；MIME 白名单 + 魔数双校验；PDF ≤5 页 |
 
 - 出参：**202**，`data`：
 
@@ -135,7 +149,7 @@
 ```
 
 - 错误：`404/40400` 不存在或无权访问
-- 备注：`stage ∈ {preprocess, detect, recognize, extract}`；`progress` 为 0–100 的粗粒度值（**TODO 待定**：S3-1 是否按阶段加权）；失败重试上限 3 次；建议轮询间隔 1–2s、总时长 ≤5min
+- 备注：`stage ∈ {preprocess, detect, recognize, extract}`；`progress` 按阶段**固定权重**累加：`preprocess 10 / detect 30 / recognize 40 / extract 20`（与《完整方案》7.7 的耗时预算同比例，不做按图动态加权——前端只需要一个能解释的进度条）；失败重试上限 3 次；建议轮询间隔 1–2s、总时长 ≤5min
 
 ### GET /api/v1/invoices/{id}/fields
 - 权限：本人，或 `reviewer` ｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S3-2 / S3-4
@@ -166,10 +180,11 @@
 | fields[].field_name | string | 是 | 如 `total_amount`、`buyer_tax_no` |
 | fields[].value | string | 是 | 文本值；金额按两位小数存储 |
 | fields[].confirm | bool | 否 | 人工确认标记，默认 `false` |
+| confirm_amount | bool | 条件必填 | 修改**金额类字段**（`amount` / `tax_amount` / `total_amount`）时必须传 `true`，否则 `422/42202` |
 
 - 出参：**200**，`data` = `{invoice_id, version, status, updated: [{field_name, before, after}], needs_confirm, conflicts}`
 - 错误：`404/40400`；`409/40900` 版本冲突 / 状态不允许（仅 `status=draft` 且 `extract_status ∈ {raw, need_confirm}` 可改）；`422/42200` 字段名非法、值格式非法；`422/42201` 修改后仍存在未决冲突
-- 备注：每次修改写 `audit_logs`（`action=confirm_field`，`detail_json` 含 before/after，**已脱敏**）；`source` 由服务端置 `manual`；金额字段修改要求 `reviewer`（**权限细化 TODO 待定**，S3-6 写入 DECISIONS）；已 `confirmed`/`in_report` 的票据拒绝修改
+- 备注：每次修改写 `audit_logs`（`action=confirm_field`，`detail_json` 含 before/after，**已脱敏**）；`source` 由服务端置 `manual`；已 `confirmed`/`in_report` 的票据拒绝修改。**权限矩阵已定稿（D-017）**：`submitter` 只能改非金额字段；`amount` / `tax_amount` / `total_amount` 仅 `reviewer` 可改且必须带 `confirm_amount=true`；`admin` 一律 404（系统管理员不碰业务数据，职责分离）
 
 ### POST /api/v1/invoices/{id}/reocr
 - 权限：本人 ｜ 类型：异步（202）｜ 幂等：否 ｜ 实现：S3-3
@@ -249,7 +264,7 @@
 - 入参：同创建接口，另加 `version`（int，必填，当前生效版本号）
 - 出参：**200**，`data` = TemplateOut（**生成 `version+1` 的新行并返回新 `id`**；旧版本行保留）
 - 错误：`404/40400`；`409/40900` 版本冲突（`data.current_version` 返回最新值）；`422/42200` 正则/结构非法
-- 备注：版本只增不改；新版本须复制或重建对应 `field_rules`（**TODO 待定**：S2-8 定稿复制策略）；更新后 60s 内生效；同 `type_code` 至多一版 `active=true`；写审计保留旧版本
+- 备注：版本只增不改；发布新版本时**复制**当前版本的 `field_rules` 行（`template_id` 指向新版本），只改动差异项——规则通常是微调，重建等于让用户重录一遍；更新后 60s 内生效（服务端缓存 TTL）；同 `type_code` 至多一版 `active=true`（SCHEMA 部分唯一索引兜底）；写审计保留旧版本
 
 ### POST /api/v1/templates/{id}/test
 - 权限：**仅 `admin`**（`reviewer` 只读，不允许试跑）｜ 类型：同步（上传 + 即时计算）｜ 幂等：是（不落库）｜ 实现：S2-8
@@ -295,7 +310,7 @@
 
 | 字段 | 类型 | 必填 | 约束 |
 |---|---|---|---|
-| private_key_passphrase | string | 是 | 解锁本人签名私钥；只在内存停留，**不落日志、不回显**。**TODO 待定**：S4-5 是否改为服务端托管口令 |
+| private_key_passphrase | string | 是 | 解锁**本人**签名私钥的口令；只在内存停留，**不落日志、不回显**。口令不能走环境变量——每人一把私钥、口令由本人掌握（若托管到服务端，等于服务端可代签，不可否认性就被削弱了） |
 
 - 出参：**200**，`data`：
 
@@ -358,7 +373,7 @@
 
 | 字段 | 类型 | 必填 | 约束 |
 |---|---|---|---|
-| private_key_passphrase | string | 是 | 财务服务器信封私钥口令；只在内存停留，不落日志、不回显。**TODO 待定**：S5-4 是否改服务端托管 |
+| （无入参字段） | — | — | **入参为空对象 `{}`**：财务服务器私钥口令走**环境变量** `FINANCE_KEY_PASSPHRASE`（D-016），不经 HTTP 传递、不进日志、不回显 |
 
 - 出参：**200**（全部通过），`data`：
 
@@ -385,7 +400,7 @@
 
 - 出参：**200**，`data` = `{preview_token, expires_at, ttl_seconds: 1800, content_type, size, fields_preview}`
 - 错误：`409/40900` 未验签、验签失败、信封损坏、凭据过期；`404/40400`
-- 备注：明文**只在内存/带 TTL 的临时对象**中存在，**数据库不落明文**，30min 后自动清理；预览 URL 形态与换取方式 **TODO 待定**（S5-4）；响应不得包含 MinIO 路径
+- 备注：明文**只在内存/带 TTL 的临时对象**中存在，**数据库不落明文**，30min 后自动清理；凭据换取方式定为 `GET /api/v1/finance/preview/{preview_token}`——token 有效期内**可重复读取**（财务常需对照多遍，一次性会干扰工作流），过期即 410；响应不得包含 MinIO 路径
 
 ### POST /api/v1/finance/reports/{id}/review
 - 权限：`reviewer` ｜ 类型：同步 ｜ 幂等：否（同一单只能决策一次）｜ 实现：S5-5
@@ -423,7 +438,7 @@
 | owner_type | string | 是 | `user`｜`server` |
 | owner_id | int | 条件必填 | `owner_type=user` 时必填 |
 | key_type | string | 是 | `sign`（签名）｜`envelope`（信封） |
-| private_key_passphrase | string | 是 | 8–128 字符，仅用于加密私钥；**不落库、不落日志、不回显**；**TODO 待定**（S4-5 是否服务端托管） |
+| initial_passphrase | string | 是 | 8–128 字符，签发时用于 PBKDF2 派生 KEK 并 AES-256-GCM 包裹私钥文件；**不落库、不落日志、不回显**（响应只返回 `key_fp` 与 `storage_path` 的脱敏尾串）。用户首次登录须自助改口令（S4-5 实现） |
 
 - 出参：**201**，`data` = `{cert: CertOut, key_record_id}`（**无任何私钥字段**）
 - 错误：`409/40900` 该主体同用途已有有效证书；`422/42200` 主体不存在、用途非法；`500/50020` 密钥生成失败
@@ -445,7 +460,7 @@
 - 入参：`actor_id`、`action`、`target_type`、`target_id`、`trace_id`、`from`/`to`（ISO-8601）、`page`、`page_size`、`sort_by`（`created_at`｜`id`）、`order`
 - 出参：**200**，`data = {items: AuditLogOut[], total, page, page_size}`
 - 错误：`403/40301` 非 admin；`422/42200` 筛选/分页非法
-- 备注：`detail_json` 必须脱敏（身份证/账号打码），**不返回审计 HMAC key**；导出 CSV **TODO 待定**（S4-7）
+- 备注：`detail_json` 必须脱敏（身份证/账号打码），**不返回审计 HMAC key**；**不提供 CSV 导出**（D-013：论文不需要，导出会扩大泄露面）；需要留档时由 `verify-chain` + 分页接口按需拉取
 
 ### GET /api/v1/admin/audit/verify-chain
 - 权限：**仅 `admin`** ｜ 类型：同步（全量扫描，可能较慢）｜ 幂等：是 ｜ 实现：S4-7
@@ -456,7 +471,7 @@
 
 ## 8. 评测（S6-x）
 
-> 评测为离线跑批（`python -m eval.run`），接口只是触发与查询；首版可只支持 `invoices_v1` 数据集。**TODO 待定**：S6-5 定稿是否保留在线触发（答辩演示用）。
+> 评测为离线跑批（`python -m eval.run`），接口只是触发与查询（**保留**，仅供答辩演示时现场触发）；首版只支持 `invoices_v1` 数据集。
 
 ### POST /api/v1/admin/eval/run
 - 权限：`admin` ｜ 类型：异步（202）｜ 幂等：否（每次新 run_id）｜ 实现：S6-1 ~ S6-5
@@ -464,12 +479,12 @@
 
 | 字段 | 类型 | 必填 | 约束 |
 |---|---|---|---|
-| dataset | string | 是 | 首版仅 `invoices_v1`（TODO 待定） |
+| dataset | string | 是 | 首版仅 `invoices_v1`（白名单校验，其它值 422） |
 | config | string | 是 | 配置文件名，如 `configs/base.yaml`；**只接受白名单** |
 
 - 出参：**202**，`data` = `{run_id, status: "pending", created_at}`
 - 备注：**评测结果不落库**——`run_id` 是 `backend/eval/results/` 下的结果文件标识（`<config>_<timestamp>`），`GET /admin/eval/runs/{id}` 读文件返回；16 张表里没有 `eval_runs` 表，这是刻意的（见 SCHEMA §0.4 表清单）
-- 错误：`403/40301`；`422/42200` 数据集/配置不在白名单；`409/40900` 已有运行中的评测（**TODO 待定**是否允许并发）；`500/50000` 启动失败
+- 错误：`403/40301`；`404/40400` 数据集/配置不存在；`422/42200` 不在白名单；`500/50000` 启动失败。**允许并发**（每次独立 `run_id`、结果按时间戳分文件，互不覆盖）
 - 备注：`config` 不得是任意路径（防目录穿越）；评测结果落 `eval/results/`，接口只回相对标识、不回绝对路径
 
 ### GET /api/v1/admin/eval/runs/{id}
@@ -477,7 +492,7 @@
 - 入参：路径参数 `id`
 - 出参：**200**，`data` = `{run_id, status, dataset, config, started_at, finished_at, error, metrics_json: null | object}`（`run_id` 不存在 → `404/40400`；同一 `run_id` 进行中重复查询不报错）
 - 错误：`404/40400`；`403/40301`
-- 备注：`status ∈ {pending, running, succeeded, failed}`；**TODO 待定**：是否提供报告下载（S6-5）
+- 备注：`status ∈ {pending, running, succeeded, failed}`；**不提供报告下载接口**——结果文件直接落在 `backend/eval/results/`，答辩时从仓库目录打开（D-013）
 
 ## 9. 系统
 
@@ -485,8 +500,8 @@
 - 权限：公开 ｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S0-5
 - 入参：无
 - 出参：**200**，`data` = `{status: "ok", version: "0.1.0", ts: "2026-11-18T08:30:00Z"}`
-- 错误：服务未就绪时 `503`，`data = {status: "degraded", checks: {...}}`（**TODO 待定**：检查项是否含 DB/Redis/MinIO，S0-5 定稿）
-- 备注：**无 `/api/v1` 前缀**；`/api/v1/health` 兼容别名 **TODO 待定**（S0-5 与实施计划口径不一致，需拍板）
+- 错误：服务未就绪时 `503`，`data = {status: "degraded", checks: {db, redis, minio}}`（**检查项固定三项**：DB 连通、Redis PING、MinIO bucket 存在；任一失败即 `degraded` 并返回 503，供容器探针与冷启动脚本使用）
+- 备注：**两个路径同一实现**——`GET /health`（无前缀，容器探针与运维用）与 `GET /api/v1/health`（业务前缀，前端与文档统一用），响应体完全一致
 
 ## 10. 错误码表
 
@@ -504,6 +519,8 @@
 | 41300 | 413 | 文件过大 | 上传超过配置上限 |
 | 42200 | 422 | 参数校验失败 | 字段格式、分页、排序白名单 |
 | 42201 | 422 | 字段校验未通过（冲突未决） | 金额合计不符、必填缺失、低置信未确认 |
+| 42202 | 422 | 缺少高风险操作的二次确认 | 修改金额类字段未带 `confirm_amount=true`；审批未带有效 `verify_token` |
+| 41001 | 410 | 一次性凭据已过期 | `preview_token` 超 30min |
 | 50000 | 500 | 服务器内部错误 | 未捕获异常（不泄露堆栈） |
 | 50010 | 500 | OCR 引擎异常 | 识别/预处理崩溃 |
 | 50020 | 500 | 签名失败 | 私钥不可用、密码运算异常 |
@@ -595,25 +612,37 @@
 
 > 系统任务（如每日锚定）的 `actor_id` 为 `null`；`actor_role` 取值见 SCHEMA §9.19。
 
-## 12. 待定项清单
+## 12. 定稿记录与剩余待定
 
-| 模块 | 缺口 / TODO | 定稿任务 |
+> S0-3 已把上一版 14 项待定统一拍板，剩余 3 项属**实现细节**（不影响接口形状），在对应任务里收口即可。
+
+### 12.1 已定稿（D-011 ~ D-018）
+
+| 模块 | 原待定项 | 结论 |
 |---|---|---|
-| 认证 | `refresh` / `logout` / token 吊销策略、`refresh_token` 是否下发 | S2-2 |
-| 票据上传 | 单文件上限 10MB 还是 20MB；是否保留 `POST /invoices/{id}/files` 旧草案路径；批量上传 | S2-6 / S3-8 |
-| 票据 | 弱重复检测接口（`GET /invoices/{id}/duplicate-check`）、批量上传进度 | S3-7 / S3-8 |
-| 模板 | 附录 B 草案的 `GET /templates/{code}/rules` 是否保留别名（当前由详情接口覆盖）；`field_rules` 独立 CRUD 未列（S2-8 任务卡要求） | S2-8 |
-| 字段修正 | 金额字段修改的权限细化（是否允许 admin 兜底、是否需要二次确认） | S3-6 |
-| 并发控制 | ~~乐观锁字段缺列~~ **已定**：`invoices.version` / `report_forms.version` 已入 SCHEMA（`INTEGER NOT NULL DEFAULT 0`，应用层自增）；待定项降为"冲突响应用 409 还是 412"→ 取 **409**，无需再议 | S2-1 落地 |
-| 报销单 | ~~`report_no` 缺列~~ **已定**：`report_forms.report_no TEXT NOT NULL UNIQUE`，格式 `RPT-YYYYMM-序号`（SCHEMA 待复核第 20 项）；`department` **不建列**，需要时取 `users.dept`（申请人部门），避免同一事实两处存 | S5-1 |
-| 报销单 | 驳回后编辑 `title`/`reason` 的接口、`rejected → pending_sign` 的显式迁移未列（当前靠重加明细/重签隐式推进） | S5-5 |
-| 报销单 | 凭证包导出（ZIP/PDF）与归档检索、归档后只读校验 | S5-6 |
-| 财务 | 服务端私钥口令托管方式（请求体 vs 环境变量）、预览 URL 形态与一次性凭据 | S5-4 |
-| 证书 | 密钥生成口令来源、吊销原因是否必填/落库、证书吊销列表（不做 CRL/OCSP 的边界说明） | S4-5 / S4-6 |
-| 审计 | 审计导出 CSV、锚定记录（每日最后 `entry_hash` 外存） | S4-7 |
-| 评测 | 在线触发是否保留、实验子集选择、运行中并发策略、报告下载与轮询 | S6-5 |
-| 系统 | ~~`/health` 路径口径~~ **已定**：两个都提供——`GET /health`（无前缀，给容器健康检查与运维探针）、`GET /api/v1/health`（业务前缀，给前端与文档统一）；两者同一实现，响应体一致 | S0-5 |
+| 认证 | `refresh` / `logout` / 吊销策略 | **轮换式刷新 + Redis 白名单登出**（§1 已补两条接口，D-016） |
+| 登录 | 并发会话策略 | 允许多端登录，各自独立 `jti`；不做单端互踢 |
+| 票据上传 | 单文件 10MB 还是 20MB | **20MB**，配置 `MAX_UPLOAD_MB=20`（D-018） |
+| 票据上传 | 是否保留 `POST /invoices/{id}/files`、批量上传接口 | **都不新增**：批量 = 前端串行队列复用单文件接口，进度在前端展示（D-013） |
+| 票据 | 弱重复检测是否单独接口 | **不做独立接口**：结果体现在上传响应的 `dedup` 与详情里的 `duplicate_of`（D-013） |
+| 模板 | `GET /templates/{code}/rules` 别名、`field_rules` 独立 CRUD | **都不做**：规则随模板 `PUT` 的 `rules` 数组同步维护，`GET /templates/{id}` 已含（D-013） |
+| 字段修正 | 金额字段修改权限 | **仅 `reviewer` 且需 `confirm_amount=true`**；`admin` 404（D-017） |
+| 并发控制 | 乐观锁缺列、冲突码 | **已加 `version` 列**，冲突一律 **409**（D-011） |
+| 报销单 | `report_no` 缺列；`department` | 单号已入 SCHEMA；`department` **不建列**，取 `users.dept` |
+| 报销单 | 驳回后编辑与 `rejected → pending_sign` 迁移 | `PATCH /reports/{id}` 仅 `draft` / `rejected` 可改；`POST /reports/{id}/sign` 在 `rejected` 时**先置 `pending_sign` 再签** |
+| 报销单 | 凭证包导出与归档检索 | **`GET /reports/{id}/export`**：ZIP 含 `canonical_json`、签名、验签结果、信封元数据、字段快照，**不含明文影像**；归档检索走 `GET /reports/mine?status=archived`（S5-6） |
+| 财务 | 私钥口令托管、预览凭据形态 | 口令走**环境变量**（§5 已改）；预览为 `verify_token` → `preview_token`（30min，一次性）（D-016） |
+| 证书 | 吊销原因是否落库 | **不建列**：原因写 `audit_logs.detail_json.reason`（服务层必填校验，≤200 字） |
+| 审计 | 审计导出 CSV | **不做**（范围外，论文不需要）；列表接口分页 + 筛选已够 |
+| 评测 | 在线触发是否保留 | **保留**，仅 `admin`；结果**只落 `backend/eval/results/` 文件**，不建表（D-013） |
+| 系统 | `/health` 路径口径 | **两个都提供**：`GET /health`（容器探针）、`GET /api/v1/health`（业务前缀），同一实现 |
 
----
+### 12.2 剩余待定（实现细节，不阻塞接口）
 
-> 维护规则：接口变化必须先同步本文件；前后端字段命名以本文件为准（`snake_case`）；与本文件冲突的实现视为 bug。文档内 `TODO 待定` 必须在对应任务验收前清零。
+| 项 | 收口任务 |
+|---|---|
+| `GET /reports/{id}/export` 的 ZIP 目录结构与文件名规范 | S5-6 |
+| `GET /finance/pending` 的默认排序（提交时间倒序 vs 金额倒序） | S5-3 |
+| 审计列表的筛选字段白名单（是否支持按 `trace_id` 精确查） | S4-7 |
+
+> 维护规则：接口变化必须先同步本文件；前后端字段命名以本文件为准（`snake_case`）；与本文件冲突的实现视为 bug。文档内不得残留 `TODO 待定`：要么当场拍板并记 `DECISIONS.md`，要么挂进 §12.2 并写明收口任务号。
