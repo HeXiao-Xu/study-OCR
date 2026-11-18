@@ -339,3 +339,30 @@
 | 4 | 开发态冒烟入口 | 允许 `?dev_token=xxx` 在 `main.ts` 里写入 localStorage 并抹掉参数，**整段包在 `import.meta.env.DEV` 内** | 无头浏览器冒烟需要直接打开受保护页面（S7 冷启动检查会复用）。`import.meta.env.DEV` 是编译期常量，生产构建会被摇掉（可验证：`npm run build` 后在 `dist/` 里搜 `dev_token` 应无命中）。代价：开发态存在"URL 带 token"的便利口子，团队内约定不在真实环境使用。 |
 
 - **验证**：`npm run typecheck` + `npm run build` 通过；无头 Edge（CDP）实测：未登录访问 `/` → `/login?redirect=/`；`/debug?dev_token=smoke` → 4 个 tag 全 ok；点「触发一个 404」→ 弹出后端「资源不存在」且 trace_id 回填；停 MinIO → 显示 `degraded` + 一个 `fail`，恢复后回全 ok；控制台无 CORS 报错。
+
+---
+
+## D-022 基础设施组合：PostgreSQL 16 + Redis 7 + MinIO + ARQ
+
+- **日期**：2026-11-18（S0-7）
+- **背景**：S0 阶段把三件套跑起来之后，需要一个**完整的**选型记录（任务卡要求"第一条 ADR"）。前面 D-002 只解释了
+  PostgreSQL 与 MySQL 的取舍，Redis / MinIO / 队列的选型散落在方案里，没有单独成条。
+- **备选（整体）**：
+  ① 全托管云服务（RDS + ElastiCache + OSS） ② 单机 Docker 三件套 + ARQ ③ SQLite + 本地文件系统 + 线程池（最轻）
+- **决策**：②
+- **逐项理由**：
+
+| 组件 | 选择 | 不选别的的原因 |
+|---|---|---|
+| 关系库 | **PostgreSQL 16** | 需要 `JSONB`（字段/坐标/规则详情）与**部分唯一索引**（发票唯一只约束非作废、每单只有一条 active 签名）；MySQL 的 JSON 能力弱一档、不支持部分索引（详见 D-002） |
+| 缓存 + 队列 | **Redis 7 + ARQ** | OCR 是秒级长任务，必须离屏执行；ARQ 是 asyncio 原生，与 FastAPI 同生态、依赖少。Celery 要多一套 broker 概念与配置，RabbitMQ 对单机毕设是过度设计。Redis 同时承担缓存与限流，避免再引入一个组件 |
+| 对象存储 | **MinIO（S3 兼容）** | 票据影像必须"库里只存引用、内容存对象存储且是密文"；MinIO 可离线、可与生产 S3 无缝互换，本地产物不会污染数据库备份。本地磁盘能跑但不便于演示"密文独立存储 + 独立备份"这一安全设计 |
+| 定时任务 | **APScheduler** | 只需"审计链锚定 + 临时文件清理"两个定时动作，进程内调度足够；不引入 Celery Beat |
+| 为什么不用 SQLite | — | 需要并发写、`JSONB`、部分索引与后续的可能 RLS；SQLite 在这些点上都会成为返工来源。开发即用生产同款，减少"开发能跑、上线炸" |
+
+- **代价**：
+  - 本机多三个容器、约 1.5 GB 镜像；首次启动要等 healthcheck；
+  - 端口被默认值占用时需错开（本项目用 5433/6380/9002，见 D-019）；
+  - Docker 不可用时整套环境起不来 —— 因此 `scripts/smoke.py` 要在"服务没起"时给人话提示而不是 traceback。
+- **验证**：`docker compose -f deploy/docker-compose.dev.yml up -d` 三个容器 healthy；`scripts/check_services.py` 5 项
+  通过；`scripts/smoke.py` FAIL 0（迁移项在 S2-1 前为 WARN）；`down` 不删卷再 `up`，数据与 bucket 都在。

@@ -6,8 +6,8 @@
 ## 当前状态
 
 - 阶段：**阶段 0（项目启动）**，M0 前段
-- 最近完成：**S0-6 前端最小可运行**（Vue3+Vite+TS、axios 封装、路由守卫、/debug 联调自检页；typecheck/build/无头浏览器冒烟全过）
-- 下一步：**S0-7 冒烟脚本与 README 完整化**（`scripts/smoke.py` + 冷启动检查），S0 阶段收口
+- 最近完成：**S0-7 冒烟脚本与 README 完整化** → **S0 阶段全部收口**（tag `m0-env-ready`）
+- 下一步：**S1-1 票据样本集与标注规范**（进入 M0 后半：OCR 技术验证）。按 AGENTS §11，功能级任务先出 spec → plan 再写码
 - 已知阻塞：无
 - 环境提醒：后端必须用 **Python 3.11**（`py -3.11 -m venv .venv`）；本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
 
@@ -21,7 +21,7 @@
 [x] S0-4 起基础服务（PostgreSQL 16 + Redis 7 + MinIO）
 [x] S0-5 后端最小可运行：config + 日志/trace_id + 统一异常
 [x] S0-6 前端最小可运行 + axios 封装 + 路由守卫
-[ ] S0-7 冒烟脚本与 README 完整化
+[x] S0-7 冒烟脚本与 README 完整化（tag m0-env-ready）
 
 ## 阶段 1：OCR 技术验证（M0 后半）
 [ ] S1-1 票据样本集、标注规范与合成票据脚本 ★关键
@@ -96,6 +96,7 @@
 |---|---|---|---|
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
+| S0-7 | `scripts/smoke.py`（配置/端口/三件套/后端/迁移/前端六类检查，`--strict` 与 `-v`）、完整 `README.md`（环境要求、8 步快速开始、端口表、常用命令、**9 条 Windows 坑**、故障排查表、文档索引、已知限制）、`docs/DECISIONS.md` D-022（基础设施 ADR） | ① `smoke.py` 在后端未起时给出"后端没起 + 启动命令"而不是 traceback；② 故意写错 PG 口令 → 报"认证失败 + 两处 .env 要对齐"（与"服务没起"区分开）；③ 停掉整个 docker 栈 → 每项都提示 `docker compose up -d`；④ 全起后 OK 7 / WARN 1（迁移，S2-1 前正常）/ FAIL 0，退出码 0；⑤ `--strict` 下 WARN 使退出码为 1 | ✅ 通过 |
 | S0-6 | `web/`（Vue 3.5 + Vite 8 + TS 6 + Element Plus + Pinia + Vue Router：`src/{main.ts,App.vue,api/http.ts,api/system.ts,router/index.ts,stores/user.ts,views/*}`、`package.json` 精确版本、`.env.{development,production,example}`）、`scripts/ui_smoke.mjs` | ① `npm run typecheck` 无错、`npm run build` 成功；② 干净浏览器访问 `/` → 守卫重定向到 `/login?redirect=/` 且登录页渲染；③ `/debug` 显示后端 health（4 个 tag 全 ok）+ trace_id；④ 点「触发一个 404」→ 弹出后端 message「资源不存在」并把 trace_id 回填；⑤ 停掉 MinIO → 页面显示 degraded + 一个 fail，恢复后回到全 ok；⑥ 控制台无 CORS 报错 | ✅ 通过 |
 | S0-5 | `backend/app/{main.py,core/{config,logging,exceptions,health}.py,schemas/common.py,api/v1/health.py}`、`backend/{requirements.txt,requirements.lock.txt,pyproject.toml,.env.example}`、`backend/tests/{conftest,test_config,test_health,test_errors_trace}.py` | ① `pytest -q` 24 passed；② 起 uvicorn 后 `/api/v1/health` 真实连三件套返回 200（db/redis/minio 全 ok）；③ 不存在路由返回 `40400` 且响应头 `X-Trace-Id` 与 body 一致；④ 同一 trace_id 能在日志里串起错误日志 + 访问日志；⑤ 缺配置启动即抛 `ConfigError` 并列出缺哪几项 | ✅ 通过 |
 | S0-4 | `deploy/docker-compose.dev.yml`（pg16 + redis7 + minio + 幂等 minio-init，全量 healthcheck）、`deploy/.env.example`、`deploy/init/01_extensions.sql`（pgcrypto）、`deploy/README.md`、`scripts/check_services.py`（纯标准库，5 项检查） | `docker compose up -d` 后 `python scripts/check_services.py` 输出 5/5 OK；`down` 不删卷再 `up` 后 bucket 仍在、`minio-init` 幂等不报错 | ✅ 通过 |
@@ -122,6 +123,15 @@
 
 ### 2026-11-18
 
+- **S0-7 完成**：环境冒烟与 README，**S0 阶段收口**（tag `m0-env-ready`）。
+  · `scripts/smoke.py`：配置 → 端口 → PostgreSQL(版本/库/迁移) → Redis(PING/AOF) → MinIO(bucket) → 后端 /health → 前端(可跳过)；
+    **区分"没起"与"配错"**（连接被拒 vs 认证失败给出完全不同的下一步）；任何失败都不吐 traceback；`--strict` 让 WARN 也失败；
+    `-v` 打印实际地址且**对 DSN 口令打码**；
+  · 迁移项刻意做成 WARN：S2-1 之前没有 `alembic_version` 表是正常的，S2-1 之后同一脚本自动升级为 FAIL（靠"有没有迁移文件"判断）；
+  · README 补全：环境要求（Python **3.11** 的硬约束写在表里）、8 步快速开始（每步带验证命令与期望输出）、端口表、
+    常用命令、目录结构、**Windows 特有问题 9 条**（paddle wheel、镜像拉取、命名卷、CRLF、端口占用、MSYS 缺 tee/nohup、
+    Edge dump-dom、中文路径、控制台编码）、故障排查表（按冒烟输出对照）、已知限制；
+  · DECISIONS D-022：基础设施组合 ADR（PG16 + Redis7 + MinIO + ARQ 的逐项理由与代价）。
 - **S0-6 完成**：前端最小可运行。
   · 技术栈按 AGENTS 落地：Vue 3.5 / Vite 8 / TS 6 / Element Plus 2.14 / Pinia / Vue Router，`package.json` 全部精确版本；
   · `api/http.ts` 是唯一出口：注入 `Authorization`、统一解包 `{code,message,data,trace_id}`、401 清会话跳登录、
