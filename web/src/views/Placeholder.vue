@@ -31,7 +31,8 @@ const plan = computed(() => route.meta.placeholder ?? '后续任务')
 
 <style scoped>
 .placeholder-page {
-  max-width: 1080px;
+  width: 100%;
+  max-width: none;
   margin: 0 auto;
 }
 </style>

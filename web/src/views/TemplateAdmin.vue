@@ -564,7 +564,8 @@ onMounted(() => {
 
 <style scoped>
 .template-page {
-  max-width: 1180px;
+  width: 100%;
+  max-width: none;
   margin: 0 auto;
 }
 .filters {

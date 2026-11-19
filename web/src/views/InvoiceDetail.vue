@@ -362,7 +362,8 @@ watch(invoiceId, () => {
 
 <style scoped>
 .detail-page {
-  max-width: 1200px;
+  width: 100%;
+  max-width: none;
   margin: 0 auto;
 }
 .card-header {

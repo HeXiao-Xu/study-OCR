@@ -361,7 +361,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .upload-page {
-  max-width: 1080px;
+  width: 100%;
+  max-width: none;
   margin: 0 auto;
 }
 .heading-hint {

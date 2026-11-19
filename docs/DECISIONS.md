@@ -1033,3 +1033,17 @@
 - **验证**：`npm run typecheck` / `npm run build` 通过；root 登录 `/templates` 列出 5 个 seed 模板；
   详情抽屉显示字段规格与规则；编辑对话框可打开；`/rules` 重定向 `/templates`；
   试跑用真实样本 JPEG 走真 OCR，返回命中关键字/整体置信度/字段表（约 6s）；不落库。
+
+---
+
+## D-053 内容页撑满右侧可用宽度：`el-space` 补 width:100%，去掉 1280 上限
+
+- **日期**：2026-11-19（用户反馈"为什么不占满右侧空间"）
+- **根因**：页面根节点是 `<el-space fill>`，Element Plus 的 `.el-space` 默认 `inline-flex`，
+  宽度按内容收缩；父级 `.main-inner` 已有 1148px，但页面只有 922px，右侧空出 226px。
+  另外 `.main-inner`/各页面还有 `max-width: 1280px`，在 2K/4K 屏上仍会左右留白。
+- **决策**：`Upload/InvoiceList/InvoiceDetail/TemplateAdmin/Placeholder` 的页面容器统一
+  `width: 100%; max-width: none;`；`.main-inner` 改 `width: 100%`，不再限制阅读宽度。
+  表单类页面（登录页右栏）仍保持 400px 可读宽度，不强行拉满。
+- **验证**：1440px 下 `.main-inner`=1148、`.template-page`=1148、卡片=1148、表格=1106（原 922/922/880）；
+  1920px 下 main/page/card=1628、表格=1586；列表/上传页同样撑满（D-053）。

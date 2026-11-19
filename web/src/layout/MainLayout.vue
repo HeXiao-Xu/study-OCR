@@ -291,7 +291,7 @@ async function handleLogout(): Promise<void> {
   padding: 24px 28px 40px;
 }
 .main-inner {
-  max-width: 1280px;
+  width: 100%;
   margin: 0 auto;
 }
 

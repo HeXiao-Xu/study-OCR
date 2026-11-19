@@ -339,7 +339,8 @@ watch(
 
 <style scoped>
 .list-page {
-  max-width: 1200px;
+  width: 100%;
+  max-width: none;
   margin: 0 auto;
 }
 .heading-total {
