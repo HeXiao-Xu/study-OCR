@@ -438,3 +438,24 @@
 - **代价**：恒等快捷让 `steps["rectify"]` 多了一个取值（`quad_identity`），下游统计要把它算作"校正成功"。
 - **验证**：`scripts/preprocess_eval.py` 在可比样本上平均命中率 88% → 88%（+0%，无样本变差）；
   60 张数据集几何校正成功率 85%、耗时 P95 245ms（预算 300ms）。
+
+---
+
+## D-027 OCR 依赖整组锁死：paddleocr 2.7.3 + paddlepaddle 2.6.2（并压住三个"间接顶包"）
+
+- **日期**：2026-11-19（S1-3）
+- **背景**：S1-3 首次安装 OCR 引擎。先只装了 `paddlepaddle==2.6.2` + `paddleocr==2.7.3`，
+  pip 的解析结果把 **numpy 从 1.26.4 顶回 2.4.6**（因为 paddleocr 依赖 `scipy/scikit-image/pandas`，
+  它们的最新版要求 numpy>=2），并额外装进了 `opencv-python-headless 5.1.0.95`。
+  结果：`import cv2` 与 `from paddleocr import PaddleOCR` 双双报
+  `compiled against ABI version 0x1000009 but this version of numpy is 0x2000000`。
+- **备选**：① 跟着 numpy 2 走，把 opencv 升到 ≥4.10（但 paddleocr 2.7.3 硬 pin `opencv<=4.6.0.66`）
+  ② 压住 numpy 1.x，同时**把三个"间接顶包"钉到 numpy 1.x 兼容线** ③ 前后端各用一套 Python 环境隔离
+- **决策**：②（③ 记为后续可选项：把 OCR 放进独立 worker 镜像）
+- **理由**：paddlepaddle 2.6 与 opencv 4.6 都是用 numpy 1.x 编译的，跟着 numpy 2 走等于同时放弃两者；
+  而 paddleocr 2.7.3 是"必须锁 3.x 不兼容"的既定选型（AGENTS §2.2）。压 numpy 是唯一自洽的解。
+  教训是：**锁住直接依赖不够，还要锁住会把关键传递依赖顶走的那些包**。
+- **代价**：`scipy==1.11.4` / `scikit-image==0.21.0` / `pandas==2.1.4` 三个包也被钉住（略旧）；
+  另需 `opencv-python` 与 `opencv-contrib-python` 同时 4.6.0.66（paddleocr 两个都要），并确保没有 headless 版本混入。
+- **验证**：`import cv2, paddle, paddleocr` 全部成功；`pytest` 72 passed；`scripts/ocr_demo.py` 单张 41 行、
+  平均置信度 0.99、两次结果完全一致。

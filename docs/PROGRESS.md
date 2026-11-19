@@ -6,8 +6,8 @@
 ## 当前状态
 
 - 阶段：**阶段 0（项目启动）**，M0 前段
-- 最近完成：**S1-2 图像预处理与透视校正**（EXIF/定位/透视+降级链/照度/印章标记；65 个测试、几何校正成功率 85%、P95 245ms、OCR 前后无下降）
-- 下一步：**S1-3 PaddleOCR 检测识别最小闭环**（第一次装 paddlepaddle，需先解决几百 MB 依赖下载）
+- 最近完成：**S1-3 PaddleOCR 检测识别最小闭环**（41 行/张、平均置信度 0.99、两次结果一致；72 个测试；依赖整组锁死 D-027）
+- 下一步：**S1-4 票种识别与版面区域划分**（先判票种，再把文本行聚成标题/表头/明细/合计/印章区）
 - 已知阻塞：无
 - 环境提醒：后端必须用 **Python 3.11**（`py -3.11 -m venv .venv`）；本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
 
@@ -26,7 +26,7 @@
 ## 阶段 1：OCR 技术验证（M0 后半）
 [x] S1-1 票据样本集、标注规范与合成票据脚本 ★关键
 [x] S1-2 图像预处理与透视校正 ★关键
-[ ] S1-3 PaddleOCR 检测识别最小闭环 ★关键
+[x] S1-3 PaddleOCR 检测识别最小闭环 ★关键
 [ ] S1-4 票种识别与版面区域划分
 [ ] S1-5 关键字锚定 + 规则字段抽取 + 校验器 ★关键
 [ ] S1-6 端到端基线脚本与指标计算 ★关键
@@ -96,6 +96,7 @@
 |---|---|---|---|
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
+| S1-3 | `backend/app/ocr/{types,detector,recognizer}.py`、`scripts/ocr_demo.py`、`backend/tests/test_ocr_contract.py`、`docs/{spec,plan}/s1-3-ocr-engine.md` | ① 单张 `vat_digital_landscape_001`：**41 行**、平均置信度 ≈0.99、无乱码、**两次结果完全一致**；② 批量 20 张：行数均值 14.5（8–20）、平均置信度 0.958、推理 P50 944ms / P95 1541ms；③ 困难样本 `taxi_002` + 预处理：7 行、置信度 0.92–0.99（同图 Windows OCR 只能读出 0–2 个字段）；④ 7 条契约测试全过，含"3.x dict 结构必须报错"；⑤ `pytest` 72 passed | ✅ 通过 |
 | S1-2 | `backend/app/ocr/preprocess.py`（`PreprocessOptions` 8 开关 + `to_original` 3×3）、`scripts/{preprocess_demo,preprocess_eval}.py`、`backend/tests/{test_preprocess_exif,test_preprocess_geometry}.py` | ① 65 个测试全过（含 EXIF 旋转、已知梯形还原、坐标回算、开关组合冒烟）；② 60 张数据集：几何校正成功率 **85%**（其中 15 张判为"正视角满幅"免重采样）、quality ok 52 / low 8、耗时 **P50 84ms / P95 245ms**（预算 300ms）；③ `preprocess_eval`：可比样本 OCR 命中率 88% → 88%（**无样本变差**）；④ demo 输出 60 张前后对照图 | ✅ 通过 |
 | S1-1 | `scripts/{sample_fonts,sample_data,invoice_layout,invoice_templates,perturb,make_samples,check_annotations,verify_samples}.py`、`scripts/ocr_probe.ps1`、`backend/eval/datasets/{annotations_synth_v1.jsonl,README.md}`、`samples/MANIFEST.md`、`docs/{spec,plan}/s1-1-samples.md`、3 个测试文件 | ① `make_samples.py` 生成 **60 张**（dev 36 / test 24，**5 票种 × 6 版式**，含 2026 主流的数电票 `vat_digital`）；② `check_annotations.py --strict` 全过；③ `verify_samples.py` **5 项全过**（渲染一致性 4.1×、OCR 字段命中率 干净 0.89 / 困难 0.86、标注自洽、成像覆盖、划分完整）；④ `pytest` 50 passed（新增 26 条）；⑤ 系统 OCR 能读出合成票的字段值 | ✅ 通过 |
 | S0-7 | `scripts/smoke.py`（配置/端口/三件套/后端/迁移/前端六类检查，`--strict` 与 `-v`）、完整 `README.md`（环境要求、8 步快速开始、端口表、常用命令、**9 条 Windows 坑**、故障排查表、文档索引、已知限制）、`docs/DECISIONS.md` D-022（基础设施 ADR） | ① `smoke.py` 在后端未起时给出"后端没起 + 启动命令"而不是 traceback；② 故意写错 PG 口令 → 报"认证失败 + 两处 .env 要对齐"（与"服务没起"区分开）；③ 停掉整个 docker 栈 → 每项都提示 `docker compose up -d`；④ 全起后 OK 7 / WARN 1（迁移，S2-1 前正常）/ FAIL 0，退出码 0；⑤ `--strict` 下 WARN 使退出码为 1 | ✅ 通过 |
@@ -132,11 +133,24 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 5 | 抽取规则需要按票种分支（数电票没有代码/校验码） | 影响 S1-5/S2-8 的规则设计 | S1-5 实现时按 `ticket_type` 分派 |
 | 6 | 远景小票（纸面 ~300px 高）预处理后 OCR 仍读不出 | 这类样本的准确率会被拖低 | 属信息量不足，交给人机协同（低置信 → 人工确认）；S6 分组报告 |
 | 7 | `preprocess` 最慢一张 447ms（2800px 原图） | 极端大图会超预算 | S3 的 Worker 里按任务超时兜底；必要时把 warp_max_side 降到 2000 |
+| 8 | `preprocess_eval.py` 目前用 **Windows OCR** 当基准 | 结论偏保守（PaddleOCR 明显更强） | S6 前把该脚本的 OCR 后端换成 PaddleOCR，重跑一次"预处理增益" |
+| 9 | PP-OCRv4 模型需首次下载（~18MB，到 `~/.paddleocr`） | 离线机器无法首次运行 | 已提供 `OCR_MODEL_ROOT`；S7 的冷启动检查里补"模型预置"步骤 |
 
 ## 变更日志
 
 ### 2026-11-18
 
+- **S1-3 完成**：PaddleOCR 检测识别最小闭环。
+  · `OcrEngine` 进程内单例（懒加载 + 互斥锁，模型加载 5–10s 只付一次）；`parse_paddle_result` 把 2.7 的
+    `[[[box,(text,score)]]]` 解析成契约结构，**按 y 分桶再按 x 排序**给可复现的 `line_no`；
+    遇到 3.x 的 dict（`rec_texts/...`）**抛 `OcrContractError`**，绝不静默返回空；
+  · `recognize_line()` 供 S3-3 局部二次识别复用；空裁剪返回 `("", 0.0)` 不抛异常；
+  · `drop_score=0` 是刻意的：引擎层丢行会让低置信字段无从标记（S3-2 的队列会空）；
+  · 依赖踩坑（D-027）：装 paddleocr 时 numpy 被 `scipy/scikit-image/pandas` 的最新版顶到 2.4.6，
+    cv2 与 paddle 双双 ABI 报错 → 把这三个包压到 numpy 1.x 兼容线（1.11.4 / 0.21.0 / 2.1.4），
+    并清掉误装的 `opencv-python-headless 5.1`；结论：**锁直接依赖不够，还要锁会把关键传递依赖顶走的包**；
+  · 重要发现：S1-2 里判为"读不出"的远景小票，换成 PaddleOCR + 预处理后**完整读出 7 行**——
+    之前的"不可用"是 Windows OCR 的能力上限，不是数据本身没信息。S6 的评测基线必须改用 PaddleOCR。
 - **S1-2 完成**：图像预处理与透视校正。
   · `preprocess()` 全链路：EXIF 方向 → 缩放（检测用小图）→ 票据四角点（Otsu 亮区 + 边缘双路候选）→ 透视 /
     `minAreaRect` / 原图直送三档降级 → 小票放大 → 残差去斜 → 照度校正 → 印章标记（**不 inpaint**）；

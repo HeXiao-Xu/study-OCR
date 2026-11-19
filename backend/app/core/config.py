@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     jwt_secret: str
     max_upload_mb: int = 20  # D-018：单文件上限，前后端共用
 
+    # ---------- OCR（S1-3）----------
+    ocr_lang: str = "ch"
+    ocr_use_angle_cls: bool = True
+    ocr_det_db_thresh: float = 0.3
+    ocr_det_db_box_thresh: float = 0.3
+    ocr_det_db_unclip_ratio: float = 1.6      # >1.7 票据相邻行会粘连导致识别串行
+    ocr_det_limit_side_len: int = 1600        # 与 S1-2 的 warp_max_side 对齐；压测可降 1280
+    ocr_device: str = "cpu"
+    ocr_model_root: str = ""                  # 空 = ~/.paddleocr；离线机器指向预置目录
+    ocr_show_log: bool = False
+
     # ---------- 其他 ----------
     health_timeout_s: float = 2.0  # 健康检查单项超时，避免 /health 被拖死
     trace_id_header: str = "X-Trace-Id"

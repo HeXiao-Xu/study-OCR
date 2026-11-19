@@ -23,6 +23,15 @@ pydantic-settings==2.16.3
 pypdf
 pdfplumber
 
+# --- OCR 引擎（S1-3 起）---
+# 版本必须整组锁死，否则 numpy 会被间接顶到 2.x，把 cv2 / paddle 一起打崩。
+paddlepaddle==2.6.2
+paddleocr==2.7.3
+# 这三个是 paddleocr 的传递依赖，但它们的"最新版"会强制 numpy>=2，必须压到 numpy 1.x 兼容线：
+scipy==1.11.4
+scikit-image==0.21.0
+pandas==2.1.4
+
 # --- 图像与数值（S1-1 合成票据集起；S1-2 预处理用 OpenCV）---
 # 版本必须成对出现：opencv-python 4.6.0.66 是用 numpy 1.x 编译的，配 numpy 2.x 会
 # `numpy.core.multiarray failed to import`。而 4.6.0.66 又是 paddleocr 2.7.3 的硬 pin（S1-3 要用）。
