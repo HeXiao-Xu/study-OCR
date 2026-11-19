@@ -9,7 +9,7 @@ requires-python = ">=3.11"
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "-q"
+addopts = "-q -m 'not integration'"
 markers = [
     "integration: 需要真实 Docker 三件套（默认跳过，用 -m integration 单独跑）",
     "slow: 慢用例（模型推理等），默认不跑",

@@ -601,3 +601,51 @@
 - **验证**：`flight_itinerary_landscape_007` 从 1200×700→1101×698（裁切+歪）变为 **1200×700→1200×700**；
   全域指标同步改善：字段级 0.893→**0.895**、整单 0.633→**0.650**、检测 Hmean 0.948→**0.951**；
   `pytest 164 passed`（新增 8 条 intake/重拍单测）。
+
+---
+
+## D-036 ORM 用同步 SQLAlchemy 2.0 + psycopg3 方言映射（不引入 async ORM）
+
+- **日期**：2026-11-19（S2-1 引入 ORM 时定）
+- **背景**：S2-1 要把 16 张表落成 SQLAlchemy 模型与 Alembic 迁移。项目已装 `psycopg==3.3.9`，
+  而 `backend/.env` 与 `tests/conftest.py` 里的 `DATABASE_URL` 是 `postgresql://`（`/health` 用 psycopg 直连，需要这个形态）。
+  SQLAlchemy 默认把 `postgresql://` 解释成 **psycopg2**（未安装）。
+- **备选**：① 同步 SQLAlchemy + psycopg3；② async SQLAlchemy（`create_async_engine` + `async_sessionmaker`）；
+  ③ 新装 `psycopg2-binary` 沿用默认方言。
+- **决策**：①。`database_url` 保持 `postgresql://` 不动，只在 `core/database.py::to_sqlalchemy_url()`
+  映射成 `postgresql+psycopg://`；引擎关闭时 `pool_pre_ping=True`。
+- **理由**：
+  1. S1 的预处理 / 识别 / 评测脚本，以及 S2-7 起的 ARQ worker handler 都是同步代码；
+     async ORM 会逼出"脚本用同步、API 用异步"两套会话，事务语义容易分叉；
+  2. FastAPI 的 `def` 路由自动走线程池，同步会话不会阻塞事件循环；
+  3. 不新增驱动依赖，`/health`、`conftest`、`.env` 三处都不用改；
+  4. 少一层 greenlet，测试与排错简单。
+- **代价**：高并发下受线程池上限约束（本课题单机演示规模可控）；若将来要上 async，
+  模型层完全复用，只需改 `core/database.py` 与路由风格。
+- **验证**：`tests/test_database.py` 4 条（三种 URL 形态 + 引擎方言/预探活）；
+  `alembic upgrade head` 实跑成功；`pytest 264 passed`。
+
+---
+
+## D-037 迁移以模型为唯一来源，`alembic check` 零差异为门槛；JSONB 不设 server_default
+
+- **日期**：2026-11-19（S2-1）
+- **背景**：部分唯一索引（`postgresql_where`）、GIN、`DESC` 表达式索引、CHECK 表达式都不是
+  autogenerate 的强项；同时任务卡提示词要求"JSONB 用 `server_default='{}'::jsonb'`"，
+  但 `SCHEMA.md` 对 JSONB 列没有定义默认值（默认值列均为 `—`）。
+- **决策**：
+  1. **模型是唯一来源**：约束/索引全部声明在 `app/models/*`，`enums.py` 生成 CHECK 文本；
+     `alembic revision --autogenerate` 只用于起草 `0001_init.py`，随后逐条对照 SCHEMA 人工核对；
+  2. **门槛是 `alembic check` 零差异**（"No new upgrade operations detected"），
+     再用集成测试从 `pg_constraint` / `pg_indexes` 回读约束与谓词，防止"迁移里漏了、库里没拦住"；
+  3. **JSONB 不设 server_default**（契约优先）：可空 JSONB 列缺省为 NULL，
+     `ticket_templates.field_specs_json` 保持 `NOT NULL` 且必须显式给值；
+     `report_forms.canonical_json` 保持 `TEXT`，不得优化成 JSONB。
+- **理由**：迁移是"生成当时的快照"，模型是持续演进的契约；用 `alembic check` 把两者钉在一起，
+  才能保证"库里看到的约束就是模型声明的约束"。给 JSONB 补 `'{}'` 会让"没有值"与"空对象"混淆，
+  且契约没要求——按 AGENTS §9 以 `SCHEMA.md` 为准，不擅自加。
+- **代价**：改模型必须同时生成新迁移并重跑 `alembic check`；集成测试依赖本地 Docker PG，
+  默认 `pytest` 不跑（`-m integration` 单独跑）。
+- **验证**：`alembic upgrade → downgrade base → upgrade` 往返成功；
+  `alembic check` 无差异；集成 23 条（16 表结构、枚举 CHECK 回读、5 条部分唯一索引、
+  `verified/verify_result` 一致性、密文/金额/十六进制格式、identity、外键等）。

@@ -1,23 +1,23 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-19（S1 阶段收口）
+> 最后更新：2026-11-19（S2-1 完成）
 
 ## 1. 一句话现状
 
-**S0（环境/骨架）+ S1（OCR 技术验证，S1-1~S1-6）全部完成**，自动化验收全绿；
-**下一步是 S2 阶段（基础框架，M1）的第一张卡：S2-1 数据库模型与迁移**。
+**S0（环境/骨架）+ S1（OCR 技术验证）+ S2-1（16 张表模型与首个 Alembic 迁移）全部完成**，自动化验收全绿；
+**下一步是 S2 阶段的第二张卡：S2-2 JWT 认证 + RBAC 三角色**。
 
 ## 2. 仓库与环境
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 10 个 commit，待用户 push**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 13 个 commit，待用户 push**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
-| 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1 |
+| 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、**SQLAlchemy 2.0.58、Alembic 1.20.1**（S2-1 起） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
 | OCR 模型 | 已缓存在 `~/.paddleocr/whl/{det,rec,cls}`（约 18MB），离线可用 |
-| Docker | `study-ocr-{postgres,redis,minio}` 三个容器 **healthy**（5433 / 6380 / 9002，控制台 9003） |
+| Docker | `study-ocr-{postgres,redis,minio}` 三个容器 **healthy**（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0001`（16 业务表 + alembic_version）** |
 | 依赖锁 | `backend/requirements.txt`（手写锁）+ `requirements.lock.txt`（pip freeze） |
 
 > ⚠️ `gmssl` **还没装**——那是 S4 密码链路才需要的，别提前装（会打乱 numpy 版本）。
@@ -25,6 +25,9 @@
 ## 3. 目录与关键文件（认路用）
 
 ```
+backend/app/models/      ← S2-1：16 张表模型（一表一文件）+ base.py（命名约定/CHECK 助手）+ enums.py
+backend/app/core/database.py  ← S2-1：`postgresql://` → `postgresql+psycopg://` 方言映射 + 引擎/会话工厂（S2-2 起用）
+backend/alembic/         ← S2-1：alembic.ini / env.py / versions/0001_init.py（URL 由 Settings 注入，不落盘）
 backend/app/ocr/          ← S1 的全部产出
   preprocess.py             预处理（EXIF→定位→透视/降级→去斜→照度→印章）+ needs_retake
   intake.py                 输入分流：PDF 只渲染、照片走预处理 + 重拍闸门   ← S3 会用
@@ -39,7 +42,7 @@ backend/eval/
   results/baseline_report.md            ← 论文可直接用的 Markdown 表（已入库）
 scripts/                  ← 所有跑批脚本（make_samples / verify_samples / ocr_demo /
                               layout_eval / field_eval / ocr_baseline / preprocess_demo …）
-docs/{spec,plan}/         ← 每张卡一份 spec + plan（S1-1 ~ S1-6 齐全）
+docs/{spec,plan}/         ← 每张卡一份 spec + plan（S1-1 ~ S1-6、S2-1 齐全）
 docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必读
 ```
 
@@ -62,9 +65,13 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 
 ```bash
 cd /e/BiSheXZY/study-OCR
+(cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表落库
+(cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
+(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 264 passed（默认跳过集成）
+(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration -q)      # 23 passed（需 Docker）
+.venv/Scripts/python.exe scripts/smoke.py                                   # 8 OK / 0 FAIL
 .venv/Scripts/python.exe scripts/check_annotations.py --strict
 .venv/Scripts/python.exe scripts/verify_samples.py                 # 数据集 5 项
-(cd backend && ../.venv/Scripts/python.exe -m pytest)              # 164 passed
 .venv/Scripts/python.exe scripts/preprocess_demo.py --limit 0      # 预处理分布 + 重拍数
 .venv/Scripts/python.exe scripts/layout_eval.py                    # 票种判对率
 .venv/Scripts/python.exe scripts/field_eval.py                     # 字段级表
@@ -84,18 +91,22 @@ cd /e/BiSheXZY/study-OCR
 | D-033 | amount/tax 用**合计约束反解**（唯一解才采用，带 `paired:sum:*` 标记） |
 | D-034 | 去斜阈值**不收紧**（1.0° 会让字段准确率掉 3–5 点） |
 | D-035 | **PDF 不做预处理**；照片走"拍前引导 + 拍后重拍判断"；透视加 2% 安全边距 |
+| D-036 | ORM 用**同步 SQLAlchemy 2.0 + psycopg3**；`postgresql://` 在 `core/database.py` 映射成 `postgresql+psycopg://`，不改 `.env` 与健康检查 |
+| D-037 | 迁移以**模型为唯一来源**，`alembic check` 零差异为门槛；**JSONB 不设 server_default**（契约未定义），`canonical_json` 保持 TEXT |
 
-## 7. 下一步：S2-1 数据库模型与迁移
+## 7. 下一步：S2-2 JWT 认证 + RBAC 三角色
 
-- 契约：`docs/API.md` + `docs/SCHEMA.md`（**16 张表**，定稿清单 20 项已全过，不要临时改列）；
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-1；
-- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-1-*.md`）→ plan（`docs/plan/s2-1-*.md`）→ 用户确认 → 写码**；
-- 依赖：SQLAlchemy 2.0 + Alembic（还没装）；
-- 环境已就绪：`study-ocr-postgres` 在 5433 端口、`.env` 已配好。
+- 契约：`docs/API.md` §2（login / refresh / me / logout + 权限矩阵）；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-2；
+- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-2-auth.md`）→ plan（`docs/plan/s2-2-auth.md`）→ 用户确认 → 写码**；
+- 依赖：`passlib[argon2]`（Argon2id）、`PyJWT` 或 `python-jose`（二选一先定并记 DECISIONS）、Redis（refresh 白名单）；
+- 可直接用的底座：`app/core/database.py`（引擎/会话工厂）、`models/users.py`（`role/status/password_hash`）、
+  `core/config.py`（`jwt_secret`）；
+- 注意：除 `ocr_jobs` 的阶段进度外，handler 内不得自行 commit 业务表（AGENTS §10.5）。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地 10 个 commit 需要用户执行 `git push`（AI 不推）；
+1. **push**：本地 13 个 commit 需要用户执行 `git push`（AI 不推）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；

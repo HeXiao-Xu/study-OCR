@@ -39,11 +39,18 @@ Pillow==12.3.0
 numpy==1.26.4
 opencv-python==4.6.0.66
 
-# --- 数据与对象存储（S0-5 只用于健康检查；ORM 在 S2-1 引入）---
+# --- 数据与对象存储（S0-5 健康检查；S2-1 起 ORM 复用同一个 psycopg3 驱动）---
 psycopg[binary]==3.3.9
 redis==8.1.0
 minio==7.2.20
 urllib3==2.8.0
+
+# --- ORM 与迁移（S2-1 起）---
+# SQLAlchemy 锁 2.0.x（AGENTS §2）；alembic 只在迁移/CI 用，不进运行时请求路径。
+# 驱动复用上面的 psycopg3：SQLAlchemy 方言写 postgresql+psycopg://，由 core/database.py 映射，
+# .env 里仍是 postgresql://（/health 与 psycopg 直连共用一份配置）。
+SQLAlchemy==2.0.58
+alembic==1.20.1
 
 # --- 测试 ---
 httpx==0.28.1

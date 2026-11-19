@@ -206,13 +206,13 @@ deploy/   scripts/   samples/（图片不入库）   secrets/（整目录不入�
 
 ### 10.8 一致性锚点（每个正式模块落地后回填，防代码风格漂移）
 
-> 当前为空（S0 阶段）。规则：第一个把某模块写成正式代码的任务，负责在此登记锚点文件，
+> 已登记模块见下表。规则：第一个把某模块写成正式代码的任务，负责在此登记锚点文件，
 > 后续同类代码先照锚点写；觉得锚点过时 → 先改锚点，再写新码。
 
 | 模块 | 锚点文件 | 回填任务 |
 |---|---|---|
 | 后端骨架 | `backend/app/core/{config,logging,exceptions,health}.py` + `backend/app/schemas/common.py` + `backend/app/main.py`（`create_app()` 工厂、`X-Trace-Id` 中间件、`request.state.trace_id`、异常处理器；`/health` 双路径 + 503 降级；`Settings` 缺项启动即抛 `ConfigError`） | S0-5 ✅ |
-| 数据模型与迁移 | 待回填 | S2-1 |
+| 数据模型与迁移 | `backend/app/models/base.py`（`DeclarativeBase` + 命名约定 + `hex64_check`/`probability_check`）+ `models/enums.py`（`StrEnum` 唯一来源，CHECK 文本由 `enum_check()` 拼接）+ 16 个一表一文件模型（`Identity(always=True)`、`TEXT + CHECK`、`NUMERIC(12,2)`、JSONB、部分唯一索引 `postgresql_where`、GIN、`DESC` 表达式索引；不写 relationship）+ `backend/alembic/{env.py,versions/0001_init.py}`（URL 由 Settings 注入不落盘；autogenerate 起草 → 人工对照 SCHEMA → `alembic check` 零差异为门槛）+ `core/database.py`（`postgresql://` → `postgresql+psycopg://` 方言映射）+ `tests/{test_models,test_migration}.py` | S2-1 ✅ |
 | 认证与权限依赖 | 待回填 | S2-2 |
 | 分页与筛选 | 待回填 | S2-4 |
 | 文件上传与去重 | 待回填 | S2-6 |

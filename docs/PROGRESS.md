@@ -6,10 +6,10 @@
 
 ## 当前状态
 
-- 阶段：**阶段 1（OCR 技术验证）已完成**；下一步进入**阶段 2（基础框架，M1）**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6（共 13 张卡，全部 ✅ 通过）
-- 最近完成：**S1 收尾补强第二轮**（D-035：PDF 不预处理 / 照片重拍闸门 / 透视加边距 / 四角点校验收紧）：字段级 **0.895**、整单 **0.650**、检测 Hmean **0.951**；`pytest 164 passed`
-- 下一步：**S2-1 数据库模型与迁移**（16 张表 + Alembic；契约见 `docs/SCHEMA.md`，定稿清单 20 项已全过）
+- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、**S2-1**（共 14 张卡，全部 ✅ 通过）
+- 最近完成：**S2-1 数据库模型与迁移**（16 表 + `0001_init`；往返 + `alembic check` 零差异；`pytest 264 passed`，集成 23 条）
+- 下一步：**S2-2 JWT 认证 + RBAC 三角色**（契约见 `docs/API.md` §2）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
@@ -37,7 +37,7 @@
 [x] S1-6 端到端基线脚本与指标计算 ★关键
 
 ## 阶段 2：基础框架（M1）
-[ ] S2-1 模型与首批迁移（16 张表）
+[x] S2-1 模型与首批迁移（16 张表）
 [ ] S2-2 JWT 认证 + RBAC 三角色 ★关键
 [ ] S2-3 行级数据隔离
 [ ] S2-4 分页、筛选与排序
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S2-1 | `backend/app/models/`（`base.py`、`enums.py` + 16 个一表一文件 + `__init__.py`）、`backend/alembic/{alembic.ini,env.py,script.py.mako,versions/0001_init.py}`、`backend/app/core/database.py`、`backend/tests/{test_models,test_database,test_migration}.py`、`docs/{spec,plan}/s2-1-db-models.md` | ① `alembic upgrade head` 成功；`downgrade base` 后只剩 `alembic_version`，再 `upgrade head` 成功；② `alembic check` = **No new upgrade operations detected**；③ `\dt` 17 个关系 = **16 业务表 + alembic_version**，主键全部 `GENERATED ALWAYS AS IDENTITY`；④ 5 条部分唯一索引与 GIN/DESC 索引在库里逐条核对（`pg_indexes`）；⑤ 集成 23 条：重复发票号被拦 + `void` 后放行、重复 `sha256`、同单两条 active 签名、同票种两个 active 模板、同 `file_id`/`form_id` 信封、`verified = (verify_result='ok')`、非法枚举、空 `wrapped_key_b64`、密文双空、负数金额、十六进制格式、`canonical_json` 原样、`Decimal` 往返、identity 自增、坏外键；⑥ `pytest 264 passed`（新增 100 条单元）、`pytest -m integration 23 passed`；⑦ `scripts/smoke.py` **8 OK / 0 FAIL**（后端临时起停验证） | ✅ 通过（JSONB 未按任务卡提示词设 `'{}'::jsonb` 默认值，按 SCHEMA 契约执行，理由见 D-037） |
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
 | S1-6 | `backend/eval/metrics.py`、`backend/eval/configs/baseline.yaml`、`scripts/ocr_baseline.py`、`backend/tests/test_metrics.py`、`backend/eval/results/baseline_report.md` | ① 60 张全链路基线：检测 **Hmean 0.951**、字符准确率 **0.819**、字段级 **0.895**、整单 **0.650**；② 预处理开关对照：Hmean 0.974（关）vs 0.951（开）、字段级 0.888 vs 0.895；③ 耗时 P50：preprocess 111ms + ocr 1422ms + layout 52ms + extract 1ms = 1591ms；④ 23 条指标单测全部手算断言；⑤ `pytest` 156 passed；⑥ Markdown 报告可直接贴论文 | ✅ 通过（整单 0.650，taxi 仍是最弱票种） |
@@ -128,7 +129,8 @@
 | 6 | 财务服务器私钥口令托管方式 | 走**环境变量** `FINANCE_KEY_PASSPHRASE`，不经 HTTP | API 验签入参 / D-016 |
 | 7 | 是否支持红冲 / 负数票 | **本期不支持**，`total_amount >= 0` 保留 | SCHEMA 定稿 #10 / D-013 |
 
-当前**无阻塞项**。S2-1 建迁移前还需人工复核的只有一项：部分索引与 CHECK 在 Alembic 里的写法（属实现细节，见 SCHEMA 定稿清单末尾）。
+当前**无阻塞项**。S2-1 已闭环：部分索引（`postgresql_where`）、GIN、`DESC` 表达式与 CHECK
+在 Alembic 里的写法已实跑验证，并配集成测试从 `pg_constraint` / `pg_indexes` 回读。
 
 S1-1 新增的遗留（不阻塞 S1-2）：
 
@@ -156,6 +158,21 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 19 | 票种判对率是**合成集**上的 100% | 真实票据（尤其遮挡严重的）会更低 | 论文如实写"合成集 100%，真实样本仅定性"；S6 用真实样本抽检 |
 
 ## 变更日志
+
+### 2026-11-19
+
+- **S2-1 完成**：16 张表模型 + 首个 Alembic 迁移。
+  · 依赖：`SQLAlchemy==2.0.58` + `alembic==1.20.1`；锁文件 diff 只有 4 行新增（alembic/greenlet/Mako/SQLAlchemy），既有版本零变动；
+  · 模型：`models/{base,enums}.py` + 16 个一表一文件；枚举 `StrEnum` 单一来源、CHECK 文本由 `enum_check()` 拼；
+    主键 `BIGINT GENERATED ALWAYS AS IDENTITY`、时间 `TIMESTAMPTZ + now()`、金额 `NUMERIC(12,2)`、JSONB 按契约；
+  · 迁移：`0001_init.py` 由 autogenerate 起草后**逐条对照 SCHEMA 人工核对**；`alembic check` 零差异；
+    `upgrade → downgrade base → upgrade` 往返通过，`\dt` = 16 业务表 + `alembic_version`；
+  · 业务不变式下沉到库：发票号 `(invoice_code, invoice_no) WHERE status <> 'void'`、每单一条 active 签名、
+    每票种一版 active 模板、文件/报销单各一个信封、`(invoice_id, field_name)` / `(invoice_id, page_no, line_no)` /
+    `(form_id, invoice_id)` 复合唯一、`verified = (verify_result = 'ok')` 一致性；
+  · 驱动：不装 psycopg2，`core/database.py` 把 `postgresql://` 映射成 `postgresql+psycopg://`（D-036）；
+  · 实测：`pytest 264 passed`（新增 100 条单元 + 23 条集成）；`alembic check` 无差异；smoke 8 OK / 0 FAIL；
+  · 与任务卡提示词的唯一差异：JSONB **不设** `'{}'::jsonb` 默认值（SCHEMA 未定义默认值，按契约优先；D-037）。
 
 ### 2026-11-18
 
