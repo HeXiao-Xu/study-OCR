@@ -1,18 +1,18 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-19（S2-2 完成）
+> 最后更新：2026-11-19（S2-3 完成）
 
 ## 1. 一句话现状
 
-**S0（环境/骨架）+ S1（OCR 技术验证）+ S2-1（16 表）+ S2-2（JWT 认证 + RBAC）全部完成**，自动化验收全绿；
-**下一步是 S2 阶段的第三张卡：S2-3 行级数据隔离**。
+**S0（环境/骨架）+ S1（OCR 技术验证）+ S2-1（16 表）+ S2-2（JWT 认证）+ S2-3（行级隔离）全部完成**，自动化验收全绿；
+**下一步是 S2 阶段的第四张卡：S2-4 分页、筛选与排序**。
 
 ## 2. 仓库与环境
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 14 个 commit，待用户 push**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 15 个 commit，待用户 push**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
 | 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**（Argon2id） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
@@ -31,6 +31,7 @@ backend/alembic/         ← S2-1/S2-2：alembic.ini / env.py / versions/{0001_i
 backend/app/core/{security,redis}.py  ← S2-2：Argon2id + HS256 JWT；Redis 单例
 backend/app/services/{auth_service,token_store}.py  ← S2-2：注册/认证/签发/轮换/吊销；refresh 白名单
 backend/app/api/{deps.py,v1/auth.py}  ← S2-2：Bearer 解析、get_current_user、require_roles、5 条 auth 路由
+backend/app/services/repository.py  ← S2-3：行级隔离（策略表 + filter_visible + get_visible_or_404，deny-by-default）
 backend/app/ocr/          ← S1 的全部产出
   preprocess.py             预处理（EXIF→定位→透视/降级→去斜→照度→印章）+ needs_retake
   intake.py                 输入分流：PDF 只渲染、照片走预处理 + 重拍闸门   ← S3 会用
@@ -70,8 +71,8 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表，head=0002
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
-(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 288 passed（默认跳过集成）
-(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 51 passed（需 Docker）
+(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 297 passed（默认跳过集成）
+(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 74 passed（需 Docker）
 .venv/Scripts/python.exe scripts/smoke.py                                   # 8 OK / 0 FAIL
 # 建 reviewer / admin 账号（注册接口只产生 submitter）
 (cd backend && ../.venv/Scripts/python.exe ../scripts/create_user.py --username reviewer1 --role reviewer --real-name 审核员)
@@ -101,21 +102,20 @@ cd /e/BiSheXZY/study-OCR
 | D-038 | 认证用 **PyJWT 2.15.1 + passlib Argon2id**（m=64MiB/t=3/p=4，实测 hash 59.4ms / verify 45.7ms）；HS256 显式白名单 + `typ` 声明 |
 | D-039 | **登出只吊销 refresh**：access 在剩余 30min 内仍可用（无状态 JWT 的固有代价），论文"不足"如实写 |
 | D-040 | `audit_logs.action` 补 `login_failed` / `logout` / `forbidden`（0002 迁移）；**审计行留 S4-7**，S2-2 只写脱敏应用日志 |
+| D-041 | 行级隔离用**应用层统一过滤**（`services/repository.py`），不用 RLS：连接池 + `SET LOCAL` 会串身份、policy 复杂度高、可测试性差 |
 
-## 7. 下一步：S2-3 行级数据隔离
+## 7. 下一步：S2-4 分页、筛选与排序
 
-- 契约：`docs/API.md` §0（数据隔离：隐式 `uploader_id = current_user.id`，越权统一 404/40400）
-  与 §2 票据接口的权限列；
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-3；
-- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-3-isolation.md`）→ plan → 用户确认 → 写码**；
-- 可直接用的底座：`api/deps.py::get_current_user` / `require_roles`、`services/auth_service.py`、
-  `core/database.py::get_db`；
-- 关键约定：过滤逻辑集中在**一个** `filter_visible(query, user)`（列表与详情共用，禁止各接口手写 where）；
-  资源级越权用 `PermissionDeniedError`（全局处理器转 404），**不要**用 `RoleForbiddenError`（那是角色级 403）。
+- 契约：`docs/API.md` §0（`page/page_size` 默认 20/上限 100、`sort_by` 白名单、`order`）与 §2 列表接口；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-4；
+- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-4-pagination.md`）→ plan → 用户确认 → 写码**；
+- 底座：`services/repository.py::filter_visible`——**先过滤再 count**，且 count 与数据用同一 where；
+- 关键坑：`sort_by` 只接受白名单映射（防 SQL 注入）；列表关联用 `selectinload` 防 N+1；
+  5 万条 p95 < 300ms（任务卡要求写 `scripts/bench_list.py`）。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地 14 个 commit 需要用户执行 `git push`（AI 不推）；
+1. **push**：本地 15 个 commit 需要用户执行 `git push`（AI 不推）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；

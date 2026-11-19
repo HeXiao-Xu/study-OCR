@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1、S2-2 已完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1、**S2-2**（共 15 张卡，全部 ✅ 通过）
-- 最近完成：**S2-2 JWT 认证 + RBAC 三角色**（refresh 轮换 + Redis 白名单 + Argon2id；`pytest 288 passed`，集成 51 条）
-- 下一步：**S2-3 行级数据隔离**（`submitter` 只看本人数据；越权 404；契约见 `docs/API.md` §0/§2）
+- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-3 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-3**（共 16 张卡，全部 ✅ 通过）
+- 最近完成：**S2-3 行级数据隔离**（统一 `filter_visible` / `get_visible_or_404`；deny-by-default；`pytest 297 passed`，集成 74 条）
+- 下一步：**S2-4 分页、筛选与排序**（列表协议 + 5 万条性能；契约见 `docs/API.md` §0/§2）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
-  - 本地领先 origin **14 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **15 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -39,7 +39,7 @@
 ## 阶段 2：基础框架（M1）
 [x] S2-1 模型与首批迁移（16 张表）
 [x] S2-2 JWT 认证 + RBAC 三角色 ★关键
-[ ] S2-3 行级数据隔离
+[x] S2-3 行级数据隔离
 [ ] S2-4 分页、筛选与排序
 [ ] S2-5 票据表与 CRUD（invoices / invoice_files）
 [ ] S2-6 文件上传 + MinIO + sha256 去重 ★关键
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S2-3 | `backend/app/services/repository.py`、`backend/tests/{test_repository,test_isolation}.py`、`docs/{spec,plan}/s2-3-isolation.md` | ① 策略表覆盖 `invoices` / `invoice_files` / `report_forms`；未登记模型 `false()` 默认拒绝；② submitter A/B 列表互相不可见、B 查 A 详情抛 `PermissionDeniedError`（存在但无权）与 `NotFoundError`（确实不存在）内部可区分；③ reviewer 能看到全部票据/文件，报销单只看到 `submitted/approved/rejected/archived`（8 状态参数化）；④ admin 三类业务数据全 404；⑤ 列表与详情对四种角色逐一一致；⑥ HTTP（真实 `create_app()` + 异常处理器）：B 查 A → **404/40400**、reviewer 200、admin 404、未登录 401、B 列表不含 A；⑦ `pytest 297 passed`、`pytest -m integration 74 passed`（隔离 23 条） | ✅ 通过（生产 `/invoices` 接口在 S2-5 接同一函数，届时补手工换 id 验收） |
 | S2-2 | `backend/app/{core/{security,redis}.py, services/{auth_service,token_store}.py, schemas/auth.py, api/deps.py, api/v1/auth.py, utils/text.py}`、`backend/alembic/versions/0002_audit_action_login_logout.py`、`scripts/create_user.py`、`backend/tests/{test_security,test_auth}.py`、`docs/{spec,plan}/s2-2-auth.md` | ① `POST /auth/register`（201，固定 submitter、用户名 trim+小写）/ `login`（200，`expires_in=1800`、`refresh_expires_in=604800`）/ `me`（角色来自数据库）/ `refresh`（轮换：旧 refresh 立即 401）/ `logout`（吊销 refresh，幂等）；② 登录失败未知账号与错口令**同码同文案**（401/40101），`disabled/locked` → 403/40301；③ `require_roles("reviewer")` 对 submitter 返回 **403**、reviewer 200；④ 真实 uvicorn + Redis 手工链路：login→redis 白名单 1 key→refresh 轮换→旧令牌 401→logout→refresh 401，冒烟用户与 Redis key 均已清理；⑤ `cat /dev/null` 无泄漏：失败日志只含 `username_sha256`，不含口令；⑥ Argon2id 实测 hash **59.4ms** / verify **45.7ms**（m=64MiB,t=3,p=4）；⑦ `pytest 288 passed`、`pytest -m integration 51 passed`、smoke **8 OK / 0 FAIL** | ✅ 通过（register 按 API.md 开放；审计枚举补 3 值 + 0002，但审计行留 S4-7，见 D-040） |
 | S2-1 | `backend/app/models/`（`base.py`、`enums.py` + 16 个一表一文件 + `__init__.py`）、`backend/alembic/{alembic.ini,env.py,script.py.mako,versions/0001_init.py}`、`backend/app/core/database.py`、`backend/tests/{test_models,test_database,test_migration}.py`、`docs/{spec,plan}/s2-1-db-models.md` | ① `alembic upgrade head` 成功；`downgrade base` 后只剩 `alembic_version`，再 `upgrade head` 成功；② `alembic check` = **No new upgrade operations detected**；③ `\dt` 17 个关系 = **16 业务表 + alembic_version**，主键全部 `GENERATED ALWAYS AS IDENTITY`；④ 5 条部分唯一索引与 GIN/DESC 索引在库里逐条核对（`pg_indexes`）；⑤ 集成 23 条：重复发票号被拦 + `void` 后放行、重复 `sha256`、同单两条 active 签名、同票种两个 active 模板、同 `file_id`/`form_id` 信封、`verified = (verify_result='ok')`、非法枚举、空 `wrapped_key_b64`、密文双空、负数金额、十六进制格式、`canonical_json` 原样、`Decimal` 往返、identity 自增、坏外键；⑥ `pytest 264 passed`（新增 100 条单元）、`pytest -m integration 23 passed`；⑦ `scripts/smoke.py` **8 OK / 0 FAIL**（后端临时起停验证） | ✅ 通过（JSONB 未按任务卡提示词设 `'{}'::jsonb` 默认值，按 SCHEMA 契约执行，理由见 D-037） |
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
@@ -161,11 +162,22 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 21 | `login_failed` / `logout` / `forbidden` 审计行尚未写入 | 哈希链在 S4-7 才实现，写裸行会破坏链式不变式 | S4-7 实现链时一并写入；当前只有带 `username_sha256` 的应用日志（D-040） |
 | 22 | 登出后 access token 在剩余 30min 内仍有效 | 无状态 JWT 的固有代价 | 论文"不足"如实写；要即时失效需引入黑名单/会话表（D-039） |
 | 23 | 无登录失败计数 / 自动锁定 / 限流 | `users.status='locked'` 只能由管理动作设置 | S7 安全加固按需补；当前统一 401 文案，不泄露账号存在性 |
+| 24 | 生产 `/invoices` 列表/详情接口尚未接入隔离层 | S2-3 只用测试专用路由证明 HTTP 404 语义（接口属 S2-5） | S2-5 必须调用 `filter_visible` / `get_visible_or_404`，并补"手工换 id 得 404"验收 |
 
 ## 变更日志
 
 ### 2026-11-19
 
+- **S2-3 完成**：行级数据隔离。
+  · 统一入口 `services/repository.py`：`scope_for` / `filter_visible` / `select_visible` /
+    `get_visible_or_404`，列表与详情共用同一谓词，杜绝"详情改了列表忘了"；
+  · 规则：submitter 仅本人行；reviewer 票据/文件全量、报销单仅 `submitted/approved/rejected/archived`；
+    admin 业务表一律 404；**未登记模型 `false()` 默认拒绝**；
+  · 越权语义：对外统一 404/40400（不泄露存在性），内部区分 `NotFoundError` / `PermissionDeniedError`，
+    为 S4-7 的 `action=forbidden` 审计留语义；
+  · 决策 D-041：应用层过滤而非 RLS（连接池 + `SET LOCAL` 串身份风险、policy 复杂度、可测试性）；
+  · 实测：`pytest 297 passed`、`pytest -m integration 74 passed`（隔离 23 条，含 8 个报销单状态参数化、
+    四角色列表/详情一致性、HTTP 404 语义）；无库结构变更，`alembic check` 仍零差异。
 - **S2-2 完成**：JWT 认证 + RBAC 三角色。
   · 依赖：`PyJWT==2.15.1` + `passlib[argon2]==1.7.4` + `argon2-cffi==25.1.0`（锁文件只新增 2 行）；
   · 令牌：HS256，access 30min / refresh 7d，载荷含 `typ`（防 refresh 当 access 用）；`jti` 走 `secrets`；

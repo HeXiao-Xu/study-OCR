@@ -710,3 +710,31 @@
 - **代价**：`0002` 的 `downgrade` 在有新 action 行时**显式拒绝**（审计不可删）；三个待补 action 还会再产生一次迁移。
 - **验证**：`pg_get_constraintdef` 回读 12 个值；`tests/test_migration.py::test_enum_checks_in_database_match_code`
   断言库内 CHECK 与 `enums.py` 完全一致；`alembic upgrade/downgrade` 往返通过。
+
+---
+
+## D-041 行级隔离用应用层统一过滤，不用 PostgreSQL RLS
+
+- **日期**：2026-11-19（S2-3；任务卡要求记录。SCHEMA 定稿 #17 引用的是 D-016，但 D-016 实际只写了会话形状与口令托管，没有 RLS 论证，本条补上）
+- **背景**：权限矩阵要求 `submitter` 只看本人、`reviewer` 看全量、`admin` 对业务表一律 404。
+  可选：① 应用层统一 `filter_visible`；② PostgreSQL RLS（`SET LOCAL app.user_id` + policy）；③ 每角色一套视图。
+- **决策**：①，RLS 列为"可加固项/展望"。
+- **理由**：
+  1. **连接池 + `SET LOCAL` 的坑**：RLS 靠会话级变量表达"当前用户"。连接池复用连接时，
+     必须保证每个事务都 `SET LOCAL` 且事务边界与请求边界严格一致；一旦用了 `SET`（非 `LOCAL`）
+     或在事务外设置，**下一个请求会串用上一个人的身份**——比"忘写 where"更隐蔽的越权。
+     本项目还有 ARQ worker、初始化脚本、Alembic 三个无请求上下文的入口，RLS 需要额外的
+     `BYPASSRLS` 角色与独立连接串，身份传递每多一层就多一个越权入口。
+  2. **策略复杂度**：可见性不是"按人一刀切"——reviewer 对报销单只看 `submitted` 之后，
+     admin 对业务表连自己的都不看（404）。RLS 要写多条 policy + 角色切换；
+     应用层就是一张策略表 + 一个函数（`services/repository.py`），评审时 grep 一次就能确认覆盖面。
+  3. **可测试性**：谓词是纯函数，可以在 pytest 里同时断言 SQL 与结果；RLS 的错误往往只在
+     真实连接池与并发下才复现，正好是毕设最没有时间排查的一类问题。
+  4. **与既有安全边界一致**：业务字段本来就以明文存库，靠 DB 账号权限 + 应用层过滤
+     （SCHEMA §8 已写明"不是服务端零知识"）；RLS 不会改变"DBA 直连可读"的残余风险。
+- **代价**：所有读查询必须走 `repository.py`，漏用不会被数据库拦住；deny-by-default 只保护
+  未登记模型，已登记模型仍靠代码纪律 + 每个读接口的"他人数据 404"测试兜底。
+  论文"不足"里如实写：应用层过滤的正确性依赖实现纪律，可加固为 RLS，但要付出上述连接池成本。
+- **验证**：`tests/test_repository.py` 9 条（三角色 × 三模型谓词、未登记模型默认拒绝、
+  过滤不覆盖调用方条件）；`tests/test_isolation.py` 23 条（角色 × 模型、报销单 8 状态、
+  列表/详情一致性、HTTP 404/40400）。
