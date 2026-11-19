@@ -136,6 +136,7 @@ deploy/   scripts/   samples/（图片不入库）   secrets/（整目录不入�
 - `docs/SCHEMA.md`：数据结构的唯一依据，冲突时以它为准。
 - `docs/API.md`：接口契约的唯一依据，前后端都以它为准。
 - `docs/PROGRESS.md`：当前进度与遗留问题的唯一依据。
+- `docs/HANDOFF.md`：**会话交接入口**（环境、复现命令、指标、关键取舍、下一步）。开新会话先读它。
 - `docs/EVAL.md`：评测口径与实验数字，**只读契约，AI 不得修改其中数字**。
 - `docs/DECISIONS.md`：选型与取舍记录，论文"方案选型"章节的草稿。
 - 方案见 `docs/OCR票据识别与加密系统-毕业设计完整方案.md`；

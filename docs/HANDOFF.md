@@ -1,0 +1,111 @@
+# 会话交接（HANDOFF）
+
+> 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
+> 最后更新：2026-11-19（S1 阶段收口）
+
+## 1. 一句话现状
+
+**S0（环境/骨架）+ S1（OCR 技术验证，S1-1~S1-6）全部完成**，自动化验收全绿；
+**下一步是 S2 阶段（基础框架，M1）的第一张卡：S2-1 数据库模型与迁移**。
+
+## 2. 仓库与环境
+
+| 项 | 值 |
+|---|---|
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 10 个 commit，待用户 push**） |
+| Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
+| 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1 |
+| pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
+| OCR 模型 | 已缓存在 `~/.paddleocr/whl/{det,rec,cls}`（约 18MB），离线可用 |
+| Docker | `study-ocr-{postgres,redis,minio}` 三个容器 **healthy**（5433 / 6380 / 9002，控制台 9003） |
+| 依赖锁 | `backend/requirements.txt`（手写锁）+ `requirements.lock.txt`（pip freeze） |
+
+> ⚠️ `gmssl` **还没装**——那是 S4 密码链路才需要的，别提前装（会打乱 numpy 版本）。
+
+## 3. 目录与关键文件（认路用）
+
+```
+backend/app/ocr/          ← S1 的全部产出
+  preprocess.py             预处理（EXIF→定位→透视/降级→去斜→照度→印章）+ needs_retake
+  intake.py                 输入分流：PDF 只渲染、照片走预处理 + 重拍闸门   ← S3 会用
+  detector.py / recognizer.py / types.py   PaddleOCR 封装 + OcrLine/OcrResult 契约
+  layout.py + templates/*.yaml              票种识别（5 类）+ 区域划分
+  extractor.py + templates/field_rules.yaml 字段抽取（锚点规则）
+  validators.py             校验器（纯函数 + Decimal）
+backend/eval/
+  metrics.py                全部指标（纯函数，唯一实现）
+  configs/baseline.yaml     基线配置
+  datasets/annotations_synth_v1.jsonl   60 张标注
+  results/baseline_report.md            ← 论文可直接用的 Markdown 表（已入库）
+scripts/                  ← 所有跑批脚本（make_samples / verify_samples / ocr_demo /
+                              layout_eval / field_eval / ocr_baseline / preprocess_demo …）
+docs/{spec,plan}/         ← 每张卡一份 spec + plan（S1-1 ~ S1-6 齐全）
+docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必读
+```
+
+## 4. 当前指标（60 张合成集，CPU）
+
+| 指标 | 值 | 出处 |
+|---|---|---|
+| 检测 Hmean | **0.951**（P 0.967 / R 0.930） | `scripts/ocr_baseline.py` |
+| 字符准确率 | **0.819** | 同上 |
+| 字段级准确率 | **0.895**（385/430） | 同上 / `field_eval.py` |
+| 整单正确率 | **0.650** | 同上 |
+| 票种判对率 | **100%**（60/60） | `layout_eval.py` |
+| 预处理 | P50 75ms / P95 201ms；正视角 17 / 透视 21 / 兜底 22 / 失败 0 | `preprocess_demo.py` |
+| OCR 单张推理 | P50 ≈1.4s（P95 ≈2.0s） | baseline 报告 |
+
+**最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
+`vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
+
+## 5. 一条命令复现全部验收
+
+```bash
+cd /e/BiSheXZY/study-OCR
+.venv/Scripts/python.exe scripts/check_annotations.py --strict
+.venv/Scripts/python.exe scripts/verify_samples.py                 # 数据集 5 项
+(cd backend && ../.venv/Scripts/python.exe -m pytest)              # 164 passed
+.venv/Scripts/python.exe scripts/preprocess_demo.py --limit 0      # 预处理分布 + 重拍数
+.venv/Scripts/python.exe scripts/layout_eval.py                    # 票种判对率
+.venv/Scripts/python.exe scripts/field_eval.py                     # 字段级表
+.venv/Scripts/python.exe scripts/ocr_baseline.py --compare-preprocess   # 出论文报告
+```
+
+## 6. S1 期间做的**重要取舍**（都记在 `docs/DECISIONS.md`，别重复踩）
+
+| 决策 | 要点 |
+|---|---|
+| D-023 | 票种以**数电票**为主流（旧版增值税电子普通发票为历史形态） |
+| D-027 | OCR 依赖**整组锁死**：paddleocr 2.7.3 + paddle 2.6.2 + numpy 1.26 + opencv 4.6（会自动顶 numpy 2，必须压住） |
+| D-028 | 票种识别用**关键字规则**，不上分类器（60 张必过拟合） |
+| D-029 | 四角点四项校验（自交/退化/对边均衡/**单边裁切**）——"warp 成功 ≠ warp 正确" |
+| D-031 | 检测指标用**覆盖匹配**（标注是元素级、引擎出行级）；论文必须写明口径 |
+| D-032 | **排除超市购物小票**（非合规报销凭证）；范围=五类合规票据 |
+| D-033 | amount/tax 用**合计约束反解**（唯一解才采用，带 `paired:sum:*` 标记） |
+| D-034 | 去斜阈值**不收紧**（1.0° 会让字段准确率掉 3–5 点） |
+| D-035 | **PDF 不做预处理**；照片走"拍前引导 + 拍后重拍判断"；透视加 2% 安全边距 |
+
+## 7. 下一步：S2-1 数据库模型与迁移
+
+- 契约：`docs/API.md` + `docs/SCHEMA.md`（**16 张表**，定稿清单 20 项已全过，不要临时改列）；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-1；
+- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-1-*.md`）→ plan（`docs/plan/s2-1-*.md`）→ 用户确认 → 写码**；
+- 依赖：SQLAlchemy 2.0 + Alembic（还没装）；
+- 环境已就绪：`study-ocr-postgres` 在 5433 端口、`.env` 已配好。
+
+## 8. 未闭合 / 需要用户参与的点
+
+1. **push**：本地 10 个 commit 需要用户执行 `git push`（AI 不推）；
+2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
+3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
+4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；
+5. `intake.prepare_input` 还没接进 Worker —— **S3-1 串流水线时必须接上**（接口已定好）；
+6. 真实样本只剩 1 份（数电票 PDF，仅本地）：论文需如实写"合成集为主 + 1 份真实件定性校验"。
+
+## 9. 工作方式约定（用户偏好，新会话请沿用）
+
+- 用户是"放手型"：希望**替他做决定并给理由**，事后复核，不要每步都问；
+- 但**功能级任务卡要走 spec → plan → 确认**（AGENTS §11），小修/bugfix 可只在对话里给设计；
+- 汇报风格：先给**实测数字与命令输出**，再解释"为什么这样做"，**不要粉饰**（做不到就直说）；
+- 每次收口都要更新 `docs/PROGRESS.md`，新增取舍写 `docs/DECISIONS.md`；
+- 提交信息用 Conventional Commits（含任务号，如 `feat(s2-1): ...`）；**push 永远由用户做**。

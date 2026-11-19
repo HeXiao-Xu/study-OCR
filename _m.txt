@@ -1,0 +1,11 @@
+docs: 新增会话交接文档 HANDOFF.md，并同步 README/PROGRESS/AGENTS 的入口
+
+- docs/HANDOFF.md（新）：一页式交接——环境与版本、目录指路、当前指标、一条命令复现全部验收、
+  S1 期间的关键取舍（D-023~D-035）、下一步 S2-1 的入口、未闭合事项、工作方式约定
+- AGENTS §9 增加 HANDOFF 指引（开新会话先读）
+- PROGRESS 顶部加 HANDOFF 指针；「当前状态」修正为「阶段 1 已完成、下一步 S2」
+  （原先还写着「阶段 0、M0 前段」，是过期信息）
+- README「当前状态」从「S0 完成、S1 未开始」更新为「S0+S1 完成」，并列出 S1 关键指标
+  （检测 Hmean 0.951 / 字符 0.819 / 字段级 0.895 / 整单 0.650 / 票种 100%）
+
+验收：pytest 164 passed；check_annotations --strict 全过；verify_samples 5/5
