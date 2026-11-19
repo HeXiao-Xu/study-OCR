@@ -23,7 +23,7 @@ const plan = computed(() => route.meta.placeholder ?? '后续任务')
       <el-result
         icon="info"
         :title="`${title}（待实现）`"
-        :sub-title="`计划在 ${plan} 实现；当前版本只完成登录、上传、票据列表与详情。`"
+        :sub-title="`${plan}；当前版本只完成登录、上传、票据列表与详情。`"
       />
     </el-card>
   </div>

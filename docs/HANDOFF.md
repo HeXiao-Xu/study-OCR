@@ -176,6 +176,7 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
   上传 → worker → `invoice_fields` 落库 → 详情可见。
 - 底座：`app/tasks/ocr_task.py::_run_pipeline` 就是占位入口（现在抛 `TaskNotReadyError`）；
   `job_service` 的幂等/重试/僵尸恢复已就绪；`ocr/templates/*.yaml` 与 S2-8 的 DB 模板都可用。
+- 注意：S2-8 只做了**模板/规则的后端**；管理端页面未排期（此前占位页误标 S2-12，已在 PROGRESS 遗留 53 更正）。
 
 ## 8. 未闭合 / 需要用户参与的点
 
