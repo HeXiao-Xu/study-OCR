@@ -824,3 +824,32 @@
 - **验证**：`tests/test_upload.py` 11 条（成功/去重/空文件/超限/假图/TIFF/PDF 页数/权限/补偿/503/文件名清洗）；
   真实 uvicorn + MinIO 手工：202 → 二次 409 + 同一 `invoice_id`、MinIO 只有 1 个对象、
   `is_cipher=false`、对象与测试数据已清理；`pytest 311 passed`、`pytest -m integration 129 passed`。
+
+---
+
+## D-045 ARQ 作业框架：redis 客户端随 ARQ 降级；重试/幂等/僵尸恢复的落地口径
+
+- **日期**：2026-11-19（S2-7）
+- **背景**：要落地 ARQ 投递/重试/幂等。任务卡要求写 `attempts/started_at/finished_at` 与 `low_confidence`，
+  但 `ocr_jobs` 只有 `retry_count / created_at / elapsed_ms`、状态只有 `pending/running/succeeded/failed`（SCHEMA §3.5/§9.9）。
+- **决策**：
+  1. **依赖**：`arq==0.28.0`。它硬性要求 `redis<6`，因此 redis-py 从 **8.1.0 降到 5.3.1**（并引入 hiredis），
+     Redis 7 服务端不变；`/health`、refresh 白名单、脚本用法全部用 5.3 兼容 API，全量回归通过。
+  2. **不改表**：尝试次数用 `retry_count`（1=第一次尝试），耗时用 `elapsed_ms`，不新增 `attempts/started_at/finished_at`；
+     任务卡的 `low_confidence` 不进入作业状态（它是字段置信度/`extract_status` 的事）。
+  3. **幂等双保险**：执行前先看终态（`succeeded/failed` 直接跳过），再用 Redis `SET job:lock:{id} 1 NX EX 600`
+     防并发/重复投递；锁在每次尝试结束时释放，重试才能重新拿到。
+  4. **重试**：`max_tries=3`；只有网络/临时 IO/内存类（`RetryableTaskError`、`ConnectionError`、`TimeoutError`、
+     `OSError`、`MemoryError`、`ServiceUnavailableError`）重试；参数/逻辑错误直接 `failed`。
+     退避表 `(5, 30, 120)`：第 1 次失败后 5s、第 2 次后 30s，第 3 次失败即终态（120s 留给后续调大 `max_tries`）。
+  5. **僵尸恢复**：worker `on_startup` 把 `status='running'` 且 `created_at` 超过 **30min** 的作业置 `failed`。
+     `ocr_jobs` 没有 `started_at`，只能用 `created_at` 做保守近似；论文里如实写这个局限。
+  6. **`ocr_task` 在 S3-1 前如实失败**（`TaskNotReadyError`），不伪造 `succeeded`；S3-1 只替换 `_run_pipeline`。
+  7. **入队失败**：上传已落库时把 job 置 `failed` 并返回 503（不返回假成功）；客户端重试会命中 sha256 去重，
+     需要后续提供一个"重跑失败作业"的运维入口（登记为遗留）。
+- **理由**：ARQ 是 AGENTS §2 指定的队列；状态列与值以 SCHEMA 为唯一依据；幂等必须同时防"重复投递"与"并发执行"。
+- **代价**：redis 客户端降级；`ocr_jobs` 没有 `started_at` 导致僵尸判定是近似值；入队失败的票据需要人工重跑入口。
+- **验证**：`tests/test_jobs.py` 12 单元 + 7 集成（成功/终态跳过/锁占用/5s→30s→failed/永久失败/僵尸恢复/入队失败），
+  `tests/test_upload.py` 12 条（含入队成功与入队失败）；真实 ARQ worker + uvicorn 手工：上传 202 → worker 取到 job →
+  `ocr_jobs` 变 `failed`、`retry_count=1`、错误为"TaskNotReadyError: OCR 流水线未接入（S3-1）"；
+  `pytest 323 passed`、`pytest -m integration 137 passed`；smoke 8 OK。

@@ -30,9 +30,10 @@ from app.core.exceptions import (
 from app.models.enums import InvoiceStatus, UserRole
 from app.models.invoice_files import InvoiceFile
 from app.models.invoices import Invoice
-from app.models.ocr_jobs import OcrJob
+from app.models.ocr_jobs import OcrJob  # noqa: F401 - 仅用于返回类型标注
 from app.models.users import User
 from app.schemas.invoice import UploadData, UploadDedup
+from app.services import job_service
 from app.services.storage import StorageService
 
 logger = logging.getLogger("app.upload")
@@ -236,15 +237,7 @@ def _persist(
     db.add(invoice)
     db.flush()
 
-    job = OcrJob(
-        invoice_id=invoice.id,
-        stage="preprocess",
-        status="pending",
-        engine="paddleocr",
-        retry_count=0,
-    )
-    db.add(job)
-
+    job = job_service.create_job(db, invoice_id=invoice.id)
     db.commit()
     for row in (file_row, invoice, job):
         db.refresh(row)

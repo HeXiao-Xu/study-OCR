@@ -7,6 +7,9 @@
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
+from arq.connections import RedisSettings
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
@@ -18,6 +21,7 @@ from app.core.security import TokenType, decode_token
 from app.models.enums import UserStatus
 from app.models.users import User
 from app.services.token_store import RefreshTokenStore, build_token_store
+from app.tasks.queue import ArqOcrTaskQueue, OcrTaskQueue
 
 # auto_error=False：缺 Authorization 时由我们统一抛 AuthError（统一壳 + 40101），
 # 而不是 FastAPI 默认的 403 "Not authenticated"。
@@ -26,6 +30,12 @@ bearer_scheme = HTTPBearer(auto_error=False, description="Bearer JWT（HS256）"
 
 def get_token_store() -> RefreshTokenStore:
     return build_token_store()
+
+
+@lru_cache(maxsize=1)
+def get_task_queue() -> OcrTaskQueue:
+    settings = get_settings()
+    return ArqOcrTaskQueue(RedisSettings.from_dsn(settings.redis_url))
 
 
 def get_current_user(

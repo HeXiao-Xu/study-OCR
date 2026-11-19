@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-6 已完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-6**（共 19 张卡，全部 ✅ 通过）
-- 最近完成：**S2-6 文件上传 + MinIO + sha256 去重**（202 上传 / 409 去重 / 补偿删除；`pytest 311 passed`，集成 129 条）
-- 下一步：**S2-7 ARQ 异步任务框架**（投递、重试、幂等；把上传后的 pending 作业真正跑起来）
+- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-7 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-7**（共 20 张卡，全部 ✅ 通过）
+- 最近完成：**S2-7 ARQ 异步任务框架**（投递/重试/幂等/僵尸恢复；`pytest 323 passed`，集成 137 条）
+- 下一步：**S2-8 票种模板与规则管理**（模板/规则落库、60s 热更新；契约见 `docs/API.md` §3）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
-  - 本地领先 origin **18 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **19 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -43,7 +43,7 @@
 [x] S2-4 分页、筛选与排序
 [x] S2-5 票据表与 CRUD（invoices / invoice_files）
 [x] S2-6 文件上传 + MinIO + sha256 去重 ★关键
-[ ] S2-7 ARQ 异步任务框架（状态机 + 重试 + 幂等）
+[x] S2-7 ARQ 异步任务框架（状态机 + 重试 + 幂等）
 [ ] S2-8 票种模板与规则管理
 [ ] S2-9 前端登录与主框架
 [ ] S2-10 前端上传页
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S2-7 | `backend/app/services/job_service.py`、`backend/app/tasks/{worker,ocr_task,queue}.py`、`backend/app/api/v1/files.py`（入队）、`backend/app/api/deps.py`（`get_task_queue`）、`backend/tests/{test_jobs,test_upload}.py`、`docs/{spec,plan}/s2-7-arq.md` | ① 作业状态机 `pending→running→succeeded|failed`、可重试失败回 `pending`；② 幂等双保险：终态跳过 + Redis `SET NX EX 600`（锁占用返回 `locked`、handler 不执行）；③ 重试：第 1 次失败退避 **5s**、第 2 次 **30s**、第 3 次终态 `failed` 且 `retry_count=3`；永久错误（`TaskNotReadyError`）直接 failed；④ 僵尸恢复：30min 前 `running` → `failed`（新的 `running` 不动）；⑤ 上传入队：假队列收到 `job_id`；队列不可用 → 503 + job `failed`；⑥ 真实 ARQ worker + uvicorn：上传 202 → worker 执行 → `ocr_jobs failed / retry_count=1 / TaskNotReadyError(S3-1)`；⑦ 依赖 ARQ 导致 redis-py 8.1→5.3.1，全量回归通过；⑧ `pytest 323 passed`、`pytest -m integration 137 passed`、smoke 8 OK | ✅ 通过（`ocr_task` 在 S3-1 前如实失败，不伪造成功；D-045） |
 | S2-6 | `backend/app/services/{storage,upload_service}.py`、`backend/app/api/v1/files.py`、`backend/app/schemas/invoice.py`（UploadData）、`backend/core/config.py`（明文开关/prod 校验）、`backend/.env.example`、`backend/tests/test_upload.py`、`docs/{spec,plan}/s2-6-upload.md` | ① `POST /invoices/upload` 202，返回 `invoice_id/file_id/job_id/sha256/status/ocr_status/dedup`，**响应无 storage_key**；② 对象名 `invoices/yyyy/mm/<32hex>.bin`（SCHEMA），原文件名只展示（`../../etc/passwd` → `passwd`）；③ 魔数 + Pillow 真图 + pypdf 页数（≤5）校验；空文件 422、超限 413、假图/TIFF/6 页 PDF 422；④ **去重先于写对象**：同字节二次上传 409/40901 + 同一 `invoice_id`，MinIO 只有 1 个对象（put 次数 1）；⑤ 落库同一事务写 file+invoice+job（pending/preprocess），失败或并发同 sha 时补偿删除对象；⑥ 权限：reviewer 403、admin 404、未登录 401；⑦ 真实 uvicorn + MinIO 手工：202 → 409 → 对象存在（643B）→ 清理干净；⑧ `pytest 311 passed`、`pytest -m integration 129 passed` | ✅ 通过（S4 前本地明文调试，prod 启动拒绝，D-044；ARQ 入队留 S2-7） |
 | S2-5 | `backend/app/services/invoice_service.py`、`backend/app/api/v1/invoices.py`、`backend/app/schemas/invoice.py`、`backend/app/core/exceptions.py`（42201/42202）、`backend/tests/test_invoices.py`、`docs/{spec,plan}/s2-5-invoices.md` | ① `transition()` 单入口：`draft→confirmed→in_report→archived` 合法、非法跳转/终态 409；② 列表：三权限（submitter 本人 / reviewer 全量 / admin **404**）+ 7 类筛选 + 分页 + 默认排除 void + 金额两位小数字符串 + 无 `storage_key`；③ 详情：`invoice + fields + latest_job`，他人/不存在/admin 均 404；④ 软删：204、重复 204、`in_report/archived` 409、他人 404、**void 释放 `(code,no)` 唯一索引后可重建**；⑤ 字段修改：submitter 非金额 200 / 金额 403、reviewer 金额需 `confirm_amount`（否则 42202）、版本冲突 409、非草稿 409、非法字段/值 422、未决冲突 42201 且**回滚**、`confirm` 控制 `need_review`；⑥ 链路 `create_draft → PATCH fields → GET detail` 通过；⑦ `pytest 310 passed`、`pytest -m integration 118 passed` | ✅ 通过（按契约范围：无 `POST /invoices`、无 `PATCH /invoices/{id}`；字段修改用 PATCH /fields，见 D-043） |
 | S2-4 | `backend/app/schemas/common.py`（`PageParams/PageResult`）、`backend/app/services/pagination.py`、`backend/app/utils/text.py`（`escape_like`）、`backend/tests/test_pagination.py`、`scripts/bench_list.py`、`docs/{spec,plan}/s2-4-pagination.md` | ① `PageParams`：默认 1/20、`page=0` 与 `page_size=1000` → 422、`order` 只允许 asc/desc；② 排序白名单（created_at/invoice_date/total_amount）+ `id asc` 稳定兜底，未知字段 **42200** 并列出可选值；③ `count` 与数据共用同一 `Select`（`order_by(None).subquery()`），翻页并集=全集、无重叠、超末页 `items=[]` 且 `total` 不变；④ 与 S2-3 组合：submitter/reviewer 的 `total` 按可见性分别计算；⑤ N+1 断言：join 列表每页恰好 **2 条 SELECT**；⑥ 50,000 行基准四组 p50/p95 = **13.4/15.9、20.1/25.4、19.3/21.9、27.6/32.3 ms**，`EXPLAIN ANALYZE` 走 `Index Scan using ix_invoices_uploader_created`；⑦ `pytest 310 passed`、`pytest -m integration 87 passed` | ✅ 通过（关系方案选 A：显式 join，不改 S2-1 锚点，见 D-042） |
@@ -174,11 +175,24 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 30 | 上传后的 `ocr_jobs` 只落 `pending`，未真正入队/执行 | ARQ 框架属 S2-7，当前没有 Worker | S2-7 用 ARQ 投递并在提交后入队；上传接口形状不变（D-044） |
 | 31 | S4 前本地 MinIO 存明文（`is_cipher=false`） | 信封/SM4 未实现；prod 已禁止该配置 | S4-3/S4-4 接入后切密文、`is_cipher=true`、删除 `STORAGE_ALLOW_PLAINTEXT` 开关 |
 | 32 | 不支持 TIFF | 契约白名单只有 jpeg/png/pdf（任务卡含 TIFF） | 业务确需时先改 API.md + 魔数白名单 |
+| 33 | `ocr_task` 在 S3-1 前必然 `failed` | 真实流水线未接；框架已用测试与真实 worker 验证 | S3-1 替换 `_run_pipeline` 后正常；错误信息已写明原因 |
+| 34 | 僵尸恢复用 `created_at` 近似（没有 `started_at` 列） | 队列积压超过 30min 可能被误判为中断 | 阈值 1800s；论文写明局限；若要精确需改 SCHEMA 加列 |
+| 35 | 入队失败后票据已落库、job failed，缺"重跑失败作业"入口 | 客户端重试会命中 sha256 去重（409） | S3-1 后补运维/接口重跑；当前按失败人工处理 |
 
 ## 变更日志
 
 ### 2026-11-19
 
+- **S2-7 完成**：ARQ 异步任务框架。
+  · `job_service`：`pending→running→succeeded|failed` 单入口；可重试失败回 `pending`；
+    幂等双保险（终态跳过 + Redis `SET NX EX 600`）；退避 5s/30s；永久错误直接 failed；
+  · `tasks/worker.py`：`WorkerSettings`（`max_tries=3`、`job_timeout=180`、启动恢复僵尸作业），
+    注册 `ocr_task` + `anchor_audit_task`（S4-7 占位）；
+  · 上传提交后入队；入队失败把 job 置 `failed` 并返回 503（不返回假成功）；
+  · `ocr_task` 在 S3-1 前**如实失败**（`TaskNotReadyError`），不伪造 succeeded；
+  · 依赖：`arq==0.28.0` 强制 `redis<6`，redis-py 8.1.0 → **5.3.1**（服务端 Redis 7 不变，D-045）；
+  · 实测：`pytest 323 passed`、`pytest -m integration 137 passed`；真实 ARQ worker + uvicorn：
+    上传 202 → `ocr_jobs failed / retry_count=1 / TaskNotReadyError(S3-1)`；smoke 8 OK。
 - **S2-6 完成**：文件上传 + MinIO + sha256 去重。
   · `POST /invoices/upload`：分块 sha256 → 魔数/Pillow/pypdf 校验 → **去重先于写对象** →
     MinIO（`invoices/yyyy/mm/<32hex>.bin`）→ 同一事务写 file+invoice+job（pending）→ 202；

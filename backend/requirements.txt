@@ -43,7 +43,9 @@ opencv-python==4.6.0.66
 
 # --- 数据与对象存储（S0-5 健康检查；S2-1 起 ORM 复用同一个 psycopg3 驱动）---
 psycopg[binary]==3.3.9
-redis==8.1.0
+# ARQ 0.28 硬性要求 redis<6，故客户端从 8.1.0 降到 5.3.1（Redis 7 服务端不变，D-045）
+redis==5.3.1
+hiredis==3.5.0
 minio==7.2.20
 urllib3==2.8.0
 
@@ -61,6 +63,10 @@ alembic==1.20.1
 passlib[argon2]==1.7.4
 PyJWT==2.15.1
 argon2-cffi==25.1.0
+
+# --- 异步任务（S2-7 起）---
+# ARQ：投递/重试/超时；与 API 共用同一份 Settings（不抄第二份 DATABASE_URL）。
+arq==0.28.0
 
 # --- 测试 ---
 httpx==0.28.1

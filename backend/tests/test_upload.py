@@ -23,6 +23,7 @@ from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
+from app.api.deps import get_task_queue
 from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.core.exceptions import ServiceUnavailableError
@@ -110,6 +111,19 @@ class FakeStorage:
         return key in self.objects
 
 
+class FakeQueue:
+    """与 ArqOcrTaskQueue 同协议；记录入队 job_id，可模拟队列不可用。"""
+
+    def __init__(self) -> None:
+        self.jobs: list[int] = []
+        self.fail = False
+
+    async def enqueue_ocr(self, job_id: int) -> None:
+        if self.fail:
+            raise ServiceUnavailableError("任务队列不可用")
+        self.jobs.append(job_id)
+
+
 def _make_settings(**overrides) -> Settings:
     base = {
         "environment": "test",
@@ -128,6 +142,7 @@ def _make_settings(**overrides) -> Settings:
 @pytest.fixture()
 def upload_env(session_factory, clean_db):
     storage = FakeStorage()
+    queue = FakeQueue()
     settings = _make_settings()
     app = create_app()
 
@@ -141,11 +156,13 @@ def upload_env(session_factory, clean_db):
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_task_queue] = lambda: queue
 
     with TestClient(app, raise_server_exceptions=False) as client:
         yield SimpleNamespace(
             client=client,
             storage=storage,
+            queue=queue,
             settings=settings,
             app=app,
             session_factory=session_factory,
@@ -249,6 +266,21 @@ def test_upload_creates_file_invoice_and_pending_job(upload_env, actors) -> None
 
     assert len(upload_env.storage.objects) == 1
     assert next(iter(upload_env.storage.objects)) == file_row.storage_key
+    assert upload_env.queue.jobs == [data["job_id"]]
+
+
+@pytest.mark.integration
+def test_enqueue_failure_marks_job_failed(upload_env, actors) -> None:
+    upload_env.queue.fail = True
+    response = _upload(upload_env, actors["alice"], _jpeg_bytes())
+
+    assert response.status_code == 503
+    assert response.json()["code"] == 50300
+
+    with upload_env.session_factory() as db:
+        job = db.scalars(select(OcrJob)).one()
+        assert job.status == "failed"
+        assert "入队失败" in job.error
 
 
 @pytest.mark.integration
