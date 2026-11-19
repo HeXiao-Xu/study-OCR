@@ -12,20 +12,16 @@ from __future__ import annotations
 import re
 import secrets
 from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 from alembic import command
-from alembic.config import Config as AlembicConfig
 from sqlalchemy import create_engine, text as sa_text
-from sqlalchemy.engine import URL, make_url
+from sqlalchemy.engine import URL
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import NullPool
 
-from app.core.database import to_sqlalchemy_url
 from app.models.enums import (
     AuditAction,
     AuditActorRole,
@@ -53,11 +49,9 @@ from app.models.enums import (
     VerifyResult,
     enum_values,
 )
+from tests.db_helpers import alembic_config, list_tables, temporary_database
 
 pytestmark = pytest.mark.integration
-
-BACKEND = Path(__file__).resolve().parents[1]
-ENV_FILE = BACKEND / ".env"
 
 BUSINESS_TABLES = {
     "users",
@@ -112,88 +106,12 @@ ENUM_COLUMNS: list[tuple[str, str, type]] = [
 
 
 # --------------------------------------------------------------------------- #
-# 连接与临时库
+# 临时库由 tests/db_helpers.py 提供（与 test_auth 共用同一套建库/删库逻辑）
 # --------------------------------------------------------------------------- #
-def _database_url_from_env() -> URL:
-    if not ENV_FILE.exists():
-        pytest.skip("缺少 backend/.env，无法拿到本地数据库连接")
-    values = dict(
-        line.split("=", 1)
-        for line in ENV_FILE.read_text(encoding="utf-8").splitlines()
-        if "=" in line and not line.strip().startswith("#")
-    )
-    raw = values.get("DATABASE_URL", "").strip()
-    if not raw:
-        pytest.skip("backend/.env 未配置 DATABASE_URL")
-    return make_url(to_sqlalchemy_url(raw))
-
-
-def _admin_engine(url: URL):
-    return create_engine(
-        url.set(database="postgres").render_as_string(hide_password=False),
-        isolation_level="AUTOCOMMIT",
-        poolclass=NullPool,
-    )
-
-
-@contextmanager
-def _temporary_database() -> Iterator[URL]:
-    """在本地 PG 上建一个一次性库，退出时删掉（删不掉只告警，不隐藏原始失败）。"""
-    url = _database_url_from_env()
-    name = f"study_ocr_mig_{secrets.token_hex(4)}"
-    admin = _admin_engine(url)
-    try:
-        try:
-            with admin.connect() as conn:
-                conn.execute(sa_text(f'CREATE DATABASE "{name}"'))
-        except Exception as exc:  # noqa: BLE001 - 连不上就跳过，不制造假绿
-            pytest.skip(f"本地 PostgreSQL 不可用，跳过迁移集成测试：{exc}")
-        yield url.set(database=name)
-    finally:
-        admin.dispose()
-        cleanup = _admin_engine(url)
-        try:
-            with cleanup.connect() as conn:
-                conn.execute(sa_text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
-        except Exception as exc:  # noqa: BLE001 - 清理失败不影响结论
-            print(f"[warn] 临时库 {name} 清理失败：{exc}")
-        finally:
-            cleanup.dispose()
-
-
-def _alembic_config(url: URL) -> AlembicConfig:
-    cfg = AlembicConfig(str(BACKEND / "alembic.ini"))
-    cfg.set_main_option("script_location", str(BACKEND / "alembic"))
-    # configparser 插值：URL 里若有 % 必须转义
-    cfg.set_main_option(
-        "sqlalchemy.url",
-        url.render_as_string(hide_password=False).replace("%", "%%"),
-    )
-    return cfg
-
-
-def _tables(url: URL) -> set[str]:
-    engine = create_engine(
-        url.render_as_string(hide_password=False), poolclass=NullPool
-    )
-    try:
-        with engine.connect() as conn:
-            return set(
-                conn.execute(
-                    sa_text(
-                        "select table_name from information_schema.tables"
-                        " where table_schema = 'public'"
-                    )
-                ).scalars()
-            )
-    finally:
-        engine.dispose()
-
-
 @pytest.fixture(scope="module")
 def migrated_database() -> Iterator[URL]:
-    with _temporary_database() as url:
-        command.upgrade(_alembic_config(url), "head")
+    with temporary_database("study_ocr_mig_") as url:
+        command.upgrade(alembic_config(url), "head")
         yield url
 
 
@@ -321,7 +239,7 @@ def _expect_integrity_error(conn, action) -> None:
 # 结构与往返
 # --------------------------------------------------------------------------- #
 def test_upgrade_creates_16_business_tables(migrated_database: URL) -> None:
-    assert _tables(migrated_database) == BUSINESS_TABLES | {"alembic_version"}
+    assert list_tables(migrated_database) == BUSINESS_TABLES | {"alembic_version"}
 
 
 def test_primary_keys_are_identity_columns(migrated_database: URL, engine) -> None:
@@ -337,21 +255,21 @@ def test_primary_keys_are_identity_columns(migrated_database: URL, engine) -> No
 
 
 def test_downgrade_then_upgrade_roundtrip() -> None:
-    with _temporary_database() as url:
-        config = _alembic_config(url)
+    with temporary_database() as url:
+        config = alembic_config(url)
         command.upgrade(config, "head")
-        assert _tables(url) == BUSINESS_TABLES | {"alembic_version"}
+        assert list_tables(url) == BUSINESS_TABLES | {"alembic_version"}
 
         command.downgrade(config, "base")
-        assert _tables(url) == {"alembic_version"}
+        assert list_tables(url) == {"alembic_version"}
 
         command.upgrade(config, "head")
-        assert _tables(url) == BUSINESS_TABLES | {"alembic_version"}
+        assert list_tables(url) == BUSINESS_TABLES | {"alembic_version"}
 
 
 def test_alembic_check_reports_no_drift(migrated_database: URL) -> None:
     # 有差异会抛 AutogenerateDiffsDetected，等于测试失败
-    command.check(_alembic_config(migrated_database))
+    command.check(alembic_config(migrated_database))
 
 
 def test_enum_checks_in_database_match_code(migrated_database: URL, engine) -> None:

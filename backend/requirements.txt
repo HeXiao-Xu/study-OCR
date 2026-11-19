@@ -52,6 +52,14 @@ urllib3==2.8.0
 SQLAlchemy==2.0.58
 alembic==1.20.1
 
+# --- 认证（S2-2 起）---
+# 口令一律 Argon2id（passlib 的 argon2 方案，type=ID，参数见 core/config.py 与 D-038）；
+# JWT 用 PyJWT（FastAPI 官方示例同款，维护活跃，显式 algorithms=["HS256"]）。
+# argon2-cffi 本来就在环境里（被其他依赖带入），这里显式钉住，避免被间接升级。
+passlib[argon2]==1.7.4
+PyJWT==2.15.1
+argon2-cffi==25.1.0
+
 # --- 测试 ---
 httpx==0.28.1
 pytest==9.2.0

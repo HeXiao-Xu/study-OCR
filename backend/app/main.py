@@ -13,6 +13,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.v1.auth import router as auth_router
 from app.api.v1.health import router as health_router
 from app.core.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
@@ -101,6 +102,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 健康检查挂两次：`/health`（容器探针）+ `{api_prefix}/health`（前端与文档口径一致，API.md §9）
     app.include_router(health_router)
     app.include_router(health_router, prefix=settings.api_prefix)
+    app.include_router(auth_router, prefix=settings.api_prefix)
 
     return app
 

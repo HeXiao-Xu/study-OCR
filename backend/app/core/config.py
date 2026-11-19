@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     jwt_secret: str
     max_upload_mb: int = 20  # D-018：单文件上限，前后端共用
 
+    # ---------- 认证（S2-2）----------
+    # 算法写死 HS256（API.md §0）；TTL 与 Argon2 参数可调，但默认值进 DECISIONS（D-038）
+    jwt_algorithm: Literal["HS256"] = "HS256"
+    access_token_ttl_seconds: int = 1800       # access 30min
+    refresh_token_ttl_seconds: int = 604800    # refresh 7d
+    refresh_token_prefix: str = "auth:refresh"
+    argon2_memory_cost: int = 65536            # 64 MiB，登录耗时的主要来源
+    argon2_time_cost: int = 3
+    argon2_parallelism: int = 4
+
     # ---------- OCR（S1-3）----------
     ocr_lang: str = "ch"
     ocr_use_angle_cls: bool = True

@@ -49,6 +49,26 @@ class PermissionDeniedError(AppError):
     message = "无权访问该资源"
 
 
+class RoleForbiddenError(AppError):
+    """角色级拒绝：该接口不允许此角色，按 API.md §0 返回 403/40301。
+
+    与 PermissionDeniedError 的区别：后者是"资源存在但非本人"，对外统一 404
+    （不泄露资源是否存在），由处理器转换；角色级拒绝不进那个转换。
+    """
+
+    code = 40301
+    http_status = 403
+    message = "无权访问该资源"
+
+
+class AccountDisabledError(AppError):
+    """账号已停用/锁定：登录时返回 403（API.md §1，与"凭据错误"的 401 区分）。"""
+
+    code = 40301
+    http_status = 403
+    message = "账号已停用或锁定"
+
+
 class NotFoundError(AppError):
     code = 40400
     http_status = 404

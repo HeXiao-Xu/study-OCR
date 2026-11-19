@@ -65,3 +65,16 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def get_db() -> Iterator[Session]:
+    """FastAPI 请求级会话依赖：只负责打开/关闭，**事务由 service 决定**。
+
+    不在依赖里自动 commit：注册要写、登录只读，统一提交会把"只读请求"也包进事务，
+    并且在路由后期报错时产生"半提交"的错觉。
+    """
+    session = get_session_factory()()
+    try:
+        yield session
+    finally:
+        session.close()

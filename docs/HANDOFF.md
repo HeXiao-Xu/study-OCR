@@ -1,23 +1,23 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-19（S2-1 完成）
+> 最后更新：2026-11-19（S2-2 完成）
 
 ## 1. 一句话现状
 
-**S0（环境/骨架）+ S1（OCR 技术验证）+ S2-1（16 张表模型与首个 Alembic 迁移）全部完成**，自动化验收全绿；
-**下一步是 S2 阶段的第二张卡：S2-2 JWT 认证 + RBAC 三角色**。
+**S0（环境/骨架）+ S1（OCR 技术验证）+ S2-1（16 表）+ S2-2（JWT 认证 + RBAC）全部完成**，自动化验收全绿；
+**下一步是 S2 阶段的第三张卡：S2-3 行级数据隔离**。
 
 ## 2. 仓库与环境
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 13 个 commit，待用户 push**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 14 个 commit，待用户 push**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
-| 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、**SQLAlchemy 2.0.58、Alembic 1.20.1**（S2-1 起） |
+| 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**（Argon2id） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
 | OCR 模型 | 已缓存在 `~/.paddleocr/whl/{det,rec,cls}`（约 18MB），离线可用 |
-| Docker | `study-ocr-{postgres,redis,minio}` 三个容器 **healthy**（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0001`（16 业务表 + alembic_version）** |
+| Docker | `study-ocr-{postgres,redis,minio}` 三个容器 **healthy**（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0002`（16 业务表 + alembic_version）** |
 | 依赖锁 | `backend/requirements.txt`（手写锁）+ `requirements.lock.txt`（pip freeze） |
 
 > ⚠️ `gmssl` **还没装**——那是 S4 密码链路才需要的，别提前装（会打乱 numpy 版本）。
@@ -26,8 +26,11 @@
 
 ```
 backend/app/models/      ← S2-1：16 张表模型（一表一文件）+ base.py（命名约定/CHECK 助手）+ enums.py
-backend/app/core/database.py  ← S2-1：`postgresql://` → `postgresql+psycopg://` 方言映射 + 引擎/会话工厂（S2-2 起用）
-backend/alembic/         ← S2-1：alembic.ini / env.py / versions/0001_init.py（URL 由 Settings 注入，不落盘）
+backend/app/core/database.py  ← S2-1：`postgresql://` → `postgresql+psycopg://` 方言映射 + 引擎/会话工厂
+backend/alembic/         ← S2-1/S2-2：alembic.ini / env.py / versions/{0001_init,0002_audit_action_login_logout}.py
+backend/app/core/{security,redis}.py  ← S2-2：Argon2id + HS256 JWT；Redis 单例
+backend/app/services/{auth_service,token_store}.py  ← S2-2：注册/认证/签发/轮换/吊销；refresh 白名单
+backend/app/api/{deps.py,v1/auth.py}  ← S2-2：Bearer 解析、get_current_user、require_roles、5 条 auth 路由
 backend/app/ocr/          ← S1 的全部产出
   preprocess.py             预处理（EXIF→定位→透视/降级→去斜→照度→印章）+ needs_retake
   intake.py                 输入分流：PDF 只渲染、照片走预处理 + 重拍闸门   ← S3 会用
@@ -65,11 +68,13 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 
 ```bash
 cd /e/BiSheXZY/study-OCR
-(cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表落库
+(cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表，head=0002
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
-(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 264 passed（默认跳过集成）
-(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration -q)      # 23 passed（需 Docker）
+(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 288 passed（默认跳过集成）
+(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 51 passed（需 Docker）
 .venv/Scripts/python.exe scripts/smoke.py                                   # 8 OK / 0 FAIL
+# 建 reviewer / admin 账号（注册接口只产生 submitter）
+(cd backend && ../.venv/Scripts/python.exe ../scripts/create_user.py --username reviewer1 --role reviewer --real-name 审核员)
 .venv/Scripts/python.exe scripts/check_annotations.py --strict
 .venv/Scripts/python.exe scripts/verify_samples.py                 # 数据集 5 项
 .venv/Scripts/python.exe scripts/preprocess_demo.py --limit 0      # 预处理分布 + 重拍数
@@ -93,25 +98,31 @@ cd /e/BiSheXZY/study-OCR
 | D-035 | **PDF 不做预处理**；照片走"拍前引导 + 拍后重拍判断"；透视加 2% 安全边距 |
 | D-036 | ORM 用**同步 SQLAlchemy 2.0 + psycopg3**；`postgresql://` 在 `core/database.py` 映射成 `postgresql+psycopg://`，不改 `.env` 与健康检查 |
 | D-037 | 迁移以**模型为唯一来源**，`alembic check` 零差异为门槛；**JSONB 不设 server_default**（契约未定义），`canonical_json` 保持 TEXT |
+| D-038 | 认证用 **PyJWT 2.15.1 + passlib Argon2id**（m=64MiB/t=3/p=4，实测 hash 59.4ms / verify 45.7ms）；HS256 显式白名单 + `typ` 声明 |
+| D-039 | **登出只吊销 refresh**：access 在剩余 30min 内仍可用（无状态 JWT 的固有代价），论文"不足"如实写 |
+| D-040 | `audit_logs.action` 补 `login_failed` / `logout` / `forbidden`（0002 迁移）；**审计行留 S4-7**，S2-2 只写脱敏应用日志 |
 
-## 7. 下一步：S2-2 JWT 认证 + RBAC 三角色
+## 7. 下一步：S2-3 行级数据隔离
 
-- 契约：`docs/API.md` §2（login / refresh / me / logout + 权限矩阵）；
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-2；
-- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-2-auth.md`）→ plan（`docs/plan/s2-2-auth.md`）→ 用户确认 → 写码**；
-- 依赖：`passlib[argon2]`（Argon2id）、`PyJWT` 或 `python-jose`（二选一先定并记 DECISIONS）、Redis（refresh 白名单）；
-- 可直接用的底座：`app/core/database.py`（引擎/会话工厂）、`models/users.py`（`role/status/password_hash`）、
-  `core/config.py`（`jwt_secret`）；
-- 注意：除 `ocr_jobs` 的阶段进度外，handler 内不得自行 commit 业务表（AGENTS §10.5）。
+- 契约：`docs/API.md` §0（数据隔离：隐式 `uploader_id = current_user.id`，越权统一 404/40400）
+  与 §2 票据接口的权限列；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-3；
+- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-3-isolation.md`）→ plan → 用户确认 → 写码**；
+- 可直接用的底座：`api/deps.py::get_current_user` / `require_roles`、`services/auth_service.py`、
+  `core/database.py::get_db`；
+- 关键约定：过滤逻辑集中在**一个** `filter_visible(query, user)`（列表与详情共用，禁止各接口手写 where）；
+  资源级越权用 `PermissionDeniedError`（全局处理器转 404），**不要**用 `RoleForbiddenError`（那是角色级 403）。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地 13 个 commit 需要用户执行 `git push`（AI 不推）；
+1. **push**：本地 14 个 commit 需要用户执行 `git push`（AI 不推）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；
 5. `intake.prepare_input` 还没接进 Worker —— **S3-1 串流水线时必须接上**（接口已定好）；
-6. 真实样本只剩 1 份（数电票 PDF，仅本地）：论文需如实写"合成集为主 + 1 份真实件定性校验"。
+6. 真实样本只剩 1 份（数电票 PDF，仅本地）：论文需如实写"合成集为主 + 1 份真实件定性校验"；
+7. 审计动作：`login_failed`/`logout`/`forbidden` 枚举已加（0002），但 S2-2 **未写审计行**（哈希链在 S4-7）；
+   `template_create`/`report_create`/`issue_cert` 三个值仍缺，对应任务（S2-8 / S5-1 / S4-6）开始前补。
 
 ## 9. 工作方式约定（用户偏好，新会话请沿用）
 

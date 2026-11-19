@@ -649,3 +649,64 @@
 - **验证**：`alembic upgrade → downgrade base → upgrade` 往返成功；
   `alembic check` 无差异；集成 23 条（16 表结构、枚举 CHECK 回读、5 条部分唯一索引、
   `verified/verify_result` 一致性、密文/金额/十六进制格式、identity、外键等）。
+
+---
+
+## D-038 认证实现：PyJWT + passlib Argon2id（HS256；m=64MiB / t=3 / p=4）
+
+- **日期**：2026-11-19（S2-2）
+- **背景**：S2-2 要落地登录会话。需要两个选型：JWT 库、口令哈希库与参数。
+- **备选**：
+  - JWT：① PyJWT；② python-jose；③ fastapi-users（自带整套用户体系）。
+  - 口令：① passlib 的 `argon2` 方案（Argon2id）；② bcrypt；③ pwdlib。
+- **决策**：**PyJWT 2.15.1** + **passlib 1.7.4**（Argon2id，`m=65536 KiB, t=3, p=4`，`type=ID`），
+  HS256（`algorithms=["HS256"]` 显式白名单），`jti` 用 `secrets`，argon2-cffi 钉 25.1.0。
+- **理由**：
+  1. PyJWT 维护活跃、FastAPI 官方安全示例同款；python-jose 更新停滞；fastapi-users 会接管
+     用户表与路由，和 S2-1 已定稿的 `users` 契约冲突。
+  2. AGENTS §2 明确口令哈希用 Argon2id（passlib）；pwdlib 虽是更现代的选择，但不在项目技术栈里。
+  3. 参数高于 OWASP 最低线（m=19MiB、t=2、p=1）：64MiB 让 GPU/ASIC 暴力破解成本显著上升；
+     `type=ID` 是 Argon2id（同时抗侧信道与 GPU）。
+  4. 显式 `algorithms` 白名单 + 必填声明（`exp/iat/sub/jti/typ`），防 `alg=none` 与算法混淆。
+- **实测（本机 CPU，单次）**：hash **59.4 ms**、verify **45.7 ms**；参数串 `m=65536,t=3,p=4`。
+  **代价**：每次登录约 50ms、瞬时内存 64MiB——并发登录时线程池内存会上来，是隐藏瓶颈；
+  如果将来压测不过，优先降到 m=32MiB（而不是换算法）。
+- **验证**：`tests/test_security.py` 24 条（哈希/校验/过期/篡改/alg=none/类型混用）、
+  `tests/test_auth.py` 28 条（注册/登录/me/刷新/登出/RBAC）；手工 uvicorn + 真实 Redis 链路通过。
+
+---
+
+## D-039 登出只吊销 refresh：access token 在剩余 TTL 内仍可用
+
+- **日期**：2026-11-19（S2-2）
+- **背景**：JWT 是无状态的，`logout` 若只删 Redis 里的 refresh 白名单，已签发的 access token 仍然有效。
+- **备选**：① access 黑名单（每请求查 Redis）；② 短 TTL + 只吊销 refresh；③ 服务端会话表。
+- **决策**：②。access 30min、refresh 7d；refresh 轮换 + Redis 白名单；不做 access 黑名单。
+- **理由**：
+  1. 每请求查 Redis 会把认证变成有状态：Redis 抖动 = 全站 401，而 Redis 在本项目里还承担队列；
+  2. 30 分钟的残留窗口对校园报销系统可接受（不是支付/即时通讯）；
+  3. refresh 被窃取后只能"抢用一次"（轮换），要长期冒充必须持续持有 refresh 并抢在用户前刷新，
+     这个风险用"登出必须真的吊销 refresh"已经压到很低。
+- **代价**：登出后旧 access 最多还能用 30 分钟；论文"不足与展望"里如实写，
+  并说明若要即时失效需引入黑名单/会话表及其代价。
+- **验证**：`test_logout_revokes_refresh_token`（登出后 refresh 401）与
+  `test_access_token_survives_logout_within_ttl`（钉住 200，防止误以为已失效）。
+
+---
+
+## D-040 `audit_logs.action` 增加 `login_failed` / `logout` / `forbidden`（迁移 0002）
+
+- **日期**：2026-11-19（S2-2，用户拍板）
+- **背景**：API.md §0/§1 要求"登录失败计入审计 `login_failed`、登出写 `logout`、资源级越权写 `forbidden`"，
+  但 SCHEMA §9.19b 的 `action` 枚举只有 9 个值（upload/confirm_field/sign/seal/submit/verify/decrypt/review/revoke_cert）；
+  同时审计哈希链要到 S4-7 才实现，现在无法计算 `entry_hash`。
+- **决策**：
+  1. SCHEMA §9.19b 增加三个值，生成 `0002` 迁移（只放开 CHECK，**不写任何审计行**）；
+  2. S2-2 的登录失败/登出只写带 `trace_id` 的应用日志（`username_sha256` 脱敏），审计行留给 S4-7；
+  3. API.md 另外提到的 `template_create` / `report_create` / `issue_cert` 仍缺枚举值，
+     在对应任务（S2-8 / S5-1 / S4-6）开始前按同样流程补 SCHEMA + 迁移。
+- **理由**：契约必须一致（否则 S4-7 写审计时才发现库拦不住）；但**不能写 `entry_hash` 造假的审计行**——
+  那会破坏哈希链的"改一行，后面全对不上"这一核心不变式（AGENTS §7 禁止假数据）。
+- **代价**：`0002` 的 `downgrade` 在有新 action 行时**显式拒绝**（审计不可删）；三个待补 action 还会再产生一次迁移。
+- **验证**：`pg_get_constraintdef` 回读 12 个值；`tests/test_migration.py::test_enum_checks_in_database_match_code`
+  断言库内 CHECK 与 `enums.py` 完全一致；`alembic upgrade/downgrade` 往返通过。

@@ -202,6 +202,10 @@ class AuditAction(StrEnum):
     DECRYPT = "decrypt"
     REVIEW = "review"
     REVOKE_CERT = "revoke_cert"
+    # S2-2 补：登录失败 / 登出 / 越权（API.md §0 §1 要求审计这三类动作，D-040）
+    LOGIN_FAILED = "login_failed"
+    LOGOUT = "logout"
+    FORBIDDEN = "forbidden"
 
 
 class AuditTargetType(StrEnum):

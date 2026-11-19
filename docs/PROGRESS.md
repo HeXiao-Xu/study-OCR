@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 已完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、**S2-1**（共 14 张卡，全部 ✅ 通过）
-- 最近完成：**S2-1 数据库模型与迁移**（16 表 + `0001_init`；往返 + `alembic check` 零差异；`pytest 264 passed`，集成 23 条）
-- 下一步：**S2-2 JWT 认证 + RBAC 三角色**（契约见 `docs/API.md` §2）
+- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1、S2-2 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1、**S2-2**（共 15 张卡，全部 ✅ 通过）
+- 最近完成：**S2-2 JWT 认证 + RBAC 三角色**（refresh 轮换 + Redis 白名单 + Argon2id；`pytest 288 passed`，集成 51 条）
+- 下一步：**S2-3 行级数据隔离**（`submitter` 只看本人数据；越权 404；契约见 `docs/API.md` §0/§2）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
-  - 本地领先 origin **10 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **14 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -38,7 +38,7 @@
 
 ## 阶段 2：基础框架（M1）
 [x] S2-1 模型与首批迁移（16 张表）
-[ ] S2-2 JWT 认证 + RBAC 三角色 ★关键
+[x] S2-2 JWT 认证 + RBAC 三角色 ★关键
 [ ] S2-3 行级数据隔离
 [ ] S2-4 分页、筛选与排序
 [ ] S2-5 票据表与 CRUD（invoices / invoice_files）
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S2-2 | `backend/app/{core/{security,redis}.py, services/{auth_service,token_store}.py, schemas/auth.py, api/deps.py, api/v1/auth.py, utils/text.py}`、`backend/alembic/versions/0002_audit_action_login_logout.py`、`scripts/create_user.py`、`backend/tests/{test_security,test_auth}.py`、`docs/{spec,plan}/s2-2-auth.md` | ① `POST /auth/register`（201，固定 submitter、用户名 trim+小写）/ `login`（200，`expires_in=1800`、`refresh_expires_in=604800`）/ `me`（角色来自数据库）/ `refresh`（轮换：旧 refresh 立即 401）/ `logout`（吊销 refresh，幂等）；② 登录失败未知账号与错口令**同码同文案**（401/40101），`disabled/locked` → 403/40301；③ `require_roles("reviewer")` 对 submitter 返回 **403**、reviewer 200；④ 真实 uvicorn + Redis 手工链路：login→redis 白名单 1 key→refresh 轮换→旧令牌 401→logout→refresh 401，冒烟用户与 Redis key 均已清理；⑤ `cat /dev/null` 无泄漏：失败日志只含 `username_sha256`，不含口令；⑥ Argon2id 实测 hash **59.4ms** / verify **45.7ms**（m=64MiB,t=3,p=4）；⑦ `pytest 288 passed`、`pytest -m integration 51 passed`、smoke **8 OK / 0 FAIL** | ✅ 通过（register 按 API.md 开放；审计枚举补 3 值 + 0002，但审计行留 S4-7，见 D-040） |
 | S2-1 | `backend/app/models/`（`base.py`、`enums.py` + 16 个一表一文件 + `__init__.py`）、`backend/alembic/{alembic.ini,env.py,script.py.mako,versions/0001_init.py}`、`backend/app/core/database.py`、`backend/tests/{test_models,test_database,test_migration}.py`、`docs/{spec,plan}/s2-1-db-models.md` | ① `alembic upgrade head` 成功；`downgrade base` 后只剩 `alembic_version`，再 `upgrade head` 成功；② `alembic check` = **No new upgrade operations detected**；③ `\dt` 17 个关系 = **16 业务表 + alembic_version**，主键全部 `GENERATED ALWAYS AS IDENTITY`；④ 5 条部分唯一索引与 GIN/DESC 索引在库里逐条核对（`pg_indexes`）；⑤ 集成 23 条：重复发票号被拦 + `void` 后放行、重复 `sha256`、同单两条 active 签名、同票种两个 active 模板、同 `file_id`/`form_id` 信封、`verified = (verify_result='ok')`、非法枚举、空 `wrapped_key_b64`、密文双空、负数金额、十六进制格式、`canonical_json` 原样、`Decimal` 往返、identity 自增、坏外键；⑥ `pytest 264 passed`（新增 100 条单元）、`pytest -m integration 23 passed`；⑦ `scripts/smoke.py` **8 OK / 0 FAIL**（后端临时起停验证） | ✅ 通过（JSONB 未按任务卡提示词设 `'{}'::jsonb` 默认值，按 SCHEMA 契约执行，理由见 D-037） |
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
@@ -156,11 +157,28 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 17 | `intake.prepare_input` 还没接进 S3 的 Worker | PDF 通道与重拍提示目前只有脚本级验证 | S3-1 串流水线时接上（接口已定） |
 | 18 | 重拍提示在合成集上触发了 18/60（多为远景/贴边） | 合成集里"故意拍坏"的样本本来就多，属预期 | S3 的前端上传页展示引导与提示；真实用户场景触发率应远低于此 |
 | 19 | 票种判对率是**合成集**上的 100% | 真实票据（尤其遮挡严重的）会更低 | 论文如实写"合成集 100%，真实样本仅定性"；S6 用真实样本抽检 |
+| 20 | `audit_logs.action` 仍缺 `template_create` / `report_create` / `issue_cert` | API.md 要求写审计，SCHEMA 枚举未覆盖 | 在 S2-8 / S5-1 / S4-6 开始前按 D-040 流程补 SCHEMA + 迁移 |
+| 21 | `login_failed` / `logout` / `forbidden` 审计行尚未写入 | 哈希链在 S4-7 才实现，写裸行会破坏链式不变式 | S4-7 实现链时一并写入；当前只有带 `username_sha256` 的应用日志（D-040） |
+| 22 | 登出后 access token 在剩余 30min 内仍有效 | 无状态 JWT 的固有代价 | 论文"不足"如实写；要即时失效需引入黑名单/会话表（D-039） |
+| 23 | 无登录失败计数 / 自动锁定 / 限流 | `users.status='locked'` 只能由管理动作设置 | S7 安全加固按需补；当前统一 401 文案，不泄露账号存在性 |
 
 ## 变更日志
 
 ### 2026-11-19
 
+- **S2-2 完成**：JWT 认证 + RBAC 三角色。
+  · 依赖：`PyJWT==2.15.1` + `passlib[argon2]==1.7.4` + `argon2-cffi==25.1.0`（锁文件只新增 2 行）；
+  · 令牌：HS256，access 30min / refresh 7d，载荷含 `typ`（防 refresh 当 access 用）；`jti` 走 `secrets`；
+    解码显式 `algorithms=["HS256"]`，防 `alg=none` 与算法混淆；
+  · 会话：refresh **轮换式** + Redis 白名单 `auth:refresh:{jti}`；登出删白名单；多端登录各自独立 `jti`；
+  · 口令：Argon2id（m=64MiB / t=3 / p=4），实测 hash **59.4ms** / verify **45.7ms**；
+    账号不存在时也跑一次 dummy verify，抹平枚举侧信道；
+  · 错误语义：未知账号与错口令**同码同文案**（401/40101）；`disabled/locked` 登录 403/40301；
+    角色级拒绝 403（新增 `RoleForbiddenError`，与资源级越权的 404 区分开）；
+  · 契约冲突处理：register 按 API.md 开放（用户拍板）；审计动作补 `login_failed/logout/forbidden`
+    到 SCHEMA + `0002` 迁移，但审计行留 S4-7（D-040）；
+  · 实测：`pytest 288 passed`、`pytest -m integration 51 passed`、真实 uvicorn+Redis 手工链路通过、
+    smoke 8 OK / 0 FAIL；测试数据与 Redis key 已清理。
 - **S2-1 完成**：16 张表模型 + 首个 Alembic 迁移。
   · 依赖：`SQLAlchemy==2.0.58` + `alembic==1.20.1`；锁文件 diff 只有 4 行新增（alembic/greenlet/Mako/SQLAlchemy），既有版本零变动；
   · 模型：`models/{base,enums}.py` + 16 个一表一文件；枚举 `StrEnum` 单一来源、CHECK 文本由 `enum_check()` 拼；

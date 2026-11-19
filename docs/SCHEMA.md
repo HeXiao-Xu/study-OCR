@@ -598,7 +598,7 @@ CREATE INDEX ix_invoices_draft ON invoices (uploader_id) WHERE status = 'draft';
 | 9.17 | `envelopes.key_algo`；`envelopes.cipher_algo` | `SM2` / `RSA-OAEP`；`SM4-CBC-HMAC-SM3` / `AES-256-GCM` | 方案 5.2 + 6.5.3 ✅ |
 | 9.18 | `review_logs.decision` | `approve` / `reject` | 方案 5.2 ✅ |
 | 9.19 | `audit_logs.actor_role` | `submitter` / `reviewer` / `admin` / `system` | 方案 5.2 三角色 ✅ + `system` ⚠（定时锚定任务） |
-| 9.19b | `audit_logs.action` | `upload` / `confirm_field` / `sign` / `seal` / `submit` / `verify` / `decrypt` / `review` / `revoke_cert` | 方案 5.2 ✅ |
+| 9.19b | `audit_logs.action` | `upload` / `confirm_field` / `sign` / `seal` / `submit` / `verify` / `decrypt` / `review` / `revoke_cert` / **`login_failed`** / **`logout`** / **`forbidden`** | 方案 5.2 ✅ + 后 3 值由 S2-2 拍板补（D-040；API.md 的登录失败/登出/越权审计需要它们） |
 | 9.19c | `audit_logs.target_type` | `invoice` / `invoice_field` / `form` / `report_item` / `signature` / `envelope` / `certificate` / `key` / `user` / `template` / `eval_run` ✅ 定稿 | 方案只给"多态引用"语义；值集需覆盖全部受审计对象，否则新动作会写出脏值 |
 
 > **常量落点**：以上枚举在代码侧只允许定义为 `backend/app/models/enums.py` 的 `StrEnum`，CHECK 文本由同一份常量生成，禁止在迁移里手抄字符串（AGENTS.md §4.2）。

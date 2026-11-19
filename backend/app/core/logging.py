@@ -33,6 +33,11 @@ _EXTRA_FIELDS = (
     "stage",
     "error_code",
     "checks",
+    # 认证相关（S2-2）：只允许哈希后的用户名与用户 id，禁止明文口令
+    "username_sha256",
+    "user_id",
+    "status",
+    "reason",
 )
 
 
