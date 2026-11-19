@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-11 已完成；登录/主框架/上传/列表/详情已通）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-11**（共 24 张卡，全部 ✅ 通过）
-- 最近完成：**S2-11 前端票据列表与详情**（筛选/URL 同步、字段表、草稿编辑；`npm run build` 通过）
-- 下一步：**S2-12 定时任务骨架与阶段收口**（APScheduler + Redis 锁 + 文档/接口对账）
+- 阶段：**阶段 2（基础框架，M1）已完成**（S2-1 ~ S2-12 全部完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-12**（共 25 张卡，全部 ✅ 通过）
+- 最近完成：**S2-12 定时任务骨架与阶段收口**（APScheduler + Redis 时段锁 + 文档对账；双进程实测通过）
+- 下一步：**S3-1 OCR Worker 串起全链路**（下载 → 预处理 → 检测识别 → 票种 → 抽取 → 校验）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
-  - 本地领先 origin **23 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **24 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -48,7 +48,7 @@
 [x] S2-9 前端登录与主框架
 [x] S2-10 前端上传页
 [x] S2-11 前端票据列表与详情
-[ ] S2-12 定时任务骨架与阶段收口
+[x] S2-12 定时任务骨架与阶段收口
 
 ## 阶段 3：识别流水线上线（M2）
 [ ] S3-1 OCR Worker 串起全链路 ★关键
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S2-12 | `backend/app/tasks/scheduler.py`、`backend/app/core/config.py`（scheduler/cron/锁配置）、`backend/app/main.py`（lifespan）、`backend/tests/{test_scheduler,test_api_docs}.py`、`requirements.txt/lock`（APScheduler 3.11.1 + tzlocal 5.4.5）、`.env.example`、`docs/{spec,plan}/s2-12-scheduler.md` | ① APScheduler 3.11.1 安装并钉住；② lifespan 启停调度器，`SCHEDULER_ENABLED=false` 完全不启动（测试默认关）；③ 锚定任务每日 02:00（Asia/Shanghai），cron/锁 key/TTL 进 Settings；④ 多副本：`SET NX EX` 抢锁，**成功后锁保留到 TTL**（时段去重），失败释放 + Lua token 校验；⑤ 双 uvicorn + 同一 Redis、`*/10`、TTL=5：4 个 tick 共执行 **4** 次、另一侧 4 次 skipped（不是 8 次）；⑥ `test_api_docs` 保证实际 OpenAPI 路由都在 API.md；⑦ `alembic check` 零差异；⑧ `pytest` 341 passed、集成 146、smoke 9 OK | ✅ 通过（anchor 任务仍为 S4-7 占位，只日志；D-050） |
 | S2-11 | `web/src/views/{InvoiceList,InvoiceDetail}.vue`、`web/src/utils/format.ts`、`web/src/api/invoices.ts`（list/update）、`web/src/types/invoice.ts`（全量类型）、`router`（/invoices 列表+详情）、`MainLayout`（reviewer 票据查询）、`backend/app/schemas/invoice.py`（补 vat_digital）+ `tests/test_invoices.py`、`scripts/ui_smoke.mjs`（`--steps`）、`docs/{spec,plan}/s2-11-invoice-ui.md` | ① `npm run typecheck` / `npm run build` 通过；② 列表筛选（状态/抽取/票种/关键字/日期/排序）+ 分页，URL query 为唯一状态源，`?status=draft&invoice_type=vat_digital` 刷新后仍命中；③ 详情字段表（置信度<85% 标红、待确认/冲突标签）；④ 草稿编辑 buyer_name → 保存 → 页面刷新可见，DB `confirmed=true/source=manual/version 0→1`；⑤ submitter 金额字段置灰、reviewer 金额需勾选确认（后端 42202 兜底）；⑥ 影像预览按 D-049 占位"待 S3-5"；⑦ reviewer 菜单"票据查询"且可看全量；⑧ `pytest` 全绿（新增 vat_digital 筛选用例）、`smoke.py` 9 OK；⑨ 测试数据/MinIO/Redis 已清理 | ✅ 通过（预览占位；后端补 vat_digital 漏项；D-049） |
 | S2-10 | `web/src/views/Upload.vue`、`web/src/api/{files,invoices}.ts`、`web/src/types/invoice.ts`、`web/src/api/http.ts`（`silent`）、`router`（/upload 换组件）、`.env.development/.env.example`（`VITE_MAX_UPLOAD_MB`）、`scripts/ui_smoke.mjs`（`--upload`）、`docs/{spec,plan}/s2-10-upload-ui.md` | ① `npm run typecheck` / `npm run build` 通过；② 真实上传 JPEG：行状态"失败 / 识别失败：TaskNotReadyError: OCR 流水线未接入（S3-1）"（S2-7 真实行为）；③ 同文件重传：绿色"已上传 / 该票据已上传 + 查看链接"，无全局红条；④ `.txt` 本地拒绝"只支持 JPG/PNG/PDF"；⑤ 串行上传 + 单文件/总进度，轮询 3s 起退避、120s 上限；⑥ `scripts/smoke.py` **9 OK / 0 FAIL**；⑦ 测试数据/MinIO/Redis 已清理 | ✅ 通过（轮询用详情接口，S3-1 换 `ocr-status`；批量不自动跳详情；D-048） |
 | S2-9 | `web/src/{api/auth.ts,api/http.ts,stores/user.ts,router/index.ts,main.ts,App.vue,layout/MainLayout.vue,views/{Login,Forbidden,Placeholder,Home}.vue,types/{auth,api}.ts}`、`scripts/ui_smoke.mjs`（`--fill/--clear`）、`docs/{spec,plan}/s2-9-fe-login.md` | ① `npm run typecheck` / `npm run build` 通过；② 真实登录（无头 Edge + CDP）：submitter 菜单含「我的票据」、reviewer 含「待核对/待审核」、admin 含「票种模板/审计日志」；③ admin 访问 `/upload` → `/403`（路由 `meta.roles`）；④ 401 单飞：后端 `ACCESS_TOKEN_TTL_SECONDS=1`，登录后等 2s 并发两个 `/auth/me` → **refreshCount=1**，两个请求都成功；⑤ 刷新失败才清会话跳登录（提示 1.5s 节流）；⑥ `scripts/smoke.py` **9 OK / 0 FAIL**（前端 dev server 在跑）；⑦ 测试用户与 Redis key 已清理 | ✅ 通过（未实现业务页用占位，不放假数据；DEV 诊断钩子仅开发态，D-047） |
@@ -194,11 +195,21 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 45 | 详情页影像不可见 | 预览依赖 S4 信封/解密；临时明文接口会绕过安全边界 | 等 S3-5；答辩/演示时明确说明这是加密链路的前置依赖 |
 | 46 | 字段编辑只改值，不提供冲突候选选择/批量确认 | S2-11 范围限定；校验冲突在 S3-4/S3-6 | 冲突字段保留 `conflict_value`，后端 42201 拒绝未知冲突；S3-5 做候选交互 |
 | 47 | 字段中文标签/票种/状态文案维护在前端 | 后端没有字典接口（API.md 未定义） | 新增字段时同步 `web/src/utils/format.ts` 与后端 `INVOICE_FIELD_NAMES` |
+| 48 | `anchor_audit_task` 仍是占位（只日志） | 审计哈希链在 S4-7 | S4-7 替换实现，调度骨架不动；现在不得伪造审计行 |
+| 49 | 成功执行后锁保留到 TTL（默认 1h），失败才释放 | 防止同一 tick 多副本重复执行；TTL 必须小于调度周期 | 默认每日任务下 1h 足够；若将来改高频 cron，必须同步调小 TTL |
+| 50 | API.md 仍保留 S3/S4/S5 未实现接口的标注 | 对账只保证"已实现 → 有文档"这一个方向 | 后续任务把对应接口实现后，更新 API.md 的实现标记与测试覆盖 |
 
 ## 变更日志
 
 ### 2026-11-19
 
+- **S2-12 完成**：定时任务骨架与阶段收口（S2 阶段结束）。
+  · APScheduler 3.11.1 随 API lifespan 启动，注册每日 02:00（Asia/Shanghai）锚定任务；
+  · 多副本：任务开始抢 Redis `SET NX EX`，**成功后锁保留到 TTL**（时段去重标记），失败释放 + Lua token 校验；
+  · 双进程实测：`*/10`、TTL=5，4 个 tick 共执行 4 次、另一侧 4 次 skipped，证明同 tick 只跑一次；
+  · 配置全部进 `Settings`（开关/时区/cron/锁 key/TTL），测试默认关；
+  · 文档对账：新增 `test_api_docs.py`，OpenAPI 实际路由逐条能在 API.md 找到；
+  · 单测 341 / 集成 146 / smoke 9 OK；`alembic check` 零差异。
 - **S2-11 完成**：前端票据列表与详情。
   · 列表：状态/抽取状态/票种/关键字/日期区间/排序 + 分页；筛选以 `route.query` 为唯一状态源（刷新/后退不丢）；
   · 详情：票据头信息、字段表（置信度<85% 标红、待确认/冲突）、草稿行内编辑（`version` 乐观锁、

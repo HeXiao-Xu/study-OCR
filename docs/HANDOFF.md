@@ -1,18 +1,18 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-19（S2-11 完成）
+> 最后更新：2026-11-19（S2-12 完成，阶段 2 收口）
 
 ## 1. 一句话现状
 
-**S0 + S1 + S2-1 ~ S2-11 全部完成**（后端基础框架 + 前端登录/主框架/上传/列表/详情），自动化验收全绿；
-**下一步是 S2 阶段最后一张卡：S2-12 定时任务骨架与阶段收口**。
+**阶段 2（基础框架）全部完成**（S0 + S1 + S2-1 ~ S2-12），自动化验收全绿；
+**下一步进入阶段 3：S3-1 OCR Worker 串起全链路**。
 
 ## 2. 仓库与环境
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 23 个 commit，待用户 push**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 24 个 commit，待用户 push**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
 | 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**、python-multipart **0.0.34**、ARQ **0.28.0**、redis-py **5.3.1**（ARQ 要求 `redis<6`，D-045） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
@@ -36,6 +36,7 @@ backend/app/services/pagination.py  ← S2-4：分页/排序协议（PageParams/
 backend/app/services/invoice_service.py  ← S2-5：票据建草稿/状态机/列表/详情/软删/字段修改
 backend/app/services/{storage,upload_service}.py  ← S2-6：MinIO 封装 + 上传校验/去重/补偿
 backend/app/services/job_service.py  ← S2-7：作业状态机/幂等锁/重试/僵尸恢复
+backend/app/tasks/scheduler.py  ← S2-12：APScheduler + 按时段 Redis 锁（每日锚定）
 backend/app/services/{template_service,template_registry,template_seed}.py  ← S2-8：模板 CRUD/升版本/60s 缓存/seed
 backend/app/tasks/{worker,ocr_task,queue}.py  ← S2-7：ARQ WorkerSettings、任务函数、入队协议
 backend/app/api/v1/{invoices,files,templates}.py + schemas/{invoice,template}.py  ← 票据/上传/模板接口
@@ -104,6 +105,11 @@ node scripts/ui_smoke.mjs "http://127.0.0.1:5173/upload" \
 node scripts/ui_smoke.mjs "http://127.0.0.1:5173/invoices/1" \
   --steps '[{"type":"click","value":"编辑字段"},{"type":"fill","selector":"input[data-field=\"buyer_name\"]","value":"新购买方"},{"type":"click","value":"保存修改"}]' \
   --expect 新购买方
+# 定时任务双进程验证（两个终端各起一个；TTL 必须小于周期）
+SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_SECOND='*/10' \
+  ANCHOR_LOCK_TTL_SECONDS=5 ../.venv/Scripts/python.exe -m uvicorn app.main:app --port 8000
+SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_SECOND='*/10' \
+  ANCHOR_LOCK_TTL_SECONDS=5 ../.venv/Scripts/python.exe -m uvicorn app.main:app --port 8001
 .venv/Scripts/python.exe scripts/bench_list.py --rows 50000 --iterations 50  # 分页基准（临时库）
 .venv/Scripts/python.exe scripts/smoke.py                                   # 8 OK / 0 FAIL
 # 建 reviewer / admin 账号（注册接口只产生 submitter）
@@ -143,30 +149,35 @@ node scripts/ui_smoke.mjs "http://127.0.0.1:5173/invoices/1" \
 | D-047 | 前端会话：401 **单飞 refresh**（并发复用同一 Promise）+ 守卫 `/me` 水合 + `meta.roles`；未实现页用占位；DEV `__httpDebug` 仅开发态 |
 | D-048 | 上传页：轮询用 `GET /invoices/{id}`（`ocr-status` 待 S3-1）；串行上传；409 绿色去重；上限 20MB；批量不自动跳详情 |
 | D-049 | 列表筛选以 `route.query` 为唯一状态源；详情影像用占位"待 S3-5"；字段编辑权限/金额确认/乐观锁；补 `vat_digital` 筛选漏项 |
+| D-050 | APScheduler 3.11.1 进程内调度；每 tick 抢 Redis 锁，**成功后锁留到 TTL**（1h < 每日）做时段去重，失败释放；文档对账测试 |
 
-## 7. 下一步：S2-12 定时任务骨架与阶段收口
+## 7. 下一步：S3-1 OCR Worker 串起全链路（阶段 3 开始）
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-12；
-- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-12-scheduler.md`）→ plan → 用户确认 → 写码**；
-- 产出：
-  - `backend/app/tasks/scheduler.py`：APScheduler `AsyncIOScheduler` 随 API 启动；注册 `anchor_audit_task`
-    （cron 每日 02:00，S4-7 才实现逻辑，**现在只打日志**，不写假审计）；
-  - **多副本只跑一次**：任务执行时抢 Redis 分布式锁（`SET NX EX`，带过期；key/ttl 集中到 `core/config.py`）；
-  - 配置与常量集中 `core/config.py`（cron、锁 key、锁 TTL），禁止散落硬编码；
-  - **依赖缺口**：APScheduler **当前未安装**（`pip show apscheduler` 无输出）。它在 AGENTS §2 指定栈里，
-    需要装并钉版本（同时更新 `requirements.txt` / `lock` / `DECISIONS`）；装之前先确认版本兼容 Python 3.11 + asyncio。
-- 收口（任务卡明确要求）：
-  - `PROGRESS.md` 完成项/遗留项/下一步；
-  - `API.md` 补齐**实际实现的所有接口**（逐条对 `app.routes`，包括 upload/templates 等，别留 S2-5 之前的口径）；
-  - `SCHEMA.md` 有微调必须同步（`alembic check` 零差异）；
-  - 跑全量 `pytest` / `pytest -m integration`，列出失败项与原因，**不修与本卡无关的模块**。
-- 验收：`pytest` 全绿；**同时起两个 API 进程，定时任务只有一个真正执行**（锁验证）：
-  可以把 cron 临时配成"每分钟"或直接并发调用带锁的包装函数来证明；日志里只有一个进程输出锚定日志。
-- 坑：APScheduler 在 `--workers N` / 多副本下会重复执行，答辩必问；文档不同步会让下个会话上下文失真。
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S3-1（★关键）；
+- 流程（AGENTS §11）：**先 spec（`docs/spec/s3-1-ocr-pipeline.md`）→ plan → 用户确认 → 写码**；
+- 目标：`ocr_task` 取 `job_id` → `invoice_files.storage_key` → MinIO 下载到临时目录（用后必删）→
+  PDF 转图（限前 3 页）→ `preprocess` → detector/recognizer → `layout.classify_ticket` →
+  `extractor.extract` → `validators.validate`；任何一步异常写 `ocr_jobs.error` 并置 `failed`；
+  单任务 180s 超时；PaddleOCR 用 worker 级单例。
+- **必须先对账的契约/实现缺口**（不要静默选边）：
+  1. 任务卡要求把 `timings` 写 `ocr_jobs.metrics(JSONB)`，但 SCHEMA/模型 **没有 `metrics` 列**
+     （只有 `params_json`/`elapsed_ms`）。要么改 SCHEMA 加列 + 迁移，要么用现有列/另表，spec 里拍板；
+  2. `GET /invoices/{id}/ocr-status`（stages/progress）**尚未实现**，且 `ocr_jobs` 没有
+     `started_at/finished_at`（契约响应里有这两个字段）——S3-1 要么补列，要么改契约；
+  3. worker 目前只改 `ocr_jobs`，**没有更新 `invoices.ocr_status`**；S3-1 必须把票据级状态一起推进；
+  4. `GET /invoices/{id}/fields`（S3-2/S3-4）未实现；详情接口已返回 fields，可先复用；
+  5. 任务卡写 PDF 用 `pypdfium2`，但 S1 现有 PDF 处理走 PyMuPDF（见关键版本）；**先看 `ocr/intake.py`，
+     不要为了任务卡一句话重复引入 PDF 引擎**；
+  6. 上传落 MinIO 仍是明文（`is_cipher=false`，D-044），S3-1 直接按 `storage_key` 下载；
+     S4 接信封后这里要改成"解密后进内存"，spec 里留好接缝。
+- 验收：上传 20 张成功 ≥18，失败项 `error` 能定位原因；单张 P95 < 30s（CPU）；临时目录无残留；
+  上传 → worker → `invoice_fields` 落库 → 详情可见。
+- 底座：`app/tasks/ocr_task.py::_run_pipeline` 就是占位入口（现在抛 `TaskNotReadyError`）；
+  `job_service` 的幂等/重试/僵尸恢复已就绪；`ocr/templates/*.yaml` 与 S2-8 的 DB 模板都可用。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地 23 个 commit 需要用户执行 `git push`（AI 不推）；
+1. **push**：本地 24 个 commit 需要用户执行 `git push`（AI 不推）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；

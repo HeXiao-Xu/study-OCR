@@ -11,8 +11,10 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
@@ -83,9 +85,38 @@ class Settings(BaseSettings):
     ocr_model_root: str = ""                  # 空 = ~/.paddleocr；离线机器指向预置目录
     ocr_show_log: bool = False
 
+    # ---------- 定时任务（S2-12）----------
+    # 每个 API 进程都会起调度器；真正执行前抢 Redis 锁，保证多副本同一次只跑一遍。
+    scheduler_enabled: bool = True
+    scheduler_timezone: str = "Asia/Shanghai"
+    # cron 字段用字符串：默认每日 02:00；双进程验收时可临时设成 "*" / "*/10"
+    anchor_cron_hour: str = "2"
+    anchor_cron_minute: str = "0"
+    anchor_cron_second: str = "0"
+    anchor_lock_key: str = "scheduler:lock:anchor_audit"
+    anchor_lock_ttl_seconds: int = 3600
+
     # ---------- 其他 ----------
     health_timeout_s: float = 2.0  # 健康检查单项超时，避免 /health 被拖死
     trace_id_header: str = "X-Trace-Id"
+
+    @field_validator("scheduler_timezone")
+    @classmethod
+    def _check_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"未知时区：{value}") from exc
+        return value
+
+    @field_validator("anchor_cron_hour", "anchor_cron_minute", "anchor_cron_second")
+    @classmethod
+    def _check_cron_field(cls, value: str) -> str:
+        # 支持 5 / "*/10" / "*"；范围由 APScheduler 再校验一次
+        pattern = re.compile(r"^(\*|\*/\d{1,2}|\d{1,2})$")
+        if not pattern.match(value):
+            raise ValueError(f"cron 字段非法：{value}（只接受数字、*、*/n）")
+        return value
 
     @field_validator("cors_origins", mode="before")
     @classmethod

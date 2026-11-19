@@ -25,6 +25,8 @@ os.environ.setdefault("MINIO_ACCESS_KEY", "test")
 os.environ.setdefault("MINIO_SECRET_KEY", "test")
 os.environ.setdefault("MINIO_BUCKET", "study-ocr-test")
 os.environ.setdefault("JWT_SECRET", "test_secret_" + "x" * 32)
+# 测试不启动 APScheduler：否则每个 TestClient 都会连 Redis 并注册后台任务
+os.environ.setdefault("SCHEDULER_ENABLED", "false")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -46,6 +48,7 @@ def settings() -> Settings:
         minio_secret_key="test",
         minio_bucket="study-ocr-test",
         jwt_secret="test_secret_" + "x" * 32,
+        scheduler_enabled=False,
     )
 
 

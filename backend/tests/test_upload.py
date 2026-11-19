@@ -134,6 +134,7 @@ def _make_settings(**overrides) -> Settings:
         "minio_secret_key": "test",
         "minio_bucket": "study-ocr-test",
         "jwt_secret": "test_secret_" + "x" * 32,
+        "scheduler_enabled": False,
     }
     base.update(overrides)
     return Settings(**base)

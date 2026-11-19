@@ -962,3 +962,29 @@
   后端 + Vite + 无头 Edge：列表 → 详情 → 编辑 buyer_name → 保存 → 页面刷新可见，
   DB `buyer_name` 更新、`confirmed=true`、`source=manual`、`version 0→1`；reviewer 登录菜单"票据查询"且能看全量；
   `?status=draft&invoice_type=vat_digital` 刷新后 URL 与结果一致；`smoke.py` 9 OK；测试数据/MinIO/Redis 已清理。
+
+---
+
+## D-050 APScheduler 进程内调度 + 按时段 Redis 锁；文档对账测试
+
+- **日期**：2026-11-19（S2-12，方案 A）
+- **背景**：S2-12 要把审计链锚定任务挂到 API 启动；APScheduler 每个进程都到点触发，
+  多副本/`--workers N` 会重复执行；另外 S2 收口要求 API.md 与实际路由逐条对得上。
+- **决策**：
+  1. **依赖**：`APScheduler==3.11.1`（4.x 未稳定且 API 不兼容），带 `tzlocal==5.4.5`；
+     纯 Python，Python 3.11 可用。
+  2. **每进程启动调度器**，任务开始时抢 Redis `SET NX EX`；不做 leader 选举——锁更简单，leader 挂了不用重选。
+  3. **成功执行后锁不释放，保留到 TTL**：APScheduler 在每个副本独立触发，占位任务瞬间完成；
+     若成功后立即释放，另一个副本几毫秒后就能拿到锁，**同一 tick 会执行两次**（双进程实测必现）。
+     锁因此是"本时段已执行"的去重标记；TTL（默认 3600s）必须小于调度周期（默认每日 02:00）。
+     失败时释放锁，避免挡后续重试；释放用 Lua 比对 token，防 TTL 过期后误删别人的锁。
+  4. **cron 按 `Asia/Shanghai`**（业务日）；cron 时/分/秒、锁 key、TTL 全部进 `Settings`，
+     不散落硬编码；`SCHEDULER_ENABLED=false` 时完全不启动（测试默认关）。
+  5. **文档对账变成测试**：`tests/test_api_docs.py` 用 `app.openapi()` 与 `API.md` 做归一集合比较，
+     以后加路由忘写文档会直接红；API.md 里标注 S3/S4/S5 的未实现接口不参与。
+- **理由**：进程内调度 + 每次抢锁是维护成本最低的多副本方案；锁保留到 TTL 才是真正的"一次"语义。
+- **代价**：锁 TTL 内同 key 的后续执行会被跳过（生产是每日任务，无影响）；任务失败会立即放锁，
+  另一个副本可能在同 tick 补跑一次（失败路径，不产生重复成功）；`anchor_audit_task` 仍是 S4-7 占位。
+- **验证**：`pytest` 新增 `test_scheduler.py` 8 条（抢不到跳过/成功后不释放/失败释放/cron/开关/非法配置）+
+  `test_api_docs.py` 1 条；双 uvicorn + 同一 Redis、`ANCHOR_CRON_SECOND=*/10`、`ANCHOR_LOCK_TTL_SECONDS=5`：
+  4 个 tick 共执行 **4** 次（另一侧 4 次 skipped），而不是 8 次；`alembic check` 零差异；`smoke.py` 9 OK。

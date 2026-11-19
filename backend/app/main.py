@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
@@ -21,6 +22,7 @@ from app.api.v1.templates import router as templates_router
 from app.core.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import reset_trace_id, set_trace_id, setup_logging
+from app.tasks.scheduler import shutdown_scheduler, start_scheduler
 
 access_logger = logging.getLogger("app.access")
 
@@ -41,11 +43,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     setup_logging(settings)
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # 调度器随 API 启动；多副本靠任务内的 Redis 锁保证同一次只执行一遍
+        start_scheduler(settings)
+        try:
+            yield
+        finally:
+            shutdown_scheduler()
+
     app = FastAPI(
         title=f"{settings.app_name} API",
         version=settings.app_version,
         docs_url="/docs",
         openapi_url="/openapi.json",
+        lifespan=lifespan,
     )
 
     app.add_middleware(

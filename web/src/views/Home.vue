@@ -12,7 +12,7 @@ const who = computed(() => user.user?.real_name ?? '未登录用户')
 
 const milestones = [
   { key: 'M0', label: '立项与可行性验证', done: true },
-  { key: 'M1', label: '基础框架（进行中）', done: false },
+  { key: 'M1', label: '基础框架', done: true },
   { key: 'M2', label: '识别流水线', done: false },
   { key: 'M3', label: '密码模块', done: false },
   { key: 'M4', label: '业务闭环', done: false },
@@ -32,8 +32,8 @@ const milestones = [
         type="success"
         :closable="false"
         show-icon
-        title="当前进度：阶段 2（基础框架）进行中"
-        description="16 张表、认证/角色、行级隔离、分页、票据 CRUD、上传去重、ARQ 队列与模板管理已完成；上传/列表页面在 S2-10/S2-11 接入。"
+        title="当前进度：阶段 2（基础框架）已完成"
+        description="认证/隔离/分页/票据 CRUD/上传去重/ARQ/模板/前端主流程/定时任务均已完成；下一步进入 S3 识别流水线。"
       />
     </el-card>
 
