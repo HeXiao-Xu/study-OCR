@@ -33,6 +33,7 @@ const expects = []
 const clicks = []
 const evals = []
 const fills = []
+const uploads = []
 let graceMs = 2500 // 页面导航后先等异步请求落地，再断言（健康检查最长 2s 超时）
 let clearStorage = false
 for (let i = 1; i < argv.length; i += 1) {
@@ -40,6 +41,12 @@ for (let i = 1; i < argv.length; i += 1) {
   const value = argv[i + 1]
   if (flag === '--clear') {
     clearStorage = true
+  } else if (flag === '--upload') {
+    const selector = argv[i + 1]
+    const filePath = argv[i + 2]
+    if (!selector || !filePath) throw new Error('--upload 需要 "选择器" 与 "文件路径"')
+    uploads.push({ selector, file: filePath })
+    i += 2
   } else if (flag === '--expect') {
     if (!value) throw new Error('--expect 需要值')
     expects.push(value)
@@ -150,7 +157,7 @@ async function main() {
   await sleep(graceMs)
   const deadline = Date.now() + 15000
   let bodyText = ''
-  if (!fills.length && !clicks.length) {
+  if (!fills.length && !clicks.length && !uploads.length) {
     while (Date.now() < deadline) {
       bodyText = (await evaluate(ws, 'document.body ? document.body.innerText : ""')) ?? ''
       if (!expects.length) break
@@ -178,6 +185,20 @@ for (const { selector, value } of fills) {
 }
 if (fills.length) await sleep(300)
 
+// 直接把文件塞进 <input type=file>（CDP 的 DOM.setFileInputFiles），触发 el-upload 的 change
+if (uploads.length) await send(ws, 'DOM.enable')
+for (const { selector, file } of uploads) {
+  const documentNode = await send(ws, 'DOM.getDocument', { depth: -1 })
+  const node = await send(ws, 'DOM.querySelector', {
+    nodeId: documentNode.root.nodeId,
+    selector,
+  })
+  if (!node.nodeId) throw new Error(`没找到文件输入框：${selector}`)
+  await send(ws, 'DOM.setFileInputFiles', { nodeId: node.nodeId, files: [file] })
+  console.log(`已选择文件：${file}`)
+  await sleep(1500)
+}
+
 for (const text of clicks) {
     const result = await evaluate(
       ws,
@@ -194,8 +215,8 @@ for (const text of clicks) {
     bodyText = (await evaluate(ws, 'document.body ? document.body.innerText : ""')) ?? ''
   }
 
-  // 动作（填表/点击）后再轮询关键字，给登录跳转与异步请求留时间
-  if (fills.length || clicks.length) {
+  // 动作（填表/上传/点击）后再轮询关键字，给异步请求留时间
+  if (fills.length || clicks.length || uploads.length) {
     while (Date.now() < deadline) {
       bodyText = (await evaluate(ws, 'document.body ? document.body.innerText : ""')) ?? ''
       if (!expects.length || expects.every((k) => bodyText.includes(k))) break

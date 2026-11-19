@@ -34,6 +34,11 @@ export class ApiError extends Error {
 
 export const API_BASE: string = import.meta.env.VITE_API_BASE ?? '/api/v1'
 
+/** 业务请求配置：`silent` 表示调用方自己处理提示（例如上传页的 409 去重要用绿色提示）。 */
+export interface HttpRequestConfig extends AxiosRequestConfig {
+  silent?: boolean
+}
+
 const http: AxiosInstance = axios.create({
   baseURL: API_BASE,
   timeout: 15_000,
@@ -45,7 +50,7 @@ const refreshClient: AxiosInstance = axios.create({
   timeout: 15_000,
 })
 
-interface RetryableConfig extends AxiosRequestConfig {
+interface RetryableConfig extends HttpRequestConfig {
   _retried?: boolean
 }
 
@@ -131,12 +136,13 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (response) => {
     const body = response.data as Envelope | undefined
+    const silent = (response.config as HttpRequestConfig | undefined)?.silent === true
     if (body && typeof body.code === 'number' && body.code !== 0) {
       if (body.code === 40101) {
         handleUnauthorized(body.message)
-      } else if (body.code === 40301) {
+      } else if (!silent && body.code === 40301) {
         ElMessage.error('无权访问该资源')
-      } else {
+      } else if (!silent) {
         ElMessage.error(body.message || '请求失败')
       }
       return Promise.reject(new ApiError(body.code, body.message, response.status, body.trace_id, body))
@@ -147,6 +153,7 @@ http.interceptors.response.use(
     const status = error.response?.status
     const body = error.response?.data
     const config = error.config as RetryableConfig | undefined
+    const silent = config?.silent === true
     const traceId =
       (body && typeof body === 'object' ? body.trace_id : undefined) ??
       (error.response?.headers?.['x-trace-id'] as string | undefined)
@@ -177,14 +184,14 @@ http.interceptors.response.use(
       return Promise.reject(new ApiError(40101, '登录状态已失效', status, traceId, body ?? null))
     }
     if (status === 403) {
-      ElMessage.error('无权访问该资源')
+      if (!silent) ElMessage.error('无权访问该资源')
       return Promise.reject(new ApiError(40301, '无权访问该资源', status, traceId, body))
     }
 
     const message =
       (body && typeof body === 'object' && body.message) ||
       (status ? `请求失败（HTTP ${status}）` : '网络异常：后端服务未启动或不可达')
-    ElMessage.error(message)
+    if (!silent) ElMessage.error(message)
     return Promise.reject(new ApiError(body?.code ?? status ?? -1, message, status, traceId, body))
   },
 )
@@ -192,7 +199,7 @@ http.interceptors.response.use(
 // --------------------------------------------------------------------------
 // 便捷方法
 // --------------------------------------------------------------------------
-export async function get<T>(url: string, config?: AxiosRequestConfig): Promise<Envelope<T>> {
+export async function get<T>(url: string, config?: HttpRequestConfig): Promise<Envelope<T>> {
   const response = await http.get<Envelope<T>>(url, config)
   return response.data
 }
@@ -200,7 +207,7 @@ export async function get<T>(url: string, config?: AxiosRequestConfig): Promise<
 export async function post<T>(
   url: string,
   data?: unknown,
-  config?: AxiosRequestConfig,
+  config?: HttpRequestConfig,
 ): Promise<Envelope<T>> {
   const response = await http.post<Envelope<T>>(url, data, config)
   return response.data
@@ -209,13 +216,13 @@ export async function post<T>(
 export async function patch<T>(
   url: string,
   data?: unknown,
-  config?: AxiosRequestConfig,
+  config?: HttpRequestConfig,
 ): Promise<Envelope<T>> {
   const response = await http.patch<Envelope<T>>(url, data, config)
   return response.data
 }
 
-export async function del<T>(url: string, config?: AxiosRequestConfig): Promise<Envelope<T>> {
+export async function del<T>(url: string, config?: HttpRequestConfig): Promise<Envelope<T>> {
   const response = await http.delete<Envelope<T>>(url, config)
   return response.data
 }

@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-9 已完成；前端登录/主框架已通）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-9**（共 22 张卡，全部 ✅ 通过）
-- 最近完成：**S2-9 前端登录与主框架**（三角色菜单 + 401 单飞刷新；`npm run build` 通过，浏览器冒烟全过）
-- 下一步：**S2-10 前端上传页**（拖拽/多选、逐文件状态、409 去重提示、轮询 OCR 状态）
+- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-10 已完成；登录/主框架/上传页已通）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-10**（共 23 张卡，全部 ✅ 通过）
+- 最近完成：**S2-10 前端上传页**（拖拽/多选、逐文件进度、409 去重、识别轮询；`npm run build` 通过）
+- 下一步：**S2-11 前端票据列表与详情**（分页/筛选/URL 同步；详情字段 + 预览）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
-  - 本地领先 origin **21 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **22 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -46,7 +46,7 @@
 [x] S2-7 ARQ 异步任务框架（状态机 + 重试 + 幂等）
 [x] S2-8 票种模板与规则管理
 [x] S2-9 前端登录与主框架
-[ ] S2-10 前端上传页
+[x] S2-10 前端上传页
 [ ] S2-11 前端票据列表与详情
 [ ] S2-12 定时任务骨架与阶段收口
 
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S2-10 | `web/src/views/Upload.vue`、`web/src/api/{files,invoices}.ts`、`web/src/types/invoice.ts`、`web/src/api/http.ts`（`silent`）、`router`（/upload 换组件）、`.env.development/.env.example`（`VITE_MAX_UPLOAD_MB`）、`scripts/ui_smoke.mjs`（`--upload`）、`docs/{spec,plan}/s2-10-upload-ui.md` | ① `npm run typecheck` / `npm run build` 通过；② 真实上传 JPEG：行状态"失败 / 识别失败：TaskNotReadyError: OCR 流水线未接入（S3-1）"（S2-7 真实行为）；③ 同文件重传：绿色"已上传 / 该票据已上传 + 查看链接"，无全局红条；④ `.txt` 本地拒绝"只支持 JPG/PNG/PDF"；⑤ 串行上传 + 单文件/总进度，轮询 3s 起退避、120s 上限；⑥ `scripts/smoke.py` **9 OK / 0 FAIL**；⑦ 测试数据/MinIO/Redis 已清理 | ✅ 通过（轮询用详情接口，S3-1 换 `ocr-status`；批量不自动跳详情；D-048） |
 | S2-9 | `web/src/{api/auth.ts,api/http.ts,stores/user.ts,router/index.ts,main.ts,App.vue,layout/MainLayout.vue,views/{Login,Forbidden,Placeholder,Home}.vue,types/{auth,api}.ts}`、`scripts/ui_smoke.mjs`（`--fill/--clear`）、`docs/{spec,plan}/s2-9-fe-login.md` | ① `npm run typecheck` / `npm run build` 通过；② 真实登录（无头 Edge + CDP）：submitter 菜单含「我的票据」、reviewer 含「待核对/待审核」、admin 含「票种模板/审计日志」；③ admin 访问 `/upload` → `/403`（路由 `meta.roles`）；④ 401 单飞：后端 `ACCESS_TOKEN_TTL_SECONDS=1`，登录后等 2s 并发两个 `/auth/me` → **refreshCount=1**，两个请求都成功；⑤ 刷新失败才清会话跳登录（提示 1.5s 节流）；⑥ `scripts/smoke.py` **9 OK / 0 FAIL**（前端 dev server 在跑）；⑦ 测试用户与 Redis key 已清理 | ✅ 通过（未实现业务页用占位，不放假数据；DEV 诊断钩子仅开发态，D-047） |
 | S2-8 | `backend/app/services/{template_service,template_registry,template_seed}.py`、`backend/app/api/v1/templates.py`、`backend/app/schemas/template.py`、`backend/alembic/versions/0003_ticket_type_vat_digital.py`、`scripts/seed_templates.py`、`backend/tests/test_templates.py`、`docs/{spec,plan}/s2-8-templates.md` | ① 权限：reviewer 列表/详情 200、写 403；submitter 列表 403；② 创建 201/version=1/active 默认 false；重复 type_code 409；非法 type_code/空 keywords/非法正则/未知 strategy 422；③ 列表默认 active、`active=false` 查历史、type_code 过滤、列表不含 `field_specs_json`；④ 详情含 specs + rules；⑤ 升版本：PUT 生成 v2 新行、v1 保留、规则复制+覆盖、过期 version 409（带 `current_version`）、同票种仅 1 条 active；⑥ 60s 缓存：改库不 invalidate 读到旧快照、invalidate 后读到新值；⑦ `/test`：真 OCR 抽出 10 字段、matched 关键字、confidence 0.881；reviewer 403 / 未启用 422 / 假图 422 / OCR 异常 50010；不建票不写对象；⑧ seed 幂等（5 模板/37 规则，二次跑跳过）；⑨ `pytest 332 passed`、`pytest -m integration 146 passed` | ✅ 通过（补 `vat_digital`：SCHEMA + enum + 0003；D-046） |
 | S2-7 | `backend/app/services/job_service.py`、`backend/app/tasks/{worker,ocr_task,queue}.py`、`backend/app/api/v1/files.py`（入队）、`backend/app/api/deps.py`（`get_task_queue`）、`backend/tests/{test_jobs,test_upload}.py`、`docs/{spec,plan}/s2-7-arq.md` | ① 作业状态机 `pending→running→succeeded|failed`、可重试失败回 `pending`；② 幂等双保险：终态跳过 + Redis `SET NX EX 600`（锁占用返回 `locked`、handler 不执行）；③ 重试：第 1 次失败退避 **5s**、第 2 次 **30s**、第 3 次终态 `failed` 且 `retry_count=3`；永久错误（`TaskNotReadyError`）直接 failed；④ 僵尸恢复：30min 前 `running` → `failed`（新的 `running` 不动）；⑤ 上传入队：假队列收到 `job_id`；队列不可用 → 503 + job `failed`；⑥ 真实 ARQ worker + uvicorn：上传 202 → worker 执行 → `ocr_jobs failed / retry_count=1 / TaskNotReadyError(S3-1)`；⑦ 依赖 ARQ 导致 redis-py 8.1→5.3.1，全量回归通过；⑧ `pytest 323 passed`、`pytest -m integration 137 passed`、smoke 8 OK | ✅ 通过（`ocr_task` 在 S3-1 前如实失败，不伪造成功；D-045） |
@@ -186,11 +187,23 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 39 | 业务页面用占位（我的票据/上传/待核对/待审核/模板/规则/证书/审计） | S2-10/S2-11/S5 的页面还没做 | 对应任务卡逐个替换 `Placeholder.vue`；页面明确标"待实现"，不放假数据 |
 | 40 | 前端没有单测框架 | 目前只有 `typecheck` + `build` + 浏览器冒烟 | 若后续交互复杂（上传/轮询/字段编辑），评估引入 Vitest（需用户确认新依赖） |
 | 41 | access/refresh 存 localStorage（XSS 可读） | D-021 已接受的取舍 | 全项目禁止 `v-html` 渲染用户内容；S6 安全测试里验证 CSP/转义 |
+| 42 | 识别轮询用 `GET /invoices/{id}` 而非 `ocr-status` | 专属接口 `GET /invoices/{id}/ocr-status` 尚未实现（S3-1） | S3-1 落地后只改 `web/src/api/invoices.ts::waitForOcr` |
+| 43 | 批量上传完不自动跳详情 | 任务卡写"上传完成跳 /invoices/{id}"；20 个文件跳走会丢进度 | 逐行给"查看详情"链接；单文件也不强制跳，S2-11 详情页可用后再评估 |
+| 44 | `GET /invoices/{id}/image` 预览接口未实现 | API 备注指向它（详情不返回影像二进制） | S2-11 先确认契约与权限，决定补接口还是详情页暂用占位 |
 
 ## 变更日志
 
 ### 2026-11-19
 
+- **S2-10 完成**：前端上传页。
+  · `Upload.vue`：拖拽/多选（≤20）、缩略图、本地校验（JPG/PNG/PDF、≤20MB）、串行上传、
+    单文件与总进度、逐文件状态；409 去重走**绿色提示 + 查看链接**（请求 `silent`，不弹全局红条）；
+  · `api/files.ts`（FormData + 上传进度）、`api/invoices.ts`（`waitForOcr`：3s 起指数退避、上限 15s、总 120s）、
+    `types/invoice.ts`；
+  · 轮询用 `GET /invoices/{id}` 的 `ocr_status`/`latest_job`（`ocr-status` 专属接口待 S3-1，D-048）；
+  · 修复 Vue 响应式 bug：push 后改原始 task 对象导致界面永远"上传中 0%"，改为操作数组代理；
+  · 实测：真实上传 JPEG → 行显示"识别失败：TaskNotReadyError: OCR 流水线未接入（S3-1）"；
+    重复上传 → "已上传 + 查看链接"；`.txt` → 本地拒绝；`smoke.py` **9 OK / 0 FAIL**。
 - **S2-9 完成**：前端登录与主框架。
   · `api/http.ts`：401 自动 refresh **一次**（并发复用同一个 Promise，轮换式 token 不会互相失效），
     失败才清会话跳登录（提示 1.5s 节流）；不解析 JWT exp，只信 401；

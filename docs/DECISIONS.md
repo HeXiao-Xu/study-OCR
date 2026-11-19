@@ -912,3 +912,27 @@
   三角色真实登录后菜单分别命中「我的票据」「待核对/待审核」「票种模板/审计日志」；
   admin 访问 `/upload` → `/403`；登录后等 2s 用 `__httpDebug` 并发两个 `/auth/me` →
   `refreshCount === 1` 且两个请求都返回 `fe_sub`；`scripts/smoke.py` 9 OK / 0 FAIL；测试用户与 Redis key 已清理。
+
+---
+
+## D-048 上传页：轮询用详情接口、串行上传、409 绿色提示
+
+- **日期**：2026-11-19（S2-10，用户拍板方案 A）
+- **背景**：任务卡要求上传后轮询 `GET /invoices/{id}/ocr-status`，但该接口标注 S3-1/S2-7、尚未实现；
+  现有 `GET /invoices/{id}` 已返回 `invoice.ocr_status` 与 `latest_job`。
+- **决策**：
+  1. **轮询详情接口**（方案 A）：`waitForOcr` 读 `ocr_status`/`latest_job.status`；3s 起指数退避、
+     上限 15s、总 120s；到点停止并提示"识别时间较长"。S3-1 落地 `ocr-status` 后只换 `api/invoices.ts` 一个函数。
+  2. **串行上传**：一次最多 20 个，逐个发（避免同时压 20 个识别任务）；单文件进度 + 总进度。
+  3. **409 是绿色提示**：重复影像是正常业务，行内"该票据已上传"+ 查看链接；上传请求用 `silent: true`
+     让 http 不弹全局红条，其他错误也在行内展示。
+  4. **上限 20MB**（D-018 契约；任务卡写的 10MB 过时）。前端常量从 `VITE_MAX_UPLOAD_MB` 读，默认 20。
+  5. **批量不自动跳详情**：任务卡说"上传完成跳 /invoices/{id}"，但 20 个文件时跳走会丢掉其余进度；
+     改为逐行"查看详情"链接（S2-11 落地后可用），单文件场景同样给链接。
+  6. **本地校验 + 后端裁决**：前端只查扩展名/MIME/大小；魔数与内容由后端判定（改扩展名会被 422）。
+- **修的真实 bug**：`Upload.vue` 最初把原始 task 对象 push 后继续改它，Vue 不追踪 → 页面永远"上传中 0%"；
+  改为操作数组里的响应式代理，实测恢复正常。
+- **验证**：`npm run typecheck` / `npm run build`；后端 + ARQ worker + Vite + 无头 Edge：
+  上传真实 JPEG → 行 "失败 / 识别失败：TaskNotReadyError: OCR 流水线未接入（S3-1）"（S2-7 的真实行为）；
+  同文件重传 → "已上传 / 该票据已上传 + 查看链接"（无红色全局错误）；`.txt` → 本地拒绝"只支持 JPG/PNG/PDF"；
+  `smoke.py` 9 OK / 0 FAIL；测试用户/票据/MinIO 对象/Redis key 已清理。

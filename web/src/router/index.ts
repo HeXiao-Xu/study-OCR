@@ -60,8 +60,8 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'upload',
         name: 'upload',
-        component: Placeholder,
-        meta: { title: '上传票据', roles: ['submitter'], placeholder: 'S2-10' },
+        component: () => import('../views/Upload.vue'),
+        meta: { title: '上传票据', roles: ['submitter'] },
       },
       {
         path: 'review',
