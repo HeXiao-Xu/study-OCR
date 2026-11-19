@@ -1,0 +1,319 @@
+"""字段抽取器（S1-5）：关键字锚定 + 方向/距离约束 + 归一化 + 冲突保留。
+
+设计要点（都对应任务卡里列的坑）：
+1. **规则显式**：锚点同义词、方向（right/below）、最大距离、允许的纵向区间、多候选取最大——
+   全部写在 `templates/field_rules.yaml` 里，**不允许"取最后一行的金额"这种模糊实现**；
+2. **不静默修正**：同一字段出现两个不同候选时，保留 `candidates` 并记 conflict，由前端让用户选；
+3. **金额一律 Decimal**（`validators.parse_money`），日期归一化成 ISO；
+4. **保留来源行号**：`source_line_no` 回指 `OcrLine.line_no`，前端要能 hover 高亮、审计要能回溯。
+
+抽取顺序：锚点同行右侧 → 锚点下方/右侧邻近行 → 区域内的形态兜底（仅在规则显式给了 zone 时）。
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+from app.ocr.layout import LayoutResult
+from app.ocr.types import ExtractedField, ExtractionResult, OcrLine
+from app.ocr.validators import parse_date, parse_money, parse_upper_amount, run_validators
+
+__all__ = ["FieldRule", "load_field_rules", "extract_fields"]
+
+RULES_PATH = Path(__file__).resolve().parent / "templates" / "field_rules.yaml"
+_ANCHOR_STRENGTH = {0: 1.0, 1: 0.92, 2: 0.84}      # 锚点顺序即强度：第一个最可信
+_FUZZY_PENALTY = 0.85                               # 需要跨行取值时打折
+_DEFAULT_MAX_DISTANCE = 300.0
+
+
+@dataclass(frozen=True)
+class FieldRule:
+    name: str
+    value_type: str
+    anchors: list[str]
+    direction: str = "right"
+    regex: str | None = None
+    max_distance: float = _DEFAULT_MAX_DISTANCE
+    zone: tuple[float, float] | None = None
+    occurrence: str = "all"     # all=收集前 3 个锚点行（用于发现冲突）；first/last=只取一个
+    tickets: list[str] | None = None
+    required: bool = False
+    if_multiple: str | None = None
+    value_index: int = 0
+    exclude: list[str] | None = None    # 含这些词的行不参与锚定（如"项目名称"这种表头陷阱）
+    whole_line_anchors: list[str] | None = None   # 命中这些锚点时整行即值（无标签的名称行）        # 一行内出现多个值时的取第几个（合计行的 金额/税额）
+    rule_id: str = ""
+
+    def applies_to(self, ticket_type: str) -> bool:
+        if not self.tickets:
+            return True
+        return ticket_type in self.tickets
+
+
+def load_field_rules(path: Path | None = None) -> list[FieldRule]:
+    path = path or RULES_PATH
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    rules: list[FieldRule] = []
+    for name, spec in (data.get("fields") or {}).items():
+        zone = spec.get("zone")
+        rules.append(FieldRule(
+            name=name,
+            value_type=spec.get("value_type", "text"),
+            anchors=list(spec.get("anchors") or []),
+            direction=spec.get("direction", "right"),
+            regex=spec.get("regex"),
+            max_distance=float(spec.get("max_distance", _DEFAULT_MAX_DISTANCE)),
+            zone=(float(zone[0]), float(zone[1])) if zone else None,
+            occurrence=spec.get("occurrence", "all"),
+            tickets=spec.get("tickets"),
+            required=bool(spec.get("required", False)),
+            if_multiple=spec.get("if_multiple"),
+            value_index=int(spec.get("value_index", 0)),
+            exclude=list(spec.get("exclude") or []) or None,
+            whole_line_anchors=list(spec.get("whole_line_anchors") or []) or None,
+            rule_id=f"{name}:{spec.get('value_type', 'text')}",
+        ))
+    if not rules:
+        raise ValueError(f"字段规则为空：{path}")
+    return rules
+
+
+# ---------------------------------------------------------------------------
+# 值归一化
+# ---------------------------------------------------------------------------
+def _clean_text(text: str) -> str:
+    return re.sub(r"^[\s:：,，、.·\-—_]+", "", text).strip()
+
+
+def _normalize(value_type: str, raw: str) -> str | None:
+    """把切出来的原始文本归一化成契约值；归一化不出来就返回 None（宁可缺，不要脏值）。"""
+    text = _clean_text(raw)
+    if not text:
+        return None
+    if value_type == "money":
+        amount = parse_money(text)
+        return f"{amount:.2f}" if amount is not None else None
+    if value_type == "upper_money":
+        amount = parse_upper_amount(text)
+        return f"{amount:.2f}" if amount is not None else None
+    if value_type == "date":
+        parsed = parse_date(text)
+        return parsed.isoformat() if parsed else None
+    if value_type == "code":
+        digits = re.sub(r"\D", "", text)
+        return digits or None
+    if value_type == "tax_no":
+        cleaned = re.sub(r"[\s\-]", "", text).upper()
+        return cleaned or None
+    if value_type == "person":
+        match = re.search(r"[\u4e00-\u9fa5]{2,4}", text)
+        return match.group(0) if match else None
+    # text：去掉行尾噪声（数量/单位等），最多保留 40 字
+    return text[:40] or None
+
+
+def _compact(text: str) -> str:
+    """去掉 OCR 插在字间的空格：实测"金 额""铁 路"这种逐字空格非常常见。"""
+    return text.replace(" ", "").replace("\u3000", "")
+
+
+def _tail_after_anchor(text: str, anchor: str) -> str:
+    compact = _compact(text)
+    index = compact.find(anchor)
+    if index < 0:
+        return ""
+    return compact[index + len(anchor):]
+
+
+def _extract_value(rule: FieldRule, text: str, anchor: str) -> str | None:
+    if rule.whole_line_anchors and anchor in rule.whole_line_anchors:
+        return _normalize(rule.value_type, _compact(text))
+    tail = _clean_text(_tail_after_anchor(text, anchor))
+    if not tail:
+        return None
+    if rule.regex:
+        matches = re.findall(rule.regex, tail) or re.findall(rule.regex, text)
+        if not matches:
+            return None
+        # 一行多个数值时按 value_index 取（合计行常是"金额 税额"两列）
+        if rule.value_index and len(matches) > rule.value_index:
+            tail = matches[rule.value_index]
+        else:
+            tail = matches[0]
+    return _normalize(rule.value_type, tail)
+
+
+def _in_zone(rule: FieldRule, line: OcrLine, image_height: int) -> bool:
+    if not rule.zone or not image_height:
+        return True
+    relative = line.y_center / float(image_height)
+    return rule.zone[0] <= relative <= rule.zone[1]
+
+
+def _neighbour_value(rule: FieldRule, anchor_line: OcrLine, lines: list[OcrLine],
+                     image_height: int) -> tuple[str, int] | None:
+    """锚点同行取不到值时，在允许的方向/距离内找邻近行。"""
+    if rule.direction == "right":
+        candidates = [line for line in lines
+                      if abs(line.y_center - anchor_line.y_center) <= 30
+                      and line.x_left > anchor_line.x_left]
+        candidates.sort(key=lambda line: line.x_left)
+    elif rule.direction == "below":
+        candidates = [line for line in lines
+                      if line.y_center > anchor_line.y_center
+                      and line.y_center - anchor_line.y_center <= rule.max_distance]
+        candidates.sort(key=lambda line: line.y_center)
+    else:   # any：优先同行右侧，其次下方
+        right = [line for line in lines
+                 if abs(line.y_center - anchor_line.y_center) <= 30 and line.x_left > anchor_line.x_left]
+        below = [line for line in lines if line.y_center > anchor_line.y_center]
+        candidates = sorted(right, key=lambda line: line.x_left) + \
+                     sorted(below, key=lambda line: line.y_center)
+
+    collected: list[tuple[str, int]] = []
+    for line in candidates:
+        if not _in_zone(rule, line, image_height):
+            continue
+        # 距离按"方向"度量：右取水平间距、下取垂直间距。
+        # 用曼哈顿距离会把"合计"与其右侧右对齐的金额（水平差 800px）判成过远，
+        # 实测那样根本取不到值，只能退到低优先级锚点。
+        horizontal = abs(line.x_left - anchor_line.x_left)
+        vertical = abs(line.y_center - anchor_line.y_center)
+        if rule.direction == "right":
+            distance = horizontal
+        elif rule.direction == "below":
+            distance = vertical
+        else:
+            distance = min(horizontal, vertical)
+        if distance > rule.max_distance:
+            continue
+        if rule.regex:
+            matches = re.findall(rule.regex, line.text)
+            if not matches:
+                continue
+            if rule.value_index and len(matches) > rule.value_index:
+                raw_value = matches[rule.value_index]
+                value = _normalize(rule.value_type, raw_value)
+                if value:
+                    return value, line.line_no
+            # value_index 指向的行内没有第 N 个值 → 先把本行的值收起来，继续往下找
+            for raw in matches:
+                normalized = _normalize(rule.value_type, raw)
+                if normalized:
+                    collected.append((normalized, line.line_no))
+                if len(collected) > rule.value_index:
+                    return collected[rule.value_index]
+        else:
+            value = _normalize(rule.value_type, line.text)
+            if value:
+                return value, line.line_no
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 主流程
+# ---------------------------------------------------------------------------
+def extract_fields(lines: list[OcrLine], image_size: tuple[int, int],
+                   ticket_type: str = "unknown",
+                   layout: LayoutResult | None = None,
+                   rules: list[FieldRule] | None = None) -> ExtractionResult:
+    """从文本行抽出字段。不抛异常：抽不出来就是"缺"，由调用方决定怎么处理。"""
+    rules = rules or load_field_rules()
+    _, image_height = image_size
+    ordered = sorted(lines, key=lambda line: (line.y_center, line.x_left))
+    result = ExtractionResult(ticket_type=ticket_type)
+
+    for rule in rules:
+        if not rule.applies_to(ticket_type):
+            continue
+        hits: list[ExtractedField] = []
+
+        for anchor_rank, anchor in enumerate(rule.anchors):
+            anchor_lines = [line for line in ordered
+                            if anchor in _compact(line.text)
+                            and not any(word in _compact(line.text) for word in (rule.exclude or []))]
+            if not anchor_lines:
+                continue
+            if rule.occurrence == "last":
+                anchor_lines = list(reversed(anchor_lines))
+            # occurrence 指定的规则（如"第一/最后一个纳税人识别号"）只取一个锚点行，
+            # 否则会把买方/卖方两个税号都收进来，制造假冲突。
+            selected = anchor_lines[:1] if rule.occurrence in {"first", "last"} else anchor_lines[:3]
+            for anchor_line in selected:
+                base_strength = _ANCHOR_STRENGTH.get(anchor_rank, 0.8)
+                value = _extract_value(rule, anchor_line.text, anchor)
+                source_line = anchor_line
+                strength = base_strength
+                if value is None:
+                    neighbour = _neighbour_value(rule, anchor_line, ordered, image_height)
+                    if neighbour is None:
+                        continue
+                    value, source_line_no = neighbour
+                    source_line = next((line for line in ordered if line.line_no == source_line_no), anchor_line)
+                    strength = base_strength * _FUZZY_PENALTY
+                hits.append(ExtractedField(
+                    name=rule.name,
+                    value=value,
+                    raw_text=source_line.text,
+                    source_line_no=source_line.line_no,
+                    confidence=round(min(1.0, source_line.score * strength), 4),
+                    rule_id=rule.rule_id,
+                    rule_strength=round(strength, 3),
+                    bbox=source_line.bbox(),
+                ))
+            if hits:
+                break      # 高优先级锚点命中就不再往低优先级找
+
+        if not hits:
+            if rule.required:
+                result.missing_required.append(rule.name)
+                result.warnings.append(f"missing_required:{rule.name}")
+            continue
+
+        # 先用"锚点优先级"消解：高优先级锚点的结果直接胜出。
+        # 只有**同优先级证据互相矛盾**时才叫冲突——否则每条规则都会因为表头/明细里
+        # 同名列而报一堆假冲突，前端会被噪声淹没。
+        best_strength = max(hit.rule_strength for hit in hits)
+        top_hits = [hit for hit in hits if hit.rule_strength == best_strength]
+        distinct = []
+        for hit in top_hits:
+            if hit.value not in distinct:
+                distinct.append(hit.value)
+
+        if len(distinct) == 1:
+            result.fields[rule.name] = top_hits[0]
+            continue
+
+        # 多个不同候选：按规则显式处理（取最大），但**保留全部候选**供前端选择，绝不静默丢
+        if rule.if_multiple == "max":
+            numeric = []
+            for hit in top_hits:
+                amount = parse_money(hit.value)
+                if amount is not None:
+                    numeric.append((amount, hit))
+            if numeric:
+                best = max(numeric, key=lambda item: item[0])[1]
+                best.candidates = [hit.value for hit in top_hits]
+                result.fields[rule.name] = best
+                continue
+        result.fields[rule.name] = top_hits[0]
+        result.fields[rule.name].candidates = [hit.value for hit in top_hits]
+        result.conflicts.append({
+            "field": rule.name,
+            "candidates": [{"value": hit.value, "raw_text": hit.raw_text,
+                            "source_line_no": hit.source_line_no, "confidence": hit.confidence}
+                           for hit in top_hits],
+            "note": "同优先级证据给出不同取值，未自动替换，请人工确认",
+        })
+
+    # 校验：失败把该字段置信度折半（任务卡要求），errors 全量返回
+    validation = run_validators(result.fields, ticket_type)
+    for issue in validation.issues:
+        if issue.severity == "error" and issue.field in result.fields:
+            field = result.fields[issue.field]
+            field.confidence = round(field.confidence * 0.5, 4)
+    result.warnings.extend(f"{issue.field}:{issue.code}" for issue in validation.issues)
+    return result

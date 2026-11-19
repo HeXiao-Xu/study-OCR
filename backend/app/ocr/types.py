@@ -54,3 +54,30 @@ class OcrResult(BaseModel):
     def find_by_keyword(self, keyword: str) -> list[OcrLine]:
         """按关键字筛行——S1-5 的"关键字锚定"会用同一套筛选逻辑。"""
         return [line for line in self.lines if keyword in line.text]
+
+class ExtractedField(BaseModel):
+    """一个抽取出来的字段（S1-5）。**保留来源行号与规则 id，便于追溯**。"""
+
+    name: str
+    value: str = Field(description="归一化后的值（金额为 Decimal 的字符串、日期为 ISO）")
+    raw_text: str = Field(description="票面上的原始文本，便于前端并排对照")
+    source_line_no: int | None = None
+    confidence: float = Field(ge=0.0, le=1.0)
+    rule_id: str = ""
+    rule_strength: float = 1.0
+    bbox: tuple[int, int, int, int] | None = None
+    candidates: list[str] = Field(default_factory=list, description="同分候选（有冲突时不自动替换）")
+
+
+class ExtractionResult(BaseModel):
+    """整张票的抽取结果。"""
+
+    fields: dict[str, ExtractedField] = Field(default_factory=dict)
+    missing_required: list[str] = Field(default_factory=list)
+    conflicts: list[dict] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    ticket_type: str = "unknown"
+
+    def value_of(self, name: str) -> str | None:
+        item = self.fields.get(name)
+        return item.value if item else None

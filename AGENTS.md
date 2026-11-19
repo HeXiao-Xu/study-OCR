@@ -219,7 +219,7 @@ deploy/   scripts/   samples/（图片不入库）   secrets/（整目录不入�
 | OCR 预处理 | `backend/app/ocr/preprocess.py`（`PreprocessOptions` 全开关；EXIF→缩放→定位→透视/降级→放大→去斜→照度→印章；返回 `to_original` 3×3 供坐标回算；失败只降级不抛异常）+ `scripts/{preprocess_demo,preprocess_eval}.py` | S1-2 ✅ |
 | OCR 检测识别适配器 | `backend/app/ocr/{detector,recognizer,types}.py`（`OcrEngine` 单例 + 懒加载 + 互斥锁；`parse_paddle_result` 解析 2.7 结构并**按 y 分桶再按 x 排序**给 `line_no`；遇到 3.x dict 抛 `OcrContractError`；`recognize_line` 供 S3-3 复用）+ `scripts/ocr_demo.py` | S1-3 ✅ |
 | 票种识别与版面分块 | `backend/app/ocr/{layout.py,templates/*.yaml}`（关键字加权 ×3 标题加成 + 互斥词扣分 + 长宽比先验；`unknown` 降级；区域**按内容框归一化**；block 聚类）+ `scripts/{layout_demo,layout_eval}.py` | S1-4 ✅ |
-| 字段抽取器与校验器 | 待回填 | S1-5 |
+| 字段抽取器与校验器 | `backend/app/ocr/{extractor.py,validators.py}` + `templates/field_rules.yaml`（锚点优先级 + 同行/邻近取值 + 忽略 OCR 空格 + exclude 表头陷阱 + whole_line 无标签名称行；冲突保留 candidates 不静默替换）+ `scripts/{field_demo,field_eval}.py` | S1-5 ✅ |
 | 密码封装（canonical / sm / signature / envelope / keystore） | 待回填 | S4-1 ~ S4-6 |
 | 审计哈希链 | 待回填 | S4-7 |
 | 评测脚本与指标函数 | 待回填 | S1-6 |

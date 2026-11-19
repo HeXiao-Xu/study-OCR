@@ -71,6 +71,11 @@ def load_templates(directory: Path | None = None) -> dict[str, TicketTemplate]:
     directory = directory or TEMPLATE_DIR
     templates: dict[str, TicketTemplate] = {}
     for path in sorted(directory.glob("*.yaml")):
+        # templates/ 目录里还放着 field_rules.yaml（字段抽取规则），它们没有 type_code，
+        # 不能当票种模板解析 —— 这里按"是否声明 type_code"过滤。
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if "type_code" not in data:
+            continue
         template = _parse_template(path)
         templates[template.type_code] = template
     if not templates:

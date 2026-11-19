@@ -1,0 +1,135 @@
+# 字段抽取规则（S1-5）。S2-8 起改为读 field_rules 表并缓存，本文件是"出厂默认"。
+#
+# 约定（全部是显式规则，禁止"取最后一行的金额"这类模糊描述）：
+#   anchors      : 锚点同义词，按书写顺序即优先级（越靠前越强）
+#   direction    : right=同行右侧 / below=下方紧邻 / any=都可
+#   regex        : 值的形态约束（提取时也用它切出值）
+#   max_distance : 锚点与值之间允许的最大像素距离
+#   zone         : 允许出现的归一化纵向区间 [y1, y2]，防"金额"命中表头列名
+#   occurrence   : first / last（有多个同名锚点时取哪个）
+#   tickets      : 仅这些票种适用；省略=所有票种
+#   required     : 缺失时进 missing_required
+version: 1
+
+fields:
+  invoice_code:
+    value_type: code
+    anchors: ["发票代码", "代码"]
+    direction: right
+    regex: '\d{10,12}'
+    max_distance: 320
+    tickets: [vat_general, taxi_ticket]
+    required: true
+
+  invoice_no:
+    value_type: code
+    anchors: ["发票号码", "号码"]
+    direction: right
+    regex: '\d{8,20}'
+    max_distance: 340
+    required: true
+
+  invoice_date:
+    value_type: date
+    anchors: ["开票日期", "乘车日期", "填开日期", "日期"]
+    direction: right
+    regex: '\d{4}\s*[-/年.]\s*\d{1,2}\s*[-/月.]\s*\d{1,2}'
+    max_distance: 360
+    required: true
+
+  buyer_name:
+    value_type: text
+    anchors: ["购买方名称", "名称", "购买方"]
+    direction: right
+    max_distance: 420
+    occurrence: first
+    exclude: ["项目名称"]
+    tickets: [vat_digital, vat_general]
+    required: false
+
+  buyer_tax_no:
+    value_type: tax_no
+    anchors: ["纳税人识别号", "统一社会信用代码"]
+    direction: right
+    regex: '[0-9A-Z]{15,20}'
+    max_distance: 520
+    occurrence: first
+    tickets: [vat_digital, vat_general]
+    required: false
+
+  seller_name:
+    value_type: text
+    # 最后两个锚点是为"没有标签的公司名行"准备的（出租车票只有一行公司名）
+    anchors: ["销售方名称", "名称", "销售方", "承运人", "出租汽车", "有限公司"]
+    direction: right
+    max_distance: 420
+    occurrence: last
+    exclude: ["项目名称"]
+    whole_line_anchors: ["出租汽车", "有限公司"]   # 命中这两个锚点时整行即公司名
+    required: false
+
+  seller_tax_no:
+    value_type: tax_no
+    anchors: ["纳税人识别号", "统一社会信用代码"]
+    direction: right
+    regex: '[0-9A-Z]{15,20}'
+    max_distance: 520
+    occurrence: last
+    tickets: [vat_digital, vat_general]
+    required: false
+
+  amount:
+    value_type: money
+    anchors: ["合计金额", "合计", "金额"]
+    direction: any
+    regex: '[¥￥]?\s*-?\d[\d,]*\.\d{2}'
+    max_distance: 360
+    zone: [0.60, 1.0]
+    value_index: 0        # 合计行形如"合计 ¥184.80 ¥11.09"：第 0 个是金额
+    tickets: [vat_digital, vat_general]   # 其他票种没有"金额/税额"拆分（行程单只有合计）
+    required: false
+
+  tax_amount:
+    value_type: money
+    anchors: ["合计税额", "合计", "税额"]
+    direction: any
+    regex: '[¥￥]?\s*-?\d[\d,]*\.\d{2}'
+    max_distance: 360
+    zone: [0.60, 1.0]
+    value_index: 1        # 合计行第 1 个是税额
+    tickets: [vat_digital, vat_general]
+    required: false
+
+  total_amount:
+    value_type: money
+    anchors: ["价税合计（小写）", "价税合计(小写)", "小写", "价税合计", "合计", "金额", "票价", "合计金额"]
+    direction: any
+    regex: '[¥￥]?\s*-?\d[\d,]*\.\d{2}'
+    max_distance: 420
+    if_multiple: max      # 多处候选时取**数值最大**的那个（合计行通常最大），这是显式规则不是"取最后一行"
+    required: true
+
+  total_amount_upper:
+    value_type: upper_money
+    anchors: ["价税合计（大写）", "价税合计(大写)", "大写"]
+    direction: right
+    max_distance: 500
+    tickets: [vat_digital, vat_general]
+    required: false
+
+  check_code:
+    value_type: code
+    anchors: ["校验码"]
+    direction: right
+    regex: '\d{16,24}'
+    max_distance: 420
+    tickets: [vat_general]
+    required: false
+
+  passenger_name:
+    value_type: person
+    anchors: ["乘车人", "旅客姓名", "姓名"]
+    direction: right
+    max_distance: 420
+    tickets: [train_ticket, flight_itinerary]
+    required: false
