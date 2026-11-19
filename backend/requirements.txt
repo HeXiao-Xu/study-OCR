@@ -17,6 +17,8 @@ fastapi==0.163.2
 uvicorn[standard]==0.54.0
 pydantic==2.14.3
 pydantic-settings==2.16.3
+# FastAPI 解析 multipart/form-data 的硬依赖（S2-6 上传接口）
+python-multipart==0.0.34
 
 # --- PDF 文本层（S1-1 用于量测真实数电票版式；S2-6 上传链路会用它走"文本层优先"路径）---
 # 未固定版本前先锁到当前实测可用版本，S2-6 落地时再收窄

@@ -795,3 +795,32 @@
 - **验证**：`tests/test_invoices.py` 31 条（三权限列表/筛选/分页、详情 fields/latest_job、软删幂等与 409、
   void 释放唯一索引、状态机合法路径/非法跳转/版本冲突、字段修改 200/403/42202/409/42200/42201 与回滚、
   确认标记、建单→改字段→查详情链路）；`pytest 310 passed`、`pytest -m integration 118 passed`。
+
+---
+
+## D-044 S2-6 上传：S4 前走本地明文调试、对象名按 SCHEMA、ARQ 入队留 S2-7
+
+- **日期**：2026-11-19（S2-6，用户拍板方案 A）
+- **背景**：契约要求"内存中信封加密后写 MinIO"，但信封/SM4 在 S4-3/S4-4；SCHEMA §3.1 允许
+  `is_cipher=false` 仅出现在本地调试配置。另：任务卡与契约在路径（`/{id}/files` vs `/invoices/upload`）、
+  大小（10MB vs D-018 的 20MB）、类型（含 TIFF vs 仅 jpeg/png/pdf）、对象名（sha 前缀 vs SCHEMA 的 uuid）上冲突。
+- **决策**：
+  1. **S4 前允许本地明文调试**：`storage_allow_plaintext` 默认 true，上传行 `is_cipher=false`；
+     `environment='prod'` 时该配置为 true 直接 `ConfigError`（启动即失败，不会把调试路径带上线）；
+     每次明文上传打一条 warning；S4 接入信封后默认切密文并删除该开关。
+  2. **对象名按 SCHEMA §3.1**：`invoices/{yyyy}/{mm}/{secrets.token_hex(16)}.bin`；
+     不用原文件名（路径穿越/中文/重名），也不用 sha 前缀（避免对象名泄露票据哈希）。
+  3. **接口与限制按契约**：`POST /invoices/upload`、20MB（D-018）、仅 jpeg/png/pdf（TIFF 拒绝）、
+     PDF ≤5 页、魔数 + Pillow/pypdf 双校验；去重**先于**写对象（命中 409/40901 + `data.invoice_id`）。
+  4. **落库补偿**：`storage.put` 成功后 DB 失败（含并发同 sha 的 `IntegrityError`）必须 `storage.delete`；
+     删除失败只告警，不掩盖原始异常。
+  5. **ARQ 留 S2-7**：本卡只写 `ocr_jobs(stage=preprocess,status=pending)` 并返回 `job_id`；
+     S2-7 在事务提交后入队，上传接口形状不变。
+  6. **新依赖 `python-multipart==0.0.34`**：FastAPI 解析 `multipart/form-data` 的硬依赖（不装则路由无法注册）。
+- **理由**：方案 B 会让 S2-6/S2-10/S3 的上传链路全部停摆；方案 C 打乱 S4 边界。本地方案把风险限定在
+  "本机 Docker 卷中的明文票据"，并用 prod 启动校验兜底；论文"范围限定"如实写。
+- **代价**：S4 前本地 MinIO 中是明文；`is_cipher=false` 是临时状态，S4 必须改回 true 并补迁移/测试；
+  任务卡的 TIFF 与 sha 对象名不采用。
+- **验证**：`tests/test_upload.py` 11 条（成功/去重/空文件/超限/假图/TIFF/PDF 页数/权限/补偿/503/文件名清洗）；
+  真实 uvicorn + MinIO 手工：202 → 二次 409 + 同一 `invoice_id`、MinIO 只有 1 个对象、
+  `is_cipher=false`、对象与测试数据已清理；`pytest 311 passed`、`pytest -m integration 129 passed`。

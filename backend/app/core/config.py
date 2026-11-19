@@ -14,7 +14,7 @@ import json
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     minio_secret_key: str
     minio_bucket: str
     minio_secure: bool = False
+
+    # ---------- 上传与存储（S2-6）----------
+    # S4 接入 SM4 信封之前，本地调试允许明文落 MinIO（is_cipher=false）；prod 禁止（见 validator）
+    storage_allow_plaintext: bool = True
+    upload_max_pdf_pages: int = 5
 
     # ---------- 安全 ----------
     jwt_secret: str
@@ -108,6 +113,15 @@ class Settings(BaseSettings):
         if not value or "/" in value:
             raise ValueError("MINIO_BUCKET 不能为空且不能含 '/'")
         return value
+
+    @model_validator(mode="after")
+    def _check_storage_mode(self) -> "Settings":
+        # 明文存储只允许本地调试：prod 必须等 S4 的 SM4 信封接入后走密文
+        if self.environment == "prod" and self.storage_allow_plaintext:
+            raise ValueError(
+                "prod 环境禁止 STORAGE_ALLOW_PLAINTEXT=true：S4 加密链路未接入前只能本地调试明文"
+            )
+        return self
 
     @property
     def is_prod(self) -> bool:

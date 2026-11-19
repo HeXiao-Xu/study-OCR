@@ -1,20 +1,20 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-19（S2-5 完成）
+> 最后更新：2026-11-19（S2-6 完成）
 
 ## 1. 一句话现状
 
-**S0 + S1 + S2-1（16 表）+ S2-2（JWT）+ S2-3（隔离）+ S2-4（分页）+ S2-5（票据 CRUD）全部完成**，自动化验收全绿；
-**下一步是 S2 阶段的第六张卡：S2-6 文件上传 + MinIO + sha256 去重**。
+**S0 + S1 + S2-1 ~ S2-6 全部完成**，自动化验收全绿；
+**下一步是 S2 阶段的第七张卡：S2-7 ARQ 异步任务框架（投递 / 重试 / 幂等）**。
 
 ## 2. 仓库与环境
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 17 个 commit，待用户 push**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 18 个 commit，待用户 push**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
-| 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**（Argon2id） |
+| 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**、python-multipart **0.0.34** |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
 | OCR 模型 | 已缓存在 `~/.paddleocr/whl/{det,rec,cls}`（约 18MB），离线可用 |
 | Docker | `study-ocr-{postgres,redis,minio}` 三个容器 **healthy**（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0002`（16 业务表 + alembic_version）** |
@@ -34,7 +34,8 @@ backend/app/api/{deps.py,v1/auth.py}  ← S2-2：Bearer 解析、get_current_use
 backend/app/services/repository.py  ← S2-3：行级隔离（策略表 + filter_visible + get_visible_or_404，deny-by-default）
 backend/app/services/pagination.py  ← S2-4：分页/排序协议（PageParams/PageResult、白名单排序、同一 stmt 求 total）
 backend/app/services/invoice_service.py  ← S2-5：票据建草稿/状态机/列表/详情/软删/字段修改
-backend/app/api/v1/invoices.py + schemas/invoice.py  ← S2-5：票据 4 条 HTTP 接口与出入参
+backend/app/services/{storage,upload_service}.py  ← S2-6：MinIO 封装 + 上传校验/去重/补偿
+backend/app/api/v1/{invoices,files}.py + schemas/invoice.py  ← S2-5/S2-6：票据 4 条接口 + 上传接口
 scripts/bench_list.py               ← S2-4：5 万行 p50/p95 + EXPLAIN ANALYZE（临时库，跑完自删）
 backend/app/ocr/          ← S1 的全部产出
   preprocess.py             预处理（EXIF→定位→透视/降级→去斜→照度→印章）+ needs_retake
@@ -75,8 +76,10 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表，head=0002
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
-(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 310 passed（默认跳过集成）
-(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 118 passed（需 Docker）
+(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 311 passed（默认跳过集成）
+(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 129 passed（需 Docker）
+# 上传（后端起）：先登录拿 token，再 multipart 上传；同文件二次上传应 409
+curl -s -F "file=@票据.jpg" localhost:8000/api/v1/invoices/upload -H "Authorization: Bearer <token>"
 .venv/Scripts/python.exe scripts/bench_list.py --rows 50000 --iterations 50  # 分页基准（临时库）
 .venv/Scripts/python.exe scripts/smoke.py                                   # 8 OK / 0 FAIL
 # 建 reviewer / admin 账号（注册接口只产生 submitter）
@@ -110,23 +113,24 @@ cd /e/BiSheXZY/study-OCR
 | D-041 | 行级隔离用**应用层统一过滤**（`services/repository.py`），不用 RLS：连接池 + `SET LOCAL` 会串身份、policy 复杂度高、可测试性差 |
 | D-042 | 分页层：**显式 join 而非 relationship**、count 与数据共用同一 `Select`、`id asc` 稳定兜底；keyset 分页暂不做（5 万行深页 p95 25.4ms） |
 | D-043 | 票据状态机按 **D-011 的 5 值**（任务卡图不采用）；建票无 HTTP 口（S2-6 upload 调 `create_draft`）；字段修改按契约 `PATCH /{id}/fields` 在 S2-5 提前实现 |
+| D-044 | S4 前上传走**本地明文调试**（`is_cipher=false`，prod 启动拒绝）；对象名按 SCHEMA `invoices/yyyy/mm/<hex>.bin`；ARQ 入队留 S2-7 |
 
-## 7. 下一步：S2-6 文件上传 + MinIO + sha256 去重
+## 7. 下一步：S2-7 ARQ 异步任务框架（状态机 + 重试 + 幂等）
 
-- 契约：`docs/API.md` §2 `POST /invoices/upload`（202 + `invoice_id/file_id/job_id/sha256`；`sha256` 去重 409/40901；
-  ≤20MB；MIME + 魔数双校验；PDF ≤5 页；响应**不得出现**对象名/路径）；
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-6；
-- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-6-upload.md`）→ plan → 用户确认 → 写码**；
-- 底座：`invoice_service.create_draft()`（建票）、`api/deps.py`、`Settings`（minio/MAX_UPLOAD_MB）、`core/redis.py`、
-  `ocr/intake.py`（S1 的 PDF/照片分流）；
-- 需要先想清楚的一点：契约要求"内存中信封加密"再写 MinIO，但信封/ SM4 在 S4-3/S4-4 才实现。
-  S2-6 的 spec 必须先定：**是先把密文链路做出来（提前 S4-3/4 的一部分），还是按 SCHEMA 允许的
-  `is_cipher=false` 本地调试路径先落明文并在 S4 补加密**（SCHEMA §3.1 明确 `false` 只允许出现在本地调试配置下）。
-  这个取舍要在 S2-6 的 spec 里报告并让你拍板，**不要默默落明文**。
+- 契约：`docs/API.md` §2（上传返回 202 + `job_id`；`GET /invoices/{id}/ocr-status` 的轮询口径）；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-7；
+- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-7-arq.md`）→ plan → 用户确认 → 写码**；
+- 底座：S2-6 已写 `ocr_jobs(pending)`；`core/redis.py` 已有 Redis 单例；`core/config.py` 读同一份配置；
+- 要接上的缺口：S2-6 的 `/invoices/upload` 目前**只落 pending 行、没有入队**（遗留 30）。
+  S2-7 需要：ARQ worker（`tasks/worker.py`）、`ocr_task`（S3-1 先占位/最小实现）、
+  `job_service`（状态机 pending→running→succeeded|failed、attempts、超时、Redis `SET NX EX` 幂等锁），
+  并在上传事务提交后真正 `enqueue_job`；入队失败要把 job 置 `failed`（AGENTS §10.5）。
+- 注意：ARQ 没有内置幂等，重复投递会重复识别（任务卡坑）；worker 与 API 共用 `core/config.py`，
+  不允许抄第二份 `DATABASE_URL`。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地 17 个 commit 需要用户执行 `git push`（AI 不推）；
+1. **push**：本地 18 个 commit 需要用户执行 `git push`（AI 不推）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；

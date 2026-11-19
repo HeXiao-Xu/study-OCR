@@ -150,3 +150,20 @@ class InvoiceFieldsUpdateData(BaseModel):
     updated: list[FieldChange]
     needs_confirm: list[str]
     conflicts: list[ConflictOut]
+
+
+class UploadDedup(BaseModel):
+    hit: bool = False
+    invoice_id: int | None = None
+
+
+class UploadData(BaseModel):
+    """上传出参（API.md §2）：**不得出现 storage_key / 对象名**。"""
+
+    invoice_id: int
+    file_id: int
+    job_id: int
+    sha256: str
+    status: str
+    ocr_status: str
+    dedup: UploadDedup
