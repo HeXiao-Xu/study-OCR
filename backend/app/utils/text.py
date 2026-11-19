@@ -23,3 +23,14 @@ def username_error(raw: str) -> str | None:
     if any(char.isspace() for char in value):
         return "用户名不能包含空白字符"
     return None
+
+
+def escape_like(term: str) -> str:
+    """把用户输入安全地变成 `%term%`，转义 LIKE 通配符。
+
+    不转义的话，用户搜 `%` 会匹配全表、搜 `_` 会变成任意单字符——既是功能错误，
+    也让 `q` 变成绕过筛选的手段。调用方必须带 `escape="\\\\"`：
+        column.ilike(escape_like(q), escape="\\\\")
+    """
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"

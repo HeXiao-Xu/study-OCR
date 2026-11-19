@@ -1,18 +1,18 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-19（S2-3 完成）
+> 最后更新：2026-11-19（S2-4 完成）
 
 ## 1. 一句话现状
 
-**S0（环境/骨架）+ S1（OCR 技术验证）+ S2-1（16 表）+ S2-2（JWT 认证）+ S2-3（行级隔离）全部完成**，自动化验收全绿；
-**下一步是 S2 阶段的第四张卡：S2-4 分页、筛选与排序**。
+**S0 + S1 + S2-1（16 表）+ S2-2（JWT 认证）+ S2-3（行级隔离）+ S2-4（分页/排序）全部完成**，自动化验收全绿；
+**下一步是 S2 阶段的第五张卡：S2-5 票据表与 CRUD（invoices / invoice_files）**。
 
 ## 2. 仓库与环境
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 15 个 commit，待用户 push**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 16 个 commit，待用户 push**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
 | 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**（Argon2id） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
@@ -32,6 +32,8 @@ backend/app/core/{security,redis}.py  ← S2-2：Argon2id + HS256 JWT；Redis �
 backend/app/services/{auth_service,token_store}.py  ← S2-2：注册/认证/签发/轮换/吊销；refresh 白名单
 backend/app/api/{deps.py,v1/auth.py}  ← S2-2：Bearer 解析、get_current_user、require_roles、5 条 auth 路由
 backend/app/services/repository.py  ← S2-3：行级隔离（策略表 + filter_visible + get_visible_or_404，deny-by-default）
+backend/app/services/pagination.py  ← S2-4：分页/排序协议（PageParams/PageResult、白名单排序、同一 stmt 求 total）
+scripts/bench_list.py               ← S2-4：5 万行 p50/p95 + EXPLAIN ANALYZE（临时库，跑完自删）
 backend/app/ocr/          ← S1 的全部产出
   preprocess.py             预处理（EXIF→定位→透视/降级→去斜→照度→印章）+ needs_retake
   intake.py                 输入分流：PDF 只渲染、照片走预处理 + 重拍闸门   ← S3 会用
@@ -71,8 +73,9 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表，head=0002
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
-(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 297 passed（默认跳过集成）
-(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 74 passed（需 Docker）
+(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 310 passed（默认跳过集成）
+(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 87 passed（需 Docker）
+.venv/Scripts/python.exe scripts/bench_list.py --rows 50000 --iterations 50  # 分页基准（临时库）
 .venv/Scripts/python.exe scripts/smoke.py                                   # 8 OK / 0 FAIL
 # 建 reviewer / admin 账号（注册接口只产生 submitter）
 (cd backend && ../.venv/Scripts/python.exe ../scripts/create_user.py --username reviewer1 --role reviewer --real-name 审核员)
@@ -103,19 +106,22 @@ cd /e/BiSheXZY/study-OCR
 | D-039 | **登出只吊销 refresh**：access 在剩余 30min 内仍可用（无状态 JWT 的固有代价），论文"不足"如实写 |
 | D-040 | `audit_logs.action` 补 `login_failed` / `logout` / `forbidden`（0002 迁移）；**审计行留 S4-7**，S2-2 只写脱敏应用日志 |
 | D-041 | 行级隔离用**应用层统一过滤**（`services/repository.py`），不用 RLS：连接池 + `SET LOCAL` 会串身份、policy 复杂度高、可测试性差 |
+| D-042 | 分页层：**显式 join 而非 relationship**、count 与数据共用同一 `Select`、`id asc` 稳定兜底；keyset 分页暂不做（5 万行深页 p95 25.4ms） |
 
-## 7. 下一步：S2-4 分页、筛选与排序
+## 7. 下一步：S2-5 票据表与 CRUD
 
-- 契约：`docs/API.md` §0（`page/page_size` 默认 20/上限 100、`sort_by` 白名单、`order`）与 §2 列表接口；
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-4；
-- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-4-pagination.md`）→ plan → 用户确认 → 写码**；
-- 底座：`services/repository.py::filter_visible`——**先过滤再 count**，且 count 与数据用同一 where；
-- 关键坑：`sort_by` 只接受白名单映射（防 SQL 注入）；列表关联用 `selectinload` 防 N+1；
-  5 万条 p95 < 300ms（任务卡要求写 `scripts/bench_list.py`）。
+- 契约：`docs/API.md` §2（`POST /invoices` 建草稿、`GET /invoices` 列表、`GET /{id}` 详情、
+  `PATCH /{id}` 仅草稿可改、`DELETE` 软删、`PUT /{id}/fields` 批量改字段）；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-5；
+- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-5-invoices.md`）→ plan → 用户确认 → 写码**；
+- 底座：`repository.py`（`filter_visible` / `get_visible_or_404`）、`pagination.py`（`PageParams` / `paginate`）、
+  `api/deps.py`（`get_current_user` / `require_roles`）；
+- 关键约定：状态机写成**单一 `transition(invoice, target, actor)`**，非法迁移 409；软删 = `status='void'`，
+  列表默认不返回；同发票号重传与唯一索引的策略要明确（任务卡坑）；列表 join 一次取文件字段（2 条 SQL）。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地 15 个 commit 需要用户执行 `git push`（AI 不推）；
+1. **push**：本地 16 个 commit 需要用户执行 `git push`（AI 不推）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；

@@ -738,3 +738,29 @@
 - **验证**：`tests/test_repository.py` 9 条（三角色 × 三模型谓词、未登记模型默认拒绝、
   过滤不覆盖调用方条件）；`tests/test_isolation.py` 23 条（角色 × 模型、报销单 8 状态、
   列表/详情一致性、HTTP 404/40400）。
+
+---
+
+## D-042 列表分页：显式 join 而不是 relationship；count 与数据共用同一个 Select；keyset 暂不做
+
+- **日期**：2026-11-19（S2-4）
+- **背景**：列表接口要统一分页/排序协议。任务卡提示词建议 `selectinload/joinedload`，
+  但 S2-1 决定模型层**不写 relationship**（避免懒加载与隐式 JOIN），且列表需要的关联字段是明确的一列（文件名/哈希）。
+- **决策**：
+  1. **保持无 relationship**：列表用 `select(Invoice).join(InvoiceFile, ...).add_columns(...)` +
+     `paginate(..., scalar=False)` 一次取全；测试用 `before_cursor_execute` 统计每页 **2 条 SELECT**
+     （count + 数据），断言不随行数增长。将来若 S2-5 需要 ORM 关系，再单独评审并改锚点，不混进分页层。
+  2. **count 与数据共用同一 `Select`**：`select(count).select_from(stmt.order_by(None).subquery())`，
+     从根上消除"列表一套 where、total 另一套"的经典 bug。
+  3. **稳定排序**：白名单列 + `id asc` 兜底；同秒 `created_at` 翻页不重复、不漏行。
+  4. **`q` 安全**：`%` / `_` / `\` 先转义再 `ILIKE ... ESCAPE '\'`，用户输入不会变成通配符。
+  5. **keyset/游标分页暂不做**：5 万行下深页（page=1000）p95 25.4ms，offset 足够；
+     等 S2-5/S5 确有深页或更大规模需求再评估（届时只改分页层，端点不用动）。
+- **备选**：给 `Invoice` 加 `file/template` relationship 并用 `selectinload`。好处是 ORM 写法顺手，
+  代价是改 S2-1 锚点、多一层懒加载风险，且列表字段明确、join 已经够用——收益不抵风险。
+- **代价**：端点需要自己写 join + 字段映射（比 relationship 多几行）；`q` 目前是 `ILIKE` 子串，
+  没有 trigram/GIN 索引（5 万行 p95 32.3ms 可接受，真实规模再评估）。
+- **验证**：`tests/test_pagination.py` 13 单元 + 13 集成（翻页并集/超末页、count 同条件、
+  排序方向、可见性组合、2 条 SQL 的 N+1 断言、HTTP 422 边界）；
+  `scripts/bench_list.py --rows 50000 --iterations 50`：四组 p95 = **15.9 / 25.4 / 21.9 / 32.3 ms**，
+  `EXPLAIN ANALYZE` 走 `Index Scan using ix_invoices_uploader_created`。

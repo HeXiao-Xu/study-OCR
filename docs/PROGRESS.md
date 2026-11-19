@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-3 已完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-3**（共 16 张卡，全部 ✅ 通过）
-- 最近完成：**S2-3 行级数据隔离**（统一 `filter_visible` / `get_visible_or_404`；deny-by-default；`pytest 297 passed`，集成 74 条）
-- 下一步：**S2-4 分页、筛选与排序**（列表协议 + 5 万条性能；契约见 `docs/API.md` §0/§2）
+- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-4 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-4**（共 17 张卡，全部 ✅ 通过）
+- 最近完成：**S2-4 分页、筛选与排序**（统一 `PageParams/PageResult` + 白名单排序 + 同一 stmt count；5 万行 p95 ≤ **32.3ms**；`pytest 310 passed`，集成 87 条）
+- 下一步：**S2-5 票据表与 CRUD**（`invoices` / `invoice_files`；状态机 + 软删 + 接入隔离与分页；契约见 `docs/API.md` §2）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
-  - 本地领先 origin **15 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **16 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -40,7 +40,7 @@
 [x] S2-1 模型与首批迁移（16 张表）
 [x] S2-2 JWT 认证 + RBAC 三角色 ★关键
 [x] S2-3 行级数据隔离
-[ ] S2-4 分页、筛选与排序
+[x] S2-4 分页、筛选与排序
 [ ] S2-5 票据表与 CRUD（invoices / invoice_files）
 [ ] S2-6 文件上传 + MinIO + sha256 去重 ★关键
 [ ] S2-7 ARQ 异步任务框架（状态机 + 重试 + 幂等）
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S2-4 | `backend/app/schemas/common.py`（`PageParams/PageResult`）、`backend/app/services/pagination.py`、`backend/app/utils/text.py`（`escape_like`）、`backend/tests/test_pagination.py`、`scripts/bench_list.py`、`docs/{spec,plan}/s2-4-pagination.md` | ① `PageParams`：默认 1/20、`page=0` 与 `page_size=1000` → 422、`order` 只允许 asc/desc；② 排序白名单（created_at/invoice_date/total_amount）+ `id asc` 稳定兜底，未知字段 **42200** 并列出可选值；③ `count` 与数据共用同一 `Select`（`order_by(None).subquery()`），翻页并集=全集、无重叠、超末页 `items=[]` 且 `total` 不变；④ 与 S2-3 组合：submitter/reviewer 的 `total` 按可见性分别计算；⑤ N+1 断言：join 列表每页恰好 **2 条 SELECT**；⑥ 50,000 行基准四组 p50/p95 = **13.4/15.9、20.1/25.4、19.3/21.9、27.6/32.3 ms**，`EXPLAIN ANALYZE` 走 `Index Scan using ix_invoices_uploader_created`；⑦ `pytest 310 passed`、`pytest -m integration 87 passed` | ✅ 通过（关系方案选 A：显式 join，不改 S2-1 锚点，见 D-042） |
 | S2-3 | `backend/app/services/repository.py`、`backend/tests/{test_repository,test_isolation}.py`、`docs/{spec,plan}/s2-3-isolation.md` | ① 策略表覆盖 `invoices` / `invoice_files` / `report_forms`；未登记模型 `false()` 默认拒绝；② submitter A/B 列表互相不可见、B 查 A 详情抛 `PermissionDeniedError`（存在但无权）与 `NotFoundError`（确实不存在）内部可区分；③ reviewer 能看到全部票据/文件，报销单只看到 `submitted/approved/rejected/archived`（8 状态参数化）；④ admin 三类业务数据全 404；⑤ 列表与详情对四种角色逐一一致；⑥ HTTP（真实 `create_app()` + 异常处理器）：B 查 A → **404/40400**、reviewer 200、admin 404、未登录 401、B 列表不含 A；⑦ `pytest 297 passed`、`pytest -m integration 74 passed`（隔离 23 条） | ✅ 通过（生产 `/invoices` 接口在 S2-5 接同一函数，届时补手工换 id 验收） |
 | S2-2 | `backend/app/{core/{security,redis}.py, services/{auth_service,token_store}.py, schemas/auth.py, api/deps.py, api/v1/auth.py, utils/text.py}`、`backend/alembic/versions/0002_audit_action_login_logout.py`、`scripts/create_user.py`、`backend/tests/{test_security,test_auth}.py`、`docs/{spec,plan}/s2-2-auth.md` | ① `POST /auth/register`（201，固定 submitter、用户名 trim+小写）/ `login`（200，`expires_in=1800`、`refresh_expires_in=604800`）/ `me`（角色来自数据库）/ `refresh`（轮换：旧 refresh 立即 401）/ `logout`（吊销 refresh，幂等）；② 登录失败未知账号与错口令**同码同文案**（401/40101），`disabled/locked` → 403/40301；③ `require_roles("reviewer")` 对 submitter 返回 **403**、reviewer 200；④ 真实 uvicorn + Redis 手工链路：login→redis 白名单 1 key→refresh 轮换→旧令牌 401→logout→refresh 401，冒烟用户与 Redis key 均已清理；⑤ `cat /dev/null` 无泄漏：失败日志只含 `username_sha256`，不含口令；⑥ Argon2id 实测 hash **59.4ms** / verify **45.7ms**（m=64MiB,t=3,p=4）；⑦ `pytest 288 passed`、`pytest -m integration 51 passed`、smoke **8 OK / 0 FAIL** | ✅ 通过（register 按 API.md 开放；审计枚举补 3 值 + 0002，但审计行留 S4-7，见 D-040） |
 | S2-1 | `backend/app/models/`（`base.py`、`enums.py` + 16 个一表一文件 + `__init__.py`）、`backend/alembic/{alembic.ini,env.py,script.py.mako,versions/0001_init.py}`、`backend/app/core/database.py`、`backend/tests/{test_models,test_database,test_migration}.py`、`docs/{spec,plan}/s2-1-db-models.md` | ① `alembic upgrade head` 成功；`downgrade base` 后只剩 `alembic_version`，再 `upgrade head` 成功；② `alembic check` = **No new upgrade operations detected**；③ `\dt` 17 个关系 = **16 业务表 + alembic_version**，主键全部 `GENERATED ALWAYS AS IDENTITY`；④ 5 条部分唯一索引与 GIN/DESC 索引在库里逐条核对（`pg_indexes`）；⑤ 集成 23 条：重复发票号被拦 + `void` 后放行、重复 `sha256`、同单两条 active 签名、同票种两个 active 模板、同 `file_id`/`form_id` 信封、`verified = (verify_result='ok')`、非法枚举、空 `wrapped_key_b64`、密文双空、负数金额、十六进制格式、`canonical_json` 原样、`Decimal` 往返、identity 自增、坏外键；⑥ `pytest 264 passed`（新增 100 条单元）、`pytest -m integration 23 passed`；⑦ `scripts/smoke.py` **8 OK / 0 FAIL**（后端临时起停验证） | ✅ 通过（JSONB 未按任务卡提示词设 `'{}'::jsonb` 默认值，按 SCHEMA 契约执行，理由见 D-037） |
@@ -163,11 +164,22 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 22 | 登出后 access token 在剩余 30min 内仍有效 | 无状态 JWT 的固有代价 | 论文"不足"如实写；要即时失效需引入黑名单/会话表（D-039） |
 | 23 | 无登录失败计数 / 自动锁定 / 限流 | `users.status='locked'` 只能由管理动作设置 | S7 安全加固按需补；当前统一 401 文案，不泄露账号存在性 |
 | 24 | 生产 `/invoices` 列表/详情接口尚未接入隔离层 | S2-3 只用测试专用路由证明 HTTP 404 语义（接口属 S2-5） | S2-5 必须调用 `filter_visible` / `get_visible_or_404`，并补"手工换 id 得 404"验收 |
+| 25 | keyset/游标分页未做（当前 offset） | 5 万行深页（page=1000）p95 25.4ms，offset 够用 | S2-5/S5 若出现更深页或更大规模再评估，只改分页层、端点不动（D-042） |
+| 26 | `q` 用 `ILIKE` 子串，无 trigram/GIN 索引 | 5 万行 p95 32.3ms，可接受 | 真实数据规模上升时评估 `pg_trgm`；论文里作为范围限定写明 |
 
 ## 变更日志
 
 ### 2026-11-19
 
+- **S2-4 完成**：分页、筛选与排序协议。
+  · `PageParams`（page≥1 / page_size 1–100 / 白名单 sort_by / order Literal）与 `PageResult`；
+  · `paginate()`：同一 `Select` 上求 total（`order_by(None).subquery()`）再 offset/limit，
+    从根上消除"列表与 total 两套 where"；排序加 `id asc` 兜底，翻页不重不漏；
+  · `q` 的 LIKE 通配符转义（`escape_like`），用户输入 `%`/`_` 不再是通配符；
+  · 关联字段用**显式 join**（不改 S2-1 的无 relationship 锚点），语句计数断言每页恰好 2 条 SELECT；
+  · 5 万行基准（`scripts/bench_list.py`）：四组 p50/p95 = 13.4/15.9、20.1/25.4、19.3/21.9、27.6/32.3 ms，
+    EXPLAIN 走 `Index Scan using ix_invoices_uploader_created`；
+  · 实测：`pytest 310 passed`、`pytest -m integration 87 passed`，`alembic check` 零差异。
 - **S2-3 完成**：行级数据隔离。
   · 统一入口 `services/repository.py`：`scope_for` / `filter_visible` / `select_visible` /
     `get_visible_or_404`，列表与详情共用同一谓词，杜绝"详情改了列表忘了"；
