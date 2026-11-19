@@ -6,7 +6,7 @@
 ## 当前状态
 
 - 阶段：**阶段 0（项目启动）**，M0 前段
-- 最近完成：**S1 收尾补强**（排除不合规样本 D-032 / 金额税额约束反解 D-033 / 去斜取舍 D-034）：字段级 0.856 → **0.893**、整单 0.500 → **0.633**；156 个测试
+- 最近完成：**S1 收尾补强第二轮**（D-035：PDF 不预处理 / 照片重拍闸门 / 透视加边距 / 四角点校验收紧）：字段级 **0.895**、整单 **0.650**、检测 Hmean **0.951**；164 个测试
 - 上一步完成：**S1-5 字段抽取与校验**（字段级 85.6%）（5 类票种判对率 **100%**、区域按内容框归一化；顺带修掉 3 个预处理几何缺陷，85 个测试）
 - 下一步：**S2-1 数据库模型与迁移**（16 张表 + Alembic；契约见 `docs/SCHEMA.md`，定稿清单 20 项已全过）
 - 已知阻塞：无
@@ -97,11 +97,11 @@
 |---|---|---|---|
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
-| S1-6 | `backend/eval/metrics.py`、`backend/eval/configs/baseline.yaml`、`scripts/ocr_baseline.py`、`backend/tests/test_metrics.py`、`backend/eval/results/baseline_report.md` | ① 60 张全链路基线：检测 **Hmean 0.948**（P 0.967/R 0.930）、字符准确率 **0.816**、字段级 **0.893**、整单 **0.633**；② 预处理开关对照：Hmean 0.974（关）vs 0.948（开）、字段级 0.888 vs 0.893；③ 耗时 P50：preprocess 111ms + ocr 1422ms + layout 52ms + extract 1ms = 1591ms；④ 23 条指标单测全部手算断言；⑤ `pytest` 156 passed；⑥ Markdown 报告可直接贴论文 | ✅ 通过（整单 0.633，taxi 0.200 仍是最弱票种） |
+| S1-6 | `backend/eval/metrics.py`、`backend/eval/configs/baseline.yaml`、`scripts/ocr_baseline.py`、`backend/tests/test_metrics.py`、`backend/eval/results/baseline_report.md` | ① 60 张全链路基线：检测 **Hmean 0.951**、字符准确率 **0.819**、字段级 **0.895**、整单 **0.650**；② 预处理开关对照：Hmean 0.974（关）vs 0.951（开）、字段级 0.888 vs 0.895；③ 耗时 P50：preprocess 111ms + ocr 1422ms + layout 52ms + extract 1ms = 1591ms；④ 23 条指标单测全部手算断言；⑤ `pytest` 156 passed；⑥ Markdown 报告可直接贴论文 | ✅ 通过（整单 0.650，taxi 仍是最弱票种） |
 | S1-5 | `backend/app/ocr/{extractor.py,validators.py}`、`templates/field_rules.yaml`、`scripts/{field_demo,field_eval}.py`、`backend/tests/{test_validators,test_extractor}.py` | ① 字段级准确率 **89.3%（384/430）**：check_code 100%、invoice_code 96.7%、invoice_date 96.7%、invoice_no 95%、buyer_name 93.3%、seller_tax_no 90%、passenger_name 90%、**amount 86.7%、tax_amount 83.3%**（D-033 约束反解后）、seller_name 86.0%、total_amount 76.7%；② 校验器 38 条单测（含"税号改一位必须报错"）；③ 抽取器 10 条单测（同优先级冲突保留候选、缺失必填、税号错折半）；④ `pytest` 133 passed | ✅ 通过 |
 | S1-4 | `backend/app/ocr/layout.py`、`backend/app/ocr/templates/*.yaml`（5 个）、`scripts/{layout_demo,layout_eval}.py`、`backend/tests/test_layout.py` | ① 60 张票种判对率 **100%（60/60）**，unknown 0（任务卡要求 ≥95%）；② 区域划分：单张数电票 header 10 / body 31 / footer 2、行程单 header 1–3 / body 13–15 / footer 2–4；③ 13 条单测（五类票种、未知、真歧义、区域单调、归一化不变、block 聚类）；④ 顺带修 3 个预处理几何缺陷（退化/自交/单边裁切），OCR 行数恢复 20→20、39→39、41→41；⑤ `pytest` 85 passed | ✅ 通过 |
 | S1-3 | `backend/app/ocr/{types,detector,recognizer}.py`、`scripts/ocr_demo.py`、`backend/tests/test_ocr_contract.py`、`docs/{spec,plan}/s1-3-ocr-engine.md` | ① 单张 `vat_digital_landscape_001`：**41 行**、平均置信度 ≈0.99、无乱码、**两次结果完全一致**；② 批量 20 张：行数均值 14.5（8–20）、平均置信度 0.958、推理 P50 944ms / P95 1541ms；③ 困难样本 `taxi_002` + 预处理：7 行、置信度 0.92–0.99（同图 Windows OCR 只能读出 0–2 个字段）；④ 7 条契约测试全过，含"3.x dict 结构必须报错"；⑤ `pytest` 72 passed | ✅ 通过 |
-| S1-2 | `backend/app/ocr/preprocess.py`（`PreprocessOptions` 全开关 + `to_original` 3×3）、`scripts/{preprocess_demo,preprocess_eval}.py`、`backend/tests/{test_preprocess_exif,test_preprocess_geometry}.py` | ① 15 条预处理单测全过（EXIF 旋转、已知梯形还原、坐标回算、开关组合冒烟、降级不抛异常）；② 60 张数据集（**D-029 收严校验后的最新数字**）：几何校正 65%（透视 23 + 正视角满幅 16）、minAreaRect 兜底 21、失败 0；quality ok 54 / low 6；耗时 **P50 75ms / P95 197ms**（预算 300ms）；③ `preprocess_eval`：可比样本 OCR 命中率 88% → 88%（无样本变差）；④ 真实拍照样本 R-001 实测：四角点检出、quality=ok、印章 1 处、314ms；⑤ demo 输出 60 张前后对照图 | ✅ 通过（R-001 的"不躺倒不扭曲"需人工眼看对照图，见遗留 16） |
+| S1-2 | `backend/app/ocr/preprocess.py` + `app/ocr/intake.py`（PDF 只渲染不预处理；照片走预处理 + 重拍闸门）、`scripts/{preprocess_demo,preprocess_eval}.py`、`backend/tests/{test_preprocess_exif,test_preprocess_geometry,test_intake}.py` | ① 23 条预处理/分流单测全过（EXIF 旋转、已知梯形还原、坐标回算、开关组合冒烟、降级不抛异常）；② 60 张数据集（**D-035 最新数字**）：正视角满幅 17 / 透视 21 / minAreaRect 兜底 22、失败 0；quality ok 54 / low 6；**建议重拍 18 张**；耗时 **P50 75ms / P95 201ms**（预算 300ms）；③ `preprocess_eval`：可比样本 OCR 命中率 88% → 88%（无样本变差）；④ 真实拍照样本 R-001 实测：四角点检出、quality=ok、印章 1 处、314ms；⑤ demo 输出 60 张前后对照图 | ✅ 通过（R-001 的"不躺倒不扭曲"需人工眼看对照图，见遗留 16） |
 | S1-1 | `scripts/{sample_fonts,sample_data,invoice_layout,invoice_templates,perturb,make_samples,check_annotations,verify_samples}.py`、`scripts/ocr_probe.ps1`、`backend/eval/datasets/{annotations_synth_v1.jsonl,README.md}`、`samples/MANIFEST.md`、`docs/{spec,plan}/s1-1-samples.md`、3 个测试文件 | ① `make_samples.py` 生成 **60 张**（dev 36 / test 24，**5 票种 × 6 版式**，含 2026 主流的数电票 `vat_digital`）；② `check_annotations.py --strict` 全过；③ `verify_samples.py` **5 项全过**（渲染一致性 4.1×、OCR 字段命中率 干净 0.89 / 困难 0.86、标注自洽、成像覆盖、划分完整）；④ `pytest` 50 passed（新增 26 条）；⑤ 系统 OCR 能读出合成票的字段值 | ✅ 通过 |
 | S0-7 | `scripts/smoke.py`（配置/端口/三件套/后端/迁移/前端六类检查，`--strict` 与 `-v`）、完整 `README.md`（环境要求、8 步快速开始、端口表、常用命令、**9 条 Windows 坑**、故障排查表、文档索引、已知限制）、`docs/DECISIONS.md` D-022（基础设施 ADR） | ① `smoke.py` 在后端未起时给出"后端没起 + 启动命令"而不是 traceback；② 故意写错 PG 口令 → 报"认证失败 + 两处 .env 要对齐"（与"服务没起"区分开）；③ 停掉整个 docker 栈 → 每项都提示 `docker compose up -d`；④ 全起后 OK 7 / WARN 1（迁移，S2-1 前正常）/ FAIL 0，退出码 0；⑤ `--strict` 下 WARN 使退出码为 1 | ✅ 通过 |
 | S0-6 | `web/`（Vue 3.5 + Vite 8 + TS 6 + Element Plus + Pinia + Vue Router：`src/{main.ts,App.vue,api/http.ts,api/system.ts,router/index.ts,stores/user.ts,views/*}`、`package.json` 精确版本、`.env.{development,production,example}`）、`scripts/ui_smoke.mjs` | ① `npm run typecheck` 无错、`npm run build` 成功；② 干净浏览器访问 `/` → 守卫重定向到 `/login?redirect=/` 且登录页渲染；③ `/debug` 显示后端 health（4 个 tag 全 ok）+ trace_id；④ 点「触发一个 404」→ 弹出后端 message「资源不存在」并把 trace_id 回填；⑤ 停掉 MinIO → 页面显示 degraded + 一个 fail，恢复后回到全 ok；⑥ 控制台无 CORS 报错 | ✅ 通过 |
@@ -147,12 +147,24 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 14 | 预处理对检测是负收益（Hmean -0.026） | 说明 S1-2 的部分步骤在"本来就没歪"的图上纯损失 | S6 做逐开关消融，按票种/扰动分组给出"什么情况下该开" |
 | 15 | 真实样本 R-001 的票种仍未确认 → 判为 unknown，只抽出 1 个字段 | 论文里"真实样本定性对照"只有 1 个数字 | 你告知票种后补 MANIFEST；必要时为新票种补模板 |
 | 16 | S1-2 的"肉眼确认不躺倒不扭曲"无法由 AI 完成 | 合成集与 R-001 的对照图需人工抽查一次 | 见 `backend/eval/results/preprocess/*_compare.jpg` 与 `layout/*_layout.jpg`（本地、不入库） |
-| 17 | 票种判对率是**合成集**上的 100% | 真实票据（尤其遮挡严重的）会更低 | 论文如实写"合成集 100%，真实样本仅定性"；S6 用真实样本抽检 |
+| 17 | `intake.prepare_input` 还没接进 S3 的 Worker | PDF 通道与重拍提示目前只有脚本级验证 | S3-1 串流水线时接上（接口已定） |
+| 18 | 重拍提示在合成集上触发了 18/60（多为远景/贴边） | 合成集里"故意拍坏"的样本本来就多，属预期 | S3 的前端上传页展示引导与提示；真实用户场景触发率应远低于此 |
+| 19 | 票种判对率是**合成集**上的 100% | 真实票据（尤其遮挡严重的）会更低 | 论文如实写"合成集 100%，真实样本仅定性"；S6 用真实样本抽检 |
 
 ## 变更日志
 
 ### 2026-11-18
 
+- **S1 收尾补强第二轮**（D-035，用户反馈两件事：① 行程单 007 校正后很歪且字被切；② PDF 不需要预处理、照片拍不好应提示重拍）。
+  · 根因不是"旋转裁切"，而是**四角点被检成错切四边形**：上下边 685 vs 1106（差 38%），
+    旧的对边容差 60% 放它过去 → warp 出歪图并切掉边缘文字。收紧到 30%、内角收到 [55,125] 后走 `minAreaRect` 兜底，
+    **1200×700 → 1200×700 零裁切**。
+  · 透视 warp 前给四角点**外扩 2%**（安全边距）：四角点小 4% 就会切掉贴边的字。
+  · 新增 `app/ocr/intake.py`：**按魔数**判 PDF/照片；PDF 只渲染（250 DPI）**跳过全部预处理**；
+    照片走预处理，并给"拍前引导"（`PHOTO_GUIDE`）与"拍后重拍判断"（`needs_retake`+`retake_hints`，
+    覆盖糊/暗/低对比/过曝/认不出边界/边缘贴画面）。重拍只是建议，不阻断流水线。
+  · 指标同步改善：字段级 0.893→**0.895**、整单 0.633→**0.650**、检测 Hmean 0.948→**0.951**；
+    demo 现在会报"建议重拍 18 张"（多是远景/贴边样本，符合预期）。
 - **S1 收尾补强**（按"确保阶段一完成"的审计结果处理）。
   · **D-032 排除超市购物小票**：唯一真实样片 R-001 经确认是购物小票，无发票代码/号码、无税务监制章，
     不是合规报销凭证 → 移出数据集、不做该版式模板与评测；只保留像素统计作成像参照。

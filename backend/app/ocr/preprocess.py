@@ -46,8 +46,8 @@ class PreprocessOptions:
 
     # 定位与几何阈值（不散落在代码里）
     min_area_ratio: float = 0.18      # 纸面占画面 ≥18%：真实手机拍照常见 20–35%
-    min_interior_angle: float = 50.0
-    max_interior_angle: float = 130.0
+    min_interior_angle: float = 55.0
+    max_interior_angle: float = 125.0
     deskew_min_deg: float = 1.5
     min_area_rect_ratio: float = 0.15
 
@@ -87,6 +87,8 @@ class PreprocessResult:
     timings_ms: dict[str, float]
     to_original: np.ndarray                            # 3×3：校正图 → 原图
     scale: float
+    needs_retake: bool = False                         # 质量不足，建议用户重拍（不阻断流水线，只给结论）
+    retake_hints: list[str] = field(default_factory=list)   # 具体怎么拍（给用户看的提示语）
 
 
 # ---------------------------------------------------------------------------
@@ -249,9 +251,11 @@ def _accept_quad(quad: np.ndarray, contour_area: float, options: PreprocessOptio
     longest = max(edges)
     if longest < 8 or min(edges) < max(12.0, 0.12 * longest):
         return None, f"degenerate_quad:{min(edges):.0f}/{longest:.0f}"
-    # 对边长度不能差太多（透视允许一定差异，但不会一条边是另一条的 2.5 倍）
-    if abs(edges[0] - edges[2]) > 0.6 * max(edges[0], edges[2]) or \
-            abs(edges[1] - edges[3]) > 0.6 * max(edges[1], edges[3]):
+    # 对边长度必须接近：矩形纸面在透视下会缩短，但**一对对边不可能相差 38% 而另一对正常**。
+    # 实测行程单 007 被检成上下边 685 vs 1106（差 0.38）的错切四边形，warp 出来整页是斜的、
+    # 还裁掉了边缘文字；0.6 的阈值放它过去了，收紧到 0.30。
+    if abs(edges[0] - edges[2]) > 0.30 * max(edges[0], edges[2]) or \
+            abs(edges[1] - edges[3]) > 0.30 * max(edges[1], edges[3]):
         return None, "unbalanced_edges"
     angles = _interior_angles(quad)
     if min(angles) < options.min_interior_angle or max(angles) > options.max_interior_angle:
@@ -357,11 +361,15 @@ def _find_quad(image: np.ndarray, options: PreprocessOptions) -> tuple[np.ndarra
 # ---------------------------------------------------------------------------
 # 几何变换（全部返回 forward 矩阵 current → next，便于合成 to_original）
 # ---------------------------------------------------------------------------
-def _quad_is_frame(quad: np.ndarray, image: np.ndarray, tolerance: float = 0.005) -> bool:
-    """四角点是否几乎就是图像四角（±0.5%）。
+def _quad_is_frame(quad: np.ndarray, image: np.ndarray, tolerance: float = 0.03) -> bool:
+    """四角点是否几乎就是图像四角（±3%）。
 
     这种情况再走一遍透视变换只是白白重采样一次：实测 600×1000 的票面会被插值糊掉一点点，
     正好把加粗的"票价"数字抹花（OCR 从 3/3 掉到 2/3）。
+
+    容差取 3% 而不是 0.5%：有些样本本来就是"票面铺满整幅"（没有桌面背景），检测到的是内缩的
+    边框线，按 0.5% 判就不算满幅 → 一 warp 就把四周各裁掉几十像素（实测 1200 宽只剩 1101，
+    贴边的字被切）。3% 以内就让 warp 让路，视觉与识别都更好。
     """
     height, width = image.shape[:2]
     frame = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], dtype=np.float32)
@@ -369,7 +377,22 @@ def _quad_is_frame(quad: np.ndarray, image: np.ndarray, tolerance: float = 0.005
     return deviation <= tolerance * max(width, height)
 
 
-def _warp_perspective(image: np.ndarray, quad: np.ndarray, max_side: int) -> tuple[np.ndarray, np.ndarray]:
+def _expand_quad(quad: np.ndarray, pad_ratio: float) -> np.ndarray:
+    """把四角点向外扩一点（以中心为原点等比放大）。
+
+    为什么需要：四角点只要比真实纸面小 4%，warp 出来的图上**贴边的字就被裁掉**了
+    （实测行程单 007：原图 1200 宽，校正后只剩 1101，左右各丢 ~50px，边缘文字直接没了）。
+    宁可多留一点桌面背景，也不能切字——多出来的背景对下游无害。
+    """
+    if pad_ratio <= 0:
+        return quad
+    center = quad.mean(axis=0)
+    return center + (quad - center) * (1.0 + pad_ratio)
+
+
+def _warp_perspective(image: np.ndarray, quad: np.ndarray, max_side: int,
+                      pad_ratio: float = 0.02) -> tuple[np.ndarray, np.ndarray]:
+    quad = _expand_quad(quad.astype(np.float32), pad_ratio)
     top_left, top_right, bottom_right, bottom_left = quad
     width = max(np.linalg.norm(top_right - top_left), cv2.norm(bottom_right, bottom_left))
     height = max(np.linalg.norm(bottom_left - top_left), cv2.norm(bottom_right, top_right))
@@ -745,6 +768,8 @@ def preprocess(source: str | Path | bytes | np.ndarray, options: PreprocessOptio
         quad = [[round(x, 2), round(y, 2)] for x, y in quad_in_original]
 
     timings["total"] = (time.perf_counter() - started) * 1000
+    needs_retake, retake_hints = _retake_verdict(quality, warnings, quad_in_original, original_size,
+                                                 steps.get("rectify"))
     return PreprocessResult(
         image=image,
         original_size=original_size,
@@ -758,7 +783,54 @@ def preprocess(source: str | Path | bytes | np.ndarray, options: PreprocessOptio
         timings_ms={key: round(value, 2) for key, value in timings.items()},
         to_original=to_original,
         scale=scale,
+        needs_retake=needs_retake,
+        retake_hints=retake_hints,
     )
+
+
+# 质量问题 → 给用户看的"怎么重拍"提示（口语化，能直接弹在界面上）
+_RETAKE_HINTS = {
+    "blurry": "照片有点糊，请对准票据、对焦清晰后重拍",
+    "too_dark": "光线太暗，请在明亮处重拍，避免阴影挡在票面上",
+    "low_contrast": "对比度太低，请避免逆光或强烈反光后重拍",
+    "overexposed": "曝光过度，请避开强光直射、关掉闪光灯后重拍",
+    "rectify_failed": "没能认出票据的四条边，请正对票据、让票据完整入镜并留一点边距",
+    "quad_out_of_bounds": "票据边缘超出了画面，请退后一点、把整张票拍进来",
+    "content_touches_frame": "票据边缘紧贴画面边界，可能被裁掉，请退后一点重拍",
+}
+
+
+def _retake_verdict(quality: QualityMetrics, warnings: list[str],
+                    quad_in_original: list[list[float]] | None,
+                    original_size: tuple[int, int],
+                    rectify_step: str | None = None) -> tuple[bool, list[str]]:
+    """判断"这张图是不是值得重拍"。
+
+    定位要认清：**这是给用户的操作建议，不是技术失败**。即使建议重拍，流水线照样往下跑，
+    结果标记 `needs_retake=True` 由前端提示；用户坚持用这张也可以继续（人工核对兜底）。
+    """
+    reasons: list[str] = list(quality.reasons)
+    if any(warning.startswith("rectify_failed") for warning in warnings):
+        reasons.append("rectify_failed")
+    if any(warning.startswith("quad_out_of_bounds") for warning in warnings):
+        reasons.append("quad_out_of_bounds")
+    # "边缘贴画面"只在**真的做了裁切**时才算问题：整幅就是票面的样本（没有背景）
+    # 天然贴边，提示"请退后重拍"只会造成困惑。
+    if quad_in_original and rectify_step != "quad_identity":
+        xs = [point[0] for point in quad_in_original]
+        ys = [point[1] for point in quad_in_original]
+        margin_x, margin_y = original_size[0] * 0.01, original_size[1] * 0.01
+        if xs and (min(xs) <= margin_x or min(ys) <= margin_y
+                   or max(xs) >= original_size[0] - margin_x
+                   or max(ys) >= original_size[1] - margin_y):
+            reasons.append("content_touches_frame")
+
+    hints: list[str] = []
+    for reason in dict.fromkeys(reasons):        # 去重且保序
+        hint = _RETAKE_HINTS.get(reason)
+        if hint and hint not in hints:
+            hints.append(hint)
+    return bool(hints), hints
 
 
 def _map_boxes_back(boxes: list[tuple[int, int, int, int]], inverse: np.ndarray) -> list[tuple[int, int, int, int]]:

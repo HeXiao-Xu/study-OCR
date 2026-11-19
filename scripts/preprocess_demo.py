@@ -66,6 +66,7 @@ def main() -> int:
     options = PreprocessOptions(max_side=args.max_side)
     methods = Counter()
     flags = Counter()
+    retake: list[tuple[str, list[str]]] = []
     timings: list[float] = []
     rows: list[dict] = []
 
@@ -74,6 +75,8 @@ def main() -> int:
         result = preprocess(path, options)
         methods[str(result.steps["rectify"])] += 1
         flags[result.quality_flag] += 1
+        if result.needs_retake:
+            retake.append((path.name, result.retake_hints))
         timings.append(result.timings_ms["total"])
 
         left = _label(_panel(original), f"original {original.shape[1]}x{original.shape[0]}")
@@ -106,6 +109,7 @@ def main() -> int:
         "out": str(args.out),
         "rectify_methods": dict(methods),
         "quality_flags": dict(flags),
+        "needs_retake": [{"image": name, "hints": hints} for name, hints in retake],
         "elapsed_ms": {
             "p50": round(float(np.percentile(timings, 50)), 1),
             "p90": round(float(np.percentile(timings, 90)), 1),
@@ -122,6 +126,7 @@ def main() -> int:
     print(f"处理 {len(images)} 张 → {args.out}")
     print(f"  rectify 方式：{dict(methods)}")
     print(f"  quality_flag：{dict(flags)}")
+    print(f"  建议重拍：{len(retake)} 张" + (f"（例：{retake[0][0]} → {retake[0][1][0]}）" if retake else ""))
     print(f"  几何校正成功率：{summary['quad_success_rate']:.0%}"
           f"（其中已在正视角 {methods.get('quad_identity', 0)} 张，免重采样）")
     print(f"  耗时 ms：P50={summary['elapsed_ms']['p50']} P95={summary['elapsed_ms']['p95']} "
