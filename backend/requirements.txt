@@ -23,9 +23,12 @@ pydantic-settings==2.16.3
 pypdf
 pdfplumber
 
-# --- 图像与数值（S1-1 合成票据集起；S1-2 预处理也会用）---
+# --- 图像与数值（S1-1 合成票据集起；S1-2 预处理用 OpenCV）---
+# 版本必须成对出现：opencv-python 4.6.0.66 是用 numpy 1.x 编译的，配 numpy 2.x 会
+# `numpy.core.multiarray failed to import`。而 4.6.0.66 又是 paddleocr 2.7.3 的硬 pin（S1-3 要用）。
 Pillow==12.3.0
-numpy==2.3.5
+numpy==1.26.4
+opencv-python==4.6.0.66
 
 # --- 数据与对象存储（S0-5 只用于健康检查；ORM 在 S2-1 引入）---
 psycopg[binary]==3.3.9

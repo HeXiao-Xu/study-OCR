@@ -216,7 +216,8 @@ deploy/   scripts/   samples/（图片不入库）   secrets/（整目录不入�
 | 分页与筛选 | 待回填 | S2-4 |
 | 文件上传与去重 | 待回填 | S2-6 |
 | 异步任务框架 | 待回填 | S2-7 |
-| OCR 预处理 / 检测识别适配器 | 待回填 | S1-2 / S1-3 |
+| OCR 预处理 | `backend/app/ocr/preprocess.py`（`PreprocessOptions` 全开关；EXIF→缩放→定位→透视/降级→放大→去斜→照度→印章；返回 `to_original` 3×3 供坐标回算；失败只降级不抛异常）+ `scripts/{preprocess_demo,preprocess_eval}.py` | S1-2 ✅ |
+| OCR 检测识别适配器 | 待回填 | S1-3 |
 | 字段抽取器与校验器 | 待回填 | S1-5 |
 | 密码封装（canonical / sm / signature / envelope / keystore） | 待回填 | S4-1 ~ S4-6 |
 | 审计哈希链 | 待回填 | S4-7 |
