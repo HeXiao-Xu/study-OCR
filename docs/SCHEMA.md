@@ -585,7 +585,7 @@ CREATE INDEX ix_invoices_draft ON invoices (uploader_id) WHERE status = 'draft';
 | 9.5b | `invoices.extract_status` | `raw` / `need_confirm` / `confirmed` | 方案 5.2 ✅ |
 | 9.5c | `invoices.status` | `draft` / `confirmed` / `in_report` / `archived` / `void` | 方案 5.2 ✅（**不含** 6.6 状态图里的 signed/encrypted/submitted/approved/rejected，那些属于报销单） |
 | 9.5d | `invoices.quality_flag` | `ok` / `low` ✅ 定稿（D-014） | 方案 6.1 只出现 `low`；`fail` 不设，不可识别用 `ocr_status='failed'` |
-| 9.6 | `invoices.invoice_type` | `vat_general` / `train_ticket` / `flight_itinerary` / `taxi_ticket` / `unknown` | 方案 5.2 ✅（与 `ticket_templates.type_code` 同值集） |
+| 9.6 | `invoices.invoice_type` | `vat_general` / **`vat_digital`** / `train_ticket` / `flight_itinerary` / `taxi_ticket` / `unknown` | 方案 5.2 ✅ + `vat_digital`（数电票，D-023 主流形态）由 S2-8 拍板补（D-046）；与 `ticket_templates.type_code` 同值集 |
 | 9.8 | `invoice_fields.source` | `ocr` / `rule` / `semantic` / `manual` / **`ocr_retry`** ✅ 已定 5 值 | 方案 5.2 + 6.4（二次识别必须能与首次区分） |
 | 9.9 | `ocr_jobs.stage`；`ocr_jobs.status` | `preprocess`/`detect`/`recognize`/`extract`；`pending`/`running`/`succeeded`/`failed` ⚠ | 方案 5.2 ✅（status 值集 ⚠ 推断） |
 | 9.10 | `ticket_templates.type_code` | 同 9.6 | 方案 5.2 ✅ |

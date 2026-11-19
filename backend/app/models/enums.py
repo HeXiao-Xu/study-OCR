@@ -102,6 +102,8 @@ class QualityFlag(StrEnum):
 
 class TicketType(StrEnum):
     VAT_GENERAL = "vat_general"
+    # 数电票：D-023 的主流形态；S1 已有 layout 模板，S2-8 补进契约（D-046）
+    VAT_DIGITAL = "vat_digital"
     TRAIN_TICKET = "train_ticket"
     FLIGHT_ITINERARY = "flight_itinerary"
     TAXI_TICKET = "taxi_ticket"

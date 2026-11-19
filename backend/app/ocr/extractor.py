@@ -136,7 +136,10 @@ def _extract_value(rule: FieldRule, text: str, anchor: str) -> str | None:
     if not tail:
         return None
     if rule.regex:
-        matches = re.findall(rule.regex, tail) or re.findall(rule.regex, text)
+        # 用 finditer + group(0)：DB 里的正则可能带捕获组，findall 会返回 tuple（丢整数部分）
+        matches = [match.group(0) for match in re.finditer(rule.regex, tail)]
+        if not matches:
+            matches = [match.group(0) for match in re.finditer(rule.regex, text)]
         if not matches:
             return None
         # 一行多个数值时按 value_index 取（合计行常是"金额 税额"两列）

@@ -17,6 +17,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.files import router as files_router
 from app.api.v1.health import router as health_router
 from app.api.v1.invoices import router as invoices_router
+from app.api.v1.templates import router as templates_router
 from app.core.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import reset_trace_id, set_trace_id, setup_logging
@@ -108,6 +109,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # upload 先于 invoices：`/invoices/upload` 必须命中上传，而不是被 `/{invoice_id}` 抢走
     app.include_router(files_router, prefix=settings.api_prefix)
     app.include_router(invoices_router, prefix=settings.api_prefix)
+    app.include_router(templates_router, prefix=settings.api_prefix)
 
     return app
 

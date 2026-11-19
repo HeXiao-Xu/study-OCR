@@ -853,3 +853,33 @@
   `tests/test_upload.py` 12 条（含入队成功与入队失败）；真实 ARQ worker + uvicorn 手工：上传 202 → worker 取到 job →
   `ocr_jobs` 变 `failed`、`retry_count=1`、错误为"TaskNotReadyError: OCR 流水线未接入（S3-1）"；
   `pytest 323 passed`、`pytest -m integration 137 passed`；smoke 8 OK。
+
+---
+
+## D-046 模板/规则管理：DB 形态、一次性 seed、60s 缓存与 `vat_digital` 补齐
+
+- **日期**：2026-11-19（S2-8，用户拍板方案 A）
+- **背景**：S1 的 layout/extractor 以 YAML 为规则源，S2-8 要改成后台可维护、60s 热生效；
+  任务卡的模板/规则字段（`name/ticket_type/anchors/region_layout/enabled` 等）与 SCHEMA 不符；
+  S1 已有数电票模板但 `TicketType` 缺 `vat_digital`。
+- **决策**：
+  1. **契约补 `vat_digital`**：SCHEMA §9.6、`models/enums.py` 同步；`0003` 迁移只放开
+     `ticket_templates.type_code` 与 `invoices.invoice_type` 两个 CHECK（不写数据）。
+  2. **DB 形态**：`ticket_templates` 用 SCHEMA 的 6 列；字段锚定/策略放进 `field_specs_json`
+     （`keywords`/`direction`/`regex`/`max_distance`/`zone`/`occurrence`/`required`…），
+     `field_rules` 只存 `pattern/validator/error_msg/priority/active`——**不新增列、不按任务卡造字段**。
+  3. **规则随模板走**：`POST /templates` 可带 `rules[]`；`PUT` 生成 `version+1` 新行，先复制旧版本规则、
+     再按 `field_name` 覆盖；同票种 `active` 互斥（部分唯一索引兜底）。
+  4. **seed 用显式脚本** `scripts/seed_templates.py`（幂等，已有模板即跳过），不在 `create_app()` 里连库：
+     否则所有单测/健康检查（DB 未起）都会被 seed 拖慢或失败。S2-12/S7 的部署流程负责调用。
+  5. **60s 缓存**：`TemplateRegistry` 的 active 快照 TTL 60s；任何写操作立即 `invalidate()`（写后即生效）。
+  6. **`/test` OCR 可注入**：生产走 `preprocess + PaddleOCR`；测试 monkeypatch `_recognize_image`，不加载模型。
+  7. **顺手修一个真 bug**：`extractor._extract_value` 原来用 `re.findall`，DB 正则一旦带捕获组会返回 tuple
+     并抛 `TypeError`；改为 `finditer` + `group(0)`（YAML 无非捕获组时行为不变，S1 测试全绿）。
+- **理由**：SCHEMA 是唯一表结构依据；seed 显式化换来测试与启动的确定性；缓存 + 写后失效兼顾"热更新"与一致性。
+- **代价**：layout 的 `regions/aspect_ratio` 不在 DB 契约里，仍由 YAML 提供（S3-1 决定组合方式，登记遗留）；
+  写审计 `template_create` 的枚举值仍缺，S4-7 前补；`/test` 首次会加载 PaddleOCR（冷启动约 6.5s）。
+- **验证**：`tests/test_templates.py` 9 单元 + 9 集成（权限/创建/列表/详情/升版本/active 互斥/缓存失效/
+  `/test` 成功与 50010/假图/未启用）；真实 uvicorn 手工：seed 5 个模板、详情 specs=10 rules=10、
+  `/test` 真 OCR 抽出 **10 个字段**、matched 5 个关键字、confidence 0.881；reviewer 写 403；
+  `pytest 332 passed`、`pytest -m integration 146 passed`、smoke 8 OK。

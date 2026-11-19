@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-7 已完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-7**（共 20 张卡，全部 ✅ 通过）
-- 最近完成：**S2-7 ARQ 异步任务框架**（投递/重试/幂等/僵尸恢复；`pytest 323 passed`，集成 137 条）
-- 下一步：**S2-8 票种模板与规则管理**（模板/规则落库、60s 热更新；契约见 `docs/API.md` §3）
+- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-8 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-8**（共 21 张卡，全部 ✅ 通过）
+- 最近完成：**S2-8 票种模板与规则管理**（CRUD/升版本/60s 热更新/`/test`；`pytest 332 passed`，集成 146 条）
+- 下一步：**S2-9 前端登录与主框架**（三角色菜单、token 续期；`web/src`）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
-  - 本地领先 origin **19 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **20 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -44,7 +44,7 @@
 [x] S2-5 票据表与 CRUD（invoices / invoice_files）
 [x] S2-6 文件上传 + MinIO + sha256 去重 ★关键
 [x] S2-7 ARQ 异步任务框架（状态机 + 重试 + 幂等）
-[ ] S2-8 票种模板与规则管理
+[x] S2-8 票种模板与规则管理
 [ ] S2-9 前端登录与主框架
 [ ] S2-10 前端上传页
 [ ] S2-11 前端票据列表与详情
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S2-8 | `backend/app/services/{template_service,template_registry,template_seed}.py`、`backend/app/api/v1/templates.py`、`backend/app/schemas/template.py`、`backend/alembic/versions/0003_ticket_type_vat_digital.py`、`scripts/seed_templates.py`、`backend/tests/test_templates.py`、`docs/{spec,plan}/s2-8-templates.md` | ① 权限：reviewer 列表/详情 200、写 403；submitter 列表 403；② 创建 201/version=1/active 默认 false；重复 type_code 409；非法 type_code/空 keywords/非法正则/未知 strategy 422；③ 列表默认 active、`active=false` 查历史、type_code 过滤、列表不含 `field_specs_json`；④ 详情含 specs + rules；⑤ 升版本：PUT 生成 v2 新行、v1 保留、规则复制+覆盖、过期 version 409（带 `current_version`）、同票种仅 1 条 active；⑥ 60s 缓存：改库不 invalidate 读到旧快照、invalidate 后读到新值；⑦ `/test`：真 OCR 抽出 10 字段、matched 关键字、confidence 0.881；reviewer 403 / 未启用 422 / 假图 422 / OCR 异常 50010；不建票不写对象；⑧ seed 幂等（5 模板/37 规则，二次跑跳过）；⑨ `pytest 332 passed`、`pytest -m integration 146 passed` | ✅ 通过（补 `vat_digital`：SCHEMA + enum + 0003；D-046） |
 | S2-7 | `backend/app/services/job_service.py`、`backend/app/tasks/{worker,ocr_task,queue}.py`、`backend/app/api/v1/files.py`（入队）、`backend/app/api/deps.py`（`get_task_queue`）、`backend/tests/{test_jobs,test_upload}.py`、`docs/{spec,plan}/s2-7-arq.md` | ① 作业状态机 `pending→running→succeeded|failed`、可重试失败回 `pending`；② 幂等双保险：终态跳过 + Redis `SET NX EX 600`（锁占用返回 `locked`、handler 不执行）；③ 重试：第 1 次失败退避 **5s**、第 2 次 **30s**、第 3 次终态 `failed` 且 `retry_count=3`；永久错误（`TaskNotReadyError`）直接 failed；④ 僵尸恢复：30min 前 `running` → `failed`（新的 `running` 不动）；⑤ 上传入队：假队列收到 `job_id`；队列不可用 → 503 + job `failed`；⑥ 真实 ARQ worker + uvicorn：上传 202 → worker 执行 → `ocr_jobs failed / retry_count=1 / TaskNotReadyError(S3-1)`；⑦ 依赖 ARQ 导致 redis-py 8.1→5.3.1，全量回归通过；⑧ `pytest 323 passed`、`pytest -m integration 137 passed`、smoke 8 OK | ✅ 通过（`ocr_task` 在 S3-1 前如实失败，不伪造成功；D-045） |
 | S2-6 | `backend/app/services/{storage,upload_service}.py`、`backend/app/api/v1/files.py`、`backend/app/schemas/invoice.py`（UploadData）、`backend/core/config.py`（明文开关/prod 校验）、`backend/.env.example`、`backend/tests/test_upload.py`、`docs/{spec,plan}/s2-6-upload.md` | ① `POST /invoices/upload` 202，返回 `invoice_id/file_id/job_id/sha256/status/ocr_status/dedup`，**响应无 storage_key**；② 对象名 `invoices/yyyy/mm/<32hex>.bin`（SCHEMA），原文件名只展示（`../../etc/passwd` → `passwd`）；③ 魔数 + Pillow 真图 + pypdf 页数（≤5）校验；空文件 422、超限 413、假图/TIFF/6 页 PDF 422；④ **去重先于写对象**：同字节二次上传 409/40901 + 同一 `invoice_id`，MinIO 只有 1 个对象（put 次数 1）；⑤ 落库同一事务写 file+invoice+job（pending/preprocess），失败或并发同 sha 时补偿删除对象；⑥ 权限：reviewer 403、admin 404、未登录 401；⑦ 真实 uvicorn + MinIO 手工：202 → 409 → 对象存在（643B）→ 清理干净；⑧ `pytest 311 passed`、`pytest -m integration 129 passed` | ✅ 通过（S4 前本地明文调试，prod 启动拒绝，D-044；ARQ 入队留 S2-7） |
 | S2-5 | `backend/app/services/invoice_service.py`、`backend/app/api/v1/invoices.py`、`backend/app/schemas/invoice.py`、`backend/app/core/exceptions.py`（42201/42202）、`backend/tests/test_invoices.py`、`docs/{spec,plan}/s2-5-invoices.md` | ① `transition()` 单入口：`draft→confirmed→in_report→archived` 合法、非法跳转/终态 409；② 列表：三权限（submitter 本人 / reviewer 全量 / admin **404**）+ 7 类筛选 + 分页 + 默认排除 void + 金额两位小数字符串 + 无 `storage_key`；③ 详情：`invoice + fields + latest_job`，他人/不存在/admin 均 404；④ 软删：204、重复 204、`in_report/archived` 409、他人 404、**void 释放 `(code,no)` 唯一索引后可重建**；⑤ 字段修改：submitter 非金额 200 / 金额 403、reviewer 金额需 `confirm_amount`（否则 42202）、版本冲突 409、非草稿 409、非法字段/值 422、未决冲突 42201 且**回滚**、`confirm` 控制 `need_review`；⑥ 链路 `create_draft → PATCH fields → GET detail` 通过；⑦ `pytest 310 passed`、`pytest -m integration 118 passed` | ✅ 通过（按契约范围：无 `POST /invoices`、无 `PATCH /invoices/{id}`；字段修改用 PATCH /fields，见 D-043） |
@@ -178,11 +179,23 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 33 | `ocr_task` 在 S3-1 前必然 `failed` | 真实流水线未接；框架已用测试与真实 worker 验证 | S3-1 替换 `_run_pipeline` 后正常；错误信息已写明原因 |
 | 34 | 僵尸恢复用 `created_at` 近似（没有 `started_at` 列） | 队列积压超过 30min 可能被误判为中断 | 阈值 1800s；论文写明局限；若要精确需改 SCHEMA 加列 |
 | 35 | 入队失败后票据已落库、job failed，缺"重跑失败作业"入口 | 客户端重试会命中 sha256 去重（409） | S3-1 后补运维/接口重跑；当前按失败人工处理 |
+| 36 | layout 的 `regions/aspect_ratio` 仍由 YAML 提供（DB 契约没有这两列） | 模板 CRUD 管不到版面区域 | S3-1 决定"YAML 版式 + DB 关键字/规格"的组合方式；若要全入库需先改 SCHEMA |
+| 37 | `template_create` 审计动作仍缺枚举值、未写审计行 | SCHEMA 枚举没有该值（D-040 已登记同类缺口） | 在 S4-7 前与 `report_create`/`issue_cert` 一起补 SCHEMA + 迁移 |
+| 38 | seed 是指令而非启动自动执行 | `create_app()` 启动不连库（测试/健康检查要能离线跑） | 部署脚本（S2-12/S7）调用 `scripts/seed_templates.py`；已有数据跳过 |
 
 ## 变更日志
 
 ### 2026-11-19
 
+- **S2-8 完成**：票种模板与规则管理。
+  · 契约补 `vat_digital`（SCHEMA §9.6 + enum + `0003` 迁移只放开两个 CHECK）；
+  · `GET/POST/PUT /templates` + `/templates/{id}/test`：写仅 admin、reviewer 只读、submitter 403；
+  · 版本只增不改（PUT 生成 v+1 新行、旧行保留、规则复制+按 field 覆盖）；同票种 active 互斥；
+  · `TemplateRegistry` 60s 缓存，写后立即失效；`/test` 复用 S1 extractor（OCR 可注入），不建票、不落 MinIO；
+  · seed 用幂等脚本（5 模板 / 37 规则），已有数据不覆盖；
+  · 顺手修 bug：`extractor` 用 `findall` 遇到带捕获组的正则会返回 tuple 并崩，改为 `finditer+group(0)`；
+  · 实测：`pytest 332 passed`、`pytest -m integration 146 passed`；真实 OCR `/test` 抽 10 字段、conf 0.881；
+    smoke 8 OK。
 - **S2-7 完成**：ARQ 异步任务框架。
   · `job_service`：`pending→running→succeeded|failed` 单入口；可重试失败回 `pending`；
     幂等双保险（终态跳过 + Redis `SET NX EX 600`）；退避 5s/30s；永久错误直接 failed；
