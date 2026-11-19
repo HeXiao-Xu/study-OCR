@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-8 已完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-8**（共 21 张卡，全部 ✅ 通过）
-- 最近完成：**S2-8 票种模板与规则管理**（CRUD/升版本/60s 热更新/`/test`；`pytest 332 passed`，集成 146 条）
-- 下一步：**S2-9 前端登录与主框架**（三角色菜单、token 续期；`web/src`）
+- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-9 已完成；前端登录/主框架已通）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-9**（共 22 张卡，全部 ✅ 通过）
+- 最近完成：**S2-9 前端登录与主框架**（三角色菜单 + 401 单飞刷新；`npm run build` 通过，浏览器冒烟全过）
+- 下一步：**S2-10 前端上传页**（拖拽/多选、逐文件状态、409 去重提示、轮询 OCR 状态）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
-  - 本地领先 origin **20 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **21 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -45,7 +45,7 @@
 [x] S2-6 文件上传 + MinIO + sha256 去重 ★关键
 [x] S2-7 ARQ 异步任务框架（状态机 + 重试 + 幂等）
 [x] S2-8 票种模板与规则管理
-[ ] S2-9 前端登录与主框架
+[x] S2-9 前端登录与主框架
 [ ] S2-10 前端上传页
 [ ] S2-11 前端票据列表与详情
 [ ] S2-12 定时任务骨架与阶段收口
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S2-9 | `web/src/{api/auth.ts,api/http.ts,stores/user.ts,router/index.ts,main.ts,App.vue,layout/MainLayout.vue,views/{Login,Forbidden,Placeholder,Home}.vue,types/{auth,api}.ts}`、`scripts/ui_smoke.mjs`（`--fill/--clear`）、`docs/{spec,plan}/s2-9-fe-login.md` | ① `npm run typecheck` / `npm run build` 通过；② 真实登录（无头 Edge + CDP）：submitter 菜单含「我的票据」、reviewer 含「待核对/待审核」、admin 含「票种模板/审计日志」；③ admin 访问 `/upload` → `/403`（路由 `meta.roles`）；④ 401 单飞：后端 `ACCESS_TOKEN_TTL_SECONDS=1`，登录后等 2s 并发两个 `/auth/me` → **refreshCount=1**，两个请求都成功；⑤ 刷新失败才清会话跳登录（提示 1.5s 节流）；⑥ `scripts/smoke.py` **9 OK / 0 FAIL**（前端 dev server 在跑）；⑦ 测试用户与 Redis key 已清理 | ✅ 通过（未实现业务页用占位，不放假数据；DEV 诊断钩子仅开发态，D-047） |
 | S2-8 | `backend/app/services/{template_service,template_registry,template_seed}.py`、`backend/app/api/v1/templates.py`、`backend/app/schemas/template.py`、`backend/alembic/versions/0003_ticket_type_vat_digital.py`、`scripts/seed_templates.py`、`backend/tests/test_templates.py`、`docs/{spec,plan}/s2-8-templates.md` | ① 权限：reviewer 列表/详情 200、写 403；submitter 列表 403；② 创建 201/version=1/active 默认 false；重复 type_code 409；非法 type_code/空 keywords/非法正则/未知 strategy 422；③ 列表默认 active、`active=false` 查历史、type_code 过滤、列表不含 `field_specs_json`；④ 详情含 specs + rules；⑤ 升版本：PUT 生成 v2 新行、v1 保留、规则复制+覆盖、过期 version 409（带 `current_version`）、同票种仅 1 条 active；⑥ 60s 缓存：改库不 invalidate 读到旧快照、invalidate 后读到新值；⑦ `/test`：真 OCR 抽出 10 字段、matched 关键字、confidence 0.881；reviewer 403 / 未启用 422 / 假图 422 / OCR 异常 50010；不建票不写对象；⑧ seed 幂等（5 模板/37 规则，二次跑跳过）；⑨ `pytest 332 passed`、`pytest -m integration 146 passed` | ✅ 通过（补 `vat_digital`：SCHEMA + enum + 0003；D-046） |
 | S2-7 | `backend/app/services/job_service.py`、`backend/app/tasks/{worker,ocr_task,queue}.py`、`backend/app/api/v1/files.py`（入队）、`backend/app/api/deps.py`（`get_task_queue`）、`backend/tests/{test_jobs,test_upload}.py`、`docs/{spec,plan}/s2-7-arq.md` | ① 作业状态机 `pending→running→succeeded|failed`、可重试失败回 `pending`；② 幂等双保险：终态跳过 + Redis `SET NX EX 600`（锁占用返回 `locked`、handler 不执行）；③ 重试：第 1 次失败退避 **5s**、第 2 次 **30s**、第 3 次终态 `failed` 且 `retry_count=3`；永久错误（`TaskNotReadyError`）直接 failed；④ 僵尸恢复：30min 前 `running` → `failed`（新的 `running` 不动）；⑤ 上传入队：假队列收到 `job_id`；队列不可用 → 503 + job `failed`；⑥ 真实 ARQ worker + uvicorn：上传 202 → worker 执行 → `ocr_jobs failed / retry_count=1 / TaskNotReadyError(S3-1)`；⑦ 依赖 ARQ 导致 redis-py 8.1→5.3.1，全量回归通过；⑧ `pytest 323 passed`、`pytest -m integration 137 passed`、smoke 8 OK | ✅ 通过（`ocr_task` 在 S3-1 前如实失败，不伪造成功；D-045） |
 | S2-6 | `backend/app/services/{storage,upload_service}.py`、`backend/app/api/v1/files.py`、`backend/app/schemas/invoice.py`（UploadData）、`backend/core/config.py`（明文开关/prod 校验）、`backend/.env.example`、`backend/tests/test_upload.py`、`docs/{spec,plan}/s2-6-upload.md` | ① `POST /invoices/upload` 202，返回 `invoice_id/file_id/job_id/sha256/status/ocr_status/dedup`，**响应无 storage_key**；② 对象名 `invoices/yyyy/mm/<32hex>.bin`（SCHEMA），原文件名只展示（`../../etc/passwd` → `passwd`）；③ 魔数 + Pillow 真图 + pypdf 页数（≤5）校验；空文件 422、超限 413、假图/TIFF/6 页 PDF 422；④ **去重先于写对象**：同字节二次上传 409/40901 + 同一 `invoice_id`，MinIO 只有 1 个对象（put 次数 1）；⑤ 落库同一事务写 file+invoice+job（pending/preprocess），失败或并发同 sha 时补偿删除对象；⑥ 权限：reviewer 403、admin 404、未登录 401；⑦ 真实 uvicorn + MinIO 手工：202 → 409 → 对象存在（643B）→ 清理干净；⑧ `pytest 311 passed`、`pytest -m integration 129 passed` | ✅ 通过（S4 前本地明文调试，prod 启动拒绝，D-044；ARQ 入队留 S2-7） |
@@ -182,11 +183,24 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 36 | layout 的 `regions/aspect_ratio` 仍由 YAML 提供（DB 契约没有这两列） | 模板 CRUD 管不到版面区域 | S3-1 决定"YAML 版式 + DB 关键字/规格"的组合方式；若要全入库需先改 SCHEMA |
 | 37 | `template_create` 审计动作仍缺枚举值、未写审计行 | SCHEMA 枚举没有该值（D-040 已登记同类缺口） | 在 S4-7 前与 `report_create`/`issue_cert` 一起补 SCHEMA + 迁移 |
 | 38 | seed 是指令而非启动自动执行 | `create_app()` 启动不连库（测试/健康检查要能离线跑） | 部署脚本（S2-12/S7）调用 `scripts/seed_templates.py`；已有数据跳过 |
+| 39 | 业务页面用占位（我的票据/上传/待核对/待审核/模板/规则/证书/审计） | S2-10/S2-11/S5 的页面还没做 | 对应任务卡逐个替换 `Placeholder.vue`；页面明确标"待实现"，不放假数据 |
+| 40 | 前端没有单测框架 | 目前只有 `typecheck` + `build` + 浏览器冒烟 | 若后续交互复杂（上传/轮询/字段编辑），评估引入 Vitest（需用户确认新依赖） |
+| 41 | access/refresh 存 localStorage（XSS 可读） | D-021 已接受的取舍 | 全项目禁止 `v-html` 渲染用户内容；S6 安全测试里验证 CSP/转义 |
 
 ## 变更日志
 
 ### 2026-11-19
 
+- **S2-9 完成**：前端登录与主框架。
+  · `api/http.ts`：401 自动 refresh **一次**（并发复用同一个 Promise，轮换式 token 不会互相失效），
+    失败才清会话跳登录（提示 1.5s 节流）；不解析 JWT exp，只信 401；
+  · `stores/user.ts`：access/refresh/user 持久化、`role`/`permissions`/`hasRole`/`setSession`；
+  · `router`：`meta.roles` 生效、刷新只剩 token 时 `/auth/me` 水合、无权限 → `/403`；
+  · `MainLayout`：三角色菜单（我的票据/上传；待核对/待审核；模板/规则/证书/审计），未实现页明确占位；
+  · `Login.vue`：Element Plus 表单 + 前端校验 + 真实登录；
+  · `scripts/ui_smoke.mjs` 增加 `--fill`/`--clear`，支持真实登录冒烟；
+  · 实测：`npm run typecheck` / `npm run build` 通过；三角色登录菜单不同；admin → `/upload` 得 `/403`；
+    `ACCESS_TOKEN_TTL_SECONDS=1` 下并发两个 `/auth/me` 只刷新 **1** 次且都成功；`smoke.py` **9 OK / 0 FAIL**。
 - **S2-8 完成**：票种模板与规则管理。
   · 契约补 `vat_digital`（SCHEMA §9.6 + enum + `0003` 迁移只放开两个 CHECK）；
   · `GET/POST/PUT /templates` + `/templates/{id}/test`：写仅 admin、reviewer 只读、submitter 403；

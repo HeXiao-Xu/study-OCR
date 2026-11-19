@@ -2,21 +2,21 @@
  * 统一的 HTTP 封装。**所有** 后端调用都必须经过这里（AGENTS.md §10.7）：
  * 组件里禁止 `import axios` 直接用。
  *
- * 它负责三件事：
- * 1. 注入 token（`Authorization: Bearer <token>`）；
- * 2. 统一处理**错误**：401 清会话并跳登录、403 提示无权限、其余弹后端 message；
- *    业务成功时把整个 `Envelope` 交给调用方（**不吞掉 `trace_id`**——报障时要贴它）；
- * 3. 把 axios 的错误归一成 `ApiError`，调用方只需 `try/catch` 一种类型。
+ * 三件事：
+ * 1. 注入 access token（`Authorization: Bearer <token>`）；
+ * 2. **401 自动刷新一次**：并发的多个 401 复用**同一个** refresh Promise（任务卡的"刷新风暴"坑）；
+ *    刷新失败才清会话、跳登录、提示一次；
+ * 3. 把 axios 错误归一成 `ApiError`，调用方只处理一种类型；成功时返回整个 `Envelope`
+ *    （不吞 `trace_id`，报障要贴）。
  *
- * 为什么不在拦截器里"解包成 data"：`trace_id` 与 `code` 同样是排障信息，
- * Debug 页要展示它；需要纯数据时用下面 `unwrap()`。
+ * 不解析 JWT 的 exp 判断过期：完全依赖 401，避免前后端时钟偏差。
  */
-import axios, { AxiosError, type AxiosRequestConfig, type AxiosInstance } from 'axios'
+import axios, { AxiosError, type AxiosInstance, type AxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 
-import router from '../router'
 import { useUserStore } from '../stores/user'
 import type { Envelope } from '../types/api'
+import type { AuthTokens } from '../types/auth'
 
 export class ApiError extends Error {
   constructor(
@@ -24,8 +24,7 @@ export class ApiError extends Error {
     message: string,
     public readonly status?: number,
     public readonly traceId?: string,
-    /** 后端在错误响应里附带的结构化数据（如 /health 的 503 降级详情、409 的 current_version）。
-     *  丢了它，调用方只能看到一个字符串，没法做"降级展示"这类事情。 */
+    /** 后端错误响应里的结构化 data（409 的 current_version、503 的降级详情等）。 */
     public readonly payload?: Envelope | null,
   ) {
     super(message)
@@ -40,6 +39,87 @@ const http: AxiosInstance = axios.create({
   timeout: 15_000,
 })
 
+/** 专用于 refresh：**不挂业务拦截器**，避免 401 → refresh → 401 的递归。 */
+const refreshClient: AxiosInstance = axios.create({
+  baseURL: API_BASE,
+  timeout: 15_000,
+})
+
+interface RetryableConfig extends AxiosRequestConfig {
+  _retried?: boolean
+}
+
+/** 由 main.ts 注册：刷新失败时如何回登录页（避免 http ↔ router 的循环 import）。 */
+type UnauthorizedHandler = (message?: string) => void
+let unauthorizedHandler: UnauthorizedHandler | null = null
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler): void {
+  unauthorizedHandler = handler
+}
+
+let lastAuthMessageAt = 0
+
+function handleUnauthorized(message?: string): void {
+  const store = useUserStore()
+  store.clear()
+  if (unauthorizedHandler) {
+    unauthorizedHandler(message)
+  } else if (!window.location.pathname.startsWith('/login')) {
+    window.location.href = '/login'
+  }
+  const now = Date.now()
+  if (now - lastAuthMessageAt > 1500) {
+    lastAuthMessageAt = now
+    ElMessage.error(message || '登录状态已失效，请重新登录')
+  }
+}
+
+// --------------------------------------------------------------------------
+// refresh 单飞：并发 401 只发一次 /auth/refresh（后端是轮换式的，重复用旧 token 会 401）
+// --------------------------------------------------------------------------
+let refreshPromise: Promise<string> | null = null
+let refreshCount = 0
+
+/** DEV 冒烟用：累计的 refresh 请求次数（验证并发去重）。 */
+export function getRefreshCount(): number {
+  return refreshCount
+}
+
+async function performRefresh(): Promise<string> {
+  const store = useUserStore()
+  if (!store.refreshToken) {
+    throw new Error('no refresh token')
+  }
+  refreshCount += 1
+  const response = await refreshClient.post<Envelope<AuthTokens>>('/auth/refresh', {
+    refresh_token: store.refreshToken,
+  })
+  const body = response.data
+  if (body.code !== 0 || !body.data) {
+    throw new ApiError(body.code, body.message, response.status, body.trace_id, body)
+  }
+  store.setAccessToken(body.data.access_token)
+  store.setRefreshToken(body.data.refresh_token)
+  return body.data.access_token
+}
+
+function refreshAccessToken(): Promise<string> {
+  if (!refreshPromise) {
+    const promise = performRefresh()
+    refreshPromise = promise
+    // 结束后复位，下一次过期还能再刷新；catch 防止未处理的 rejection
+    void promise
+      .finally(() => {
+        if (refreshPromise === promise) refreshPromise = null
+      })
+      .catch(() => undefined)
+  }
+  return refreshPromise
+}
+
+// --------------------------------------------------------------------------
+// 拦截器
+// --------------------------------------------------------------------------
 http.interceptors.request.use((config) => {
   const token = useUserStore().token
   if (token) {
@@ -48,23 +128,12 @@ http.interceptors.request.use((config) => {
   return config
 })
 
-function redirectToLogin(message?: string): void {
-  const store = useUserStore()
-  store.clear()
-  const current = router.currentRoute.value
-  if (current.path !== '/login') {
-    void router.replace({ path: '/login', query: { redirect: current.fullPath } })
-  }
-  ElMessage.error(message || '登录状态已失效，请重新登录')
-}
-
 http.interceptors.response.use(
   (response) => {
-    // 2xx 但业务码非 0：后端理论上不会这么返回（错误走非 2xx），仍兜住
     const body = response.data as Envelope | undefined
     if (body && typeof body.code === 'number' && body.code !== 0) {
       if (body.code === 40101) {
-        redirectToLogin(body.message)
+        handleUnauthorized(body.message)
       } else if (body.code === 40301) {
         ElMessage.error('无权访问该资源')
       } else {
@@ -74,16 +143,38 @@ http.interceptors.response.use(
     }
     return response
   },
-  (error: AxiosError<Envelope>) => {
+  async (error: AxiosError<Envelope>) => {
     const status = error.response?.status
     const body = error.response?.data
+    const config = error.config as RetryableConfig | undefined
     const traceId =
       (body && typeof body === 'object' ? body.trace_id : undefined) ??
       (error.response?.headers?.['x-trace-id'] as string | undefined)
 
-    if (status === 401 || body?.code === 40101) {
-      redirectToLogin(body?.message)
-      return Promise.reject(new ApiError(40101, '登录状态已失效', status, traceId, body))
+    const isAuthEndpoint = Boolean(
+      config?.url && (config.url.includes('/auth/login') || config.url.includes('/auth/refresh')),
+    )
+    const unauthorized = status === 401 || body?.code === 40101
+
+    if (unauthorized && config && !config._retried && !isAuthEndpoint) {
+      config._retried = true
+      try {
+        const token = await refreshAccessToken()
+        const headers = (config.headers ?? {}) as Record<string, string>
+        headers.Authorization = `Bearer ${token}`
+        config.headers = headers
+        return await http.request(config)
+      } catch {
+        handleUnauthorized(body?.message)
+        return Promise.reject(
+          new ApiError(40101, '登录状态已失效', status, traceId, body ?? null),
+        )
+      }
+    }
+
+    if (unauthorized) {
+      handleUnauthorized(body?.message)
+      return Promise.reject(new ApiError(40101, '登录状态已失效', status, traceId, body ?? null))
     }
     if (status === 403) {
       ElMessage.error('无权访问该资源')
@@ -98,6 +189,9 @@ http.interceptors.response.use(
   },
 )
 
+// --------------------------------------------------------------------------
+// 便捷方法
+// --------------------------------------------------------------------------
 export async function get<T>(url: string, config?: AxiosRequestConfig): Promise<Envelope<T>> {
   const response = await http.get<Envelope<T>>(url, config)
   return response.data

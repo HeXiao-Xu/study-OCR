@@ -883,3 +883,32 @@
   `/test` 成功与 50010/假图/未启用）；真实 uvicorn 手工：seed 5 个模板、详情 specs=10 rules=10、
   `/test` 真 OCR 抽出 **10 个字段**、matched 5 个关键字、confidence 0.881；reviewer 写 403；
   `pytest 332 passed`、`pytest -m integration 146 passed`、smoke 8 OK。
+
+---
+
+## D-047 前端会话：refresh 单飞 + 守卫水合 + 角色菜单；未实现页面用占位
+
+- **日期**：2026-11-19（S2-9）
+- **背景**：S0-6 只有占位登录与顶栏；S2-2 已有 login/refresh/me/logout。任务要求三角色登录后菜单不同、
+  token 过期自动续、并发刷新去重、无权限跳 /403。
+- **决策**：
+  1. **会话存 localStorage**（access + refresh + user 三个 key），沿用 D-021 的取舍；
+     XSS 风险仍由"动态内容只走 Vue 插值、禁止 v-html"约束。
+  2. **不解析 JWT exp 判断过期**：完全依赖 401；避免前后端时钟偏差。401 时自动 `POST /auth/refresh`
+     一次并重放原请求；登录/刷新接口本身不触发刷新。
+  3. **并发 refresh 单飞**：模块级 `refreshPromise`，同一时刻所有 401 复用同一个 Promise；
+     后端是轮换式 refresh，重复用旧 token 会 401——这是任务卡点名的"刷新风暴"。
+     刷新失败才清会话 + 跳登录，提示做 1.5s 节流（并发失败不弹多个）。
+  4. **守卫水合**：刷新浏览器只剩 token 时，守卫调 `/auth/me` 补 user；失败交给刷新/登录流程。
+  5. **角色菜单与路由**：`submitter` 我的票据/上传；`reviewer` 待核对/待审核；`admin` 模板/规则/证书/审计；
+     `meta.roles` 生效，不匹配 → `/403`。前端只是体验，**接口仍独立裁决**。
+  6. **未实现页面用 `Placeholder.vue`**：S2-10/S2-11/S5 的页面明确标注"待实现"，不放假数据。
+  7. **DEV-only 诊断钩子**：`import.meta.env.DEV` 下暴露 `window.__httpDebug`（`get` + `refreshCount`），
+     供 `scripts/ui_smoke.mjs` 验证并发 401 只刷新一次；生产构建分支被摇掉。
+- **理由**：单飞是轮换式 refresh 的唯一正确用法；守卫水合保证刷新页面不掉登录；占位页避免"看起来能用"的假象。
+- **代价**：localStorage 的 XSS 暴露面（D-021 已接受）；前端无单测框架，refresh 逻辑靠浏览器冒烟 + 代码评审；
+  菜单/路由占位需要 S2-10/S2-11/S5 逐个替换。
+- **验证**：`npm run typecheck`、`npm run build`；后端（`ACCESS_TOKEN_TTL_SECONDS=1`）+ Vite + 无头 Edge：
+  三角色真实登录后菜单分别命中「我的票据」「待核对/待审核」「票种模板/审计日志」；
+  admin 访问 `/upload` → `/403`；登录后等 2s 用 `__httpDebug` 并发两个 `/auth/me` →
+  `refreshCount === 1` 且两个请求都返回 `fe_sub`；`scripts/smoke.py` 9 OK / 0 FAIL；测试用户与 Redis key 已清理。

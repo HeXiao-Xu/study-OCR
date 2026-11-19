@@ -32,14 +32,24 @@ if (!url || url.startsWith('--')) {
 const expects = []
 const clicks = []
 const evals = []
+const fills = []
 let graceMs = 2500 // 页面导航后先等异步请求落地，再断言（健康检查最长 2s 超时）
+let clearStorage = false
 for (let i = 1; i < argv.length; i += 1) {
   const flag = argv[i]
   const value = argv[i + 1]
-  if (flag === '--expect') {
+  if (flag === '--clear') {
+    clearStorage = true
+  } else if (flag === '--expect') {
     if (!value) throw new Error('--expect 需要值')
     expects.push(value)
     i += 1
+  } else if (flag === '--fill') {
+    const selector = argv[i + 1]
+    const fillValue = argv[i + 2]
+    if (!selector || fillValue === undefined) throw new Error('--fill 需要 "选择器" 与 "值"')
+    fills.push({ selector, value: fillValue })
+    i += 2
   } else if (flag === '--click') {
     if (!value) throw new Error('--click 需要值')
     clicks.push(value)
@@ -128,19 +138,47 @@ async function main() {
   await send(ws, 'Page.enable')
   await send(ws, 'Page.navigate', { url })
 
+  // 同一浏览器 profile 会保留上一个角色的 localStorage；需要干净会话时先清再重载
+  if (clearStorage) {
+    await sleep(800)
+    await evaluate(ws, 'localStorage.clear(); sessionStorage.clear(); "cleared"')
+    await send(ws, 'Page.navigate', { url })
+  }
+
   // 先给一段固定宽限（页面正在等后端响应），再轮询到关键字齐备或超时。
-  // 没有 --expect 时也必须等，否则会在异步请求回来之前就断言（曾因此误判成"未请求"）。
+  // 有 --fill/--click 时不做"先等关键字"（登录前正文里还没有菜单），动作完成后再轮询。
   await sleep(graceMs)
   const deadline = Date.now() + 15000
   let bodyText = ''
-  while (Date.now() < deadline) {
-    bodyText = (await evaluate(ws, 'document.body ? document.body.innerText : ""')) ?? ''
-    if (!expects.length) break
-    if (expects.every((k) => bodyText.includes(k))) break
-    await sleep(400)
+  if (!fills.length && !clicks.length) {
+    while (Date.now() < deadline) {
+      bodyText = (await evaluate(ws, 'document.body ? document.body.innerText : ""')) ?? ''
+      if (!expects.length) break
+      if (expects.every((k) => bodyText.includes(k))) break
+      await sleep(400)
+    }
   }
 
-  for (const text of clicks) {
+  // 表单填充要触发 input 事件（Vue 的 v-model 监听的是 input，不是直接改 value）
+for (const { selector, value } of fills) {
+  const result = await evaluate(
+    ws,
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return 'NOT_FOUND';
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+      setter.call(el, ${JSON.stringify(value)});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return 'FILLED';
+    })()`,
+  )
+  if (result !== 'FILLED') throw new Error(`没找到输入框：${selector}`)
+  console.log(`已填写：${selector}`)
+}
+if (fills.length) await sleep(300)
+
+for (const text of clicks) {
     const result = await evaluate(
       ws,
       `(() => {
@@ -154,6 +192,15 @@ async function main() {
     console.log(`已点击按钮：${text}`)
     await sleep(2000)
     bodyText = (await evaluate(ws, 'document.body ? document.body.innerText : ""')) ?? ''
+  }
+
+  // 动作（填表/点击）后再轮询关键字，给登录跳转与异步请求留时间
+  if (fills.length || clicks.length) {
+    while (Date.now() < deadline) {
+      bodyText = (await evaluate(ws, 'document.body ? document.body.innerText : ""')) ?? ''
+      if (!expects.length || expects.every((k) => bodyText.includes(k))) break
+      await sleep(400)
+    }
   }
 
   const location = await evaluate(ws, 'location.pathname + location.search')

@@ -1,25 +1,32 @@
 /**
  * 路由 + 全局守卫。
  *
- * 守卫只做两件现在就能确定的事：
- * 1. 未登录访问受保护页面 → 跳 /login，并把原地址塞进 `redirect`；
- * 2. 已登录访问 /login → 回首页。
- * `meta.roles` 先声明、暂不生效：角色权限在 S2-2（认证）与 S2-3（行级隔离）实装，
- * 现在写死判断会是"假的安全感"，反而误导。见文件末尾的 TODO。
+ * 权限边界（AGENTS §0/§10.7）：
+ * - 未登录访问受保护页 → `/login?redirect=...`；
+ * - 已登录但本地没有 user（刷新页面只留 token）→ 先调 `/auth/me` 水合；
+ * - `meta.roles` 生效，无权限 → `/403`；
+ * - 前端隐藏菜单/路由只是体验，**真正的裁决在接口**（403/404）。
  */
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
+import { fetchMe } from '../api/auth'
 import { useUserStore } from '../stores/user'
+import type { UserRole } from '../types/api'
 
 declare module 'vue-router' {
   interface RouteMeta {
     /** 无需登录即可访问 */
     public?: boolean
-    /** 允许访问的角色；为空表示不限制 */
-    roles?: Array<'submitter' | 'reviewer' | 'admin'>
+    /** 允许访问的角色；为空表示不限制（仍需登录） */
+    roles?: UserRole[]
     title?: string
+    /** 尚未实现的业务页，占位页展示的说明 */
+    placeholder?: string
   }
 }
+
+const Layout = () => import('../layout/MainLayout.vue')
+const Placeholder = () => import('../views/Placeholder.vue')
 
 const routes: RouteRecordRaw[] = [
   {
@@ -29,16 +36,76 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true, title: '登录' },
   },
   {
-    path: '/',
-    name: 'home',
-    component: () => import('../views/Home.vue'),
-    meta: { title: '概览' },
+    path: '/403',
+    name: 'forbidden',
+    component: () => import('../views/Forbidden.vue'),
+    meta: { title: '无权访问' },
   },
   {
-    path: '/debug',
-    name: 'debug',
-    component: () => import('../views/Debug.vue'),
-    meta: { title: '联调自检' },
+    path: '/',
+    component: Layout,
+    children: [
+      {
+        path: '',
+        name: 'home',
+        component: () => import('../views/Home.vue'),
+        meta: { title: '概览' },
+      },
+      {
+        path: 'invoices',
+        name: 'invoices',
+        component: Placeholder,
+        meta: { title: '我的票据', roles: ['submitter', 'reviewer'], placeholder: 'S2-11' },
+      },
+      {
+        path: 'upload',
+        name: 'upload',
+        component: Placeholder,
+        meta: { title: '上传票据', roles: ['submitter'], placeholder: 'S2-10' },
+      },
+      {
+        path: 'review',
+        name: 'review',
+        component: Placeholder,
+        meta: { title: '待核对', roles: ['reviewer'], placeholder: 'S3' },
+      },
+      {
+        path: 'finance/pending',
+        name: 'finance-pending',
+        component: Placeholder,
+        meta: { title: '待审核', roles: ['reviewer'], placeholder: 'S5' },
+      },
+      {
+        path: 'templates',
+        name: 'templates',
+        component: Placeholder,
+        meta: { title: '票种模板', roles: ['admin'], placeholder: 'S2-12' },
+      },
+      {
+        path: 'rules',
+        name: 'rules',
+        component: Placeholder,
+        meta: { title: '字段规则', roles: ['admin'], placeholder: 'S2-12' },
+      },
+      {
+        path: 'certs',
+        name: 'certs',
+        component: Placeholder,
+        meta: { title: '证书管理', roles: ['admin'], placeholder: 'S4-6' },
+      },
+      {
+        path: 'audit',
+        name: 'audit',
+        component: Placeholder,
+        meta: { title: '审计日志', roles: ['admin'], placeholder: 'S4-7' },
+      },
+      {
+        path: 'debug',
+        name: 'debug',
+        component: () => import('../views/Debug.vue'),
+        meta: { title: '联调自检' },
+      },
+    ],
   },
   {
     path: '/:pathMatch(.*)*',
@@ -53,16 +120,33 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const user = useUserStore()
 
-  if (!to.meta.public && !user.isAuthenticated) {
+  if (to.meta.public) {
+    if (to.path === '/login' && user.isAuthenticated) {
+      return { path: '/' }
+    }
+    return true
+  }
+
+  if (!user.isAuthenticated) {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
-  if (to.path === '/login' && user.isAuthenticated) {
-    return { path: '/' }
+
+  // 刷新页面后只有 token：用 /auth/me 水合（401 会由 http 自动 refresh 一次）
+  if (!user.user) {
+    try {
+      user.setUser(await fetchMe())
+    } catch {
+      user.clear()
+      return { path: '/login', query: { redirect: to.fullPath } }
+    }
   }
-  // TODO(S2-3)：meta.roles 生效——届时改为读后端 /auth/me 的角色，不放行就跳无权页。
+
+  if (to.meta.roles?.length && user.role && !to.meta.roles.includes(user.role)) {
+    return { path: '/403' }
+  }
   return true
 })
 

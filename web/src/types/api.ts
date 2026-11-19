@@ -21,12 +21,14 @@ export interface HealthData {
   checks: Record<string, HealthCheckItem>
 }
 
+export type UserRole = 'submitter' | 'reviewer' | 'admin'
+
 export interface UserInfo {
   id: number
   username: string
-  real_name: string
+  real_name: string | null
   dept: string | null
-  role: 'submitter' | 'reviewer' | 'admin'
+  role: UserRole
   status: 'active' | 'disabled' | 'locked'
   created_at: string
 }

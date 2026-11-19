@@ -1,48 +1,57 @@
 <script setup lang="ts">
 /**
- * 登录页（S0-6 占位版）。
+ * 登录页（S2-9）：Element Plus 表单 + 前端校验 → POST /auth/login → 存会话 → 跳 redirect。
  *
- * 真实登录在 **S2-2** 接入（POST /auth/login → 存 token → 拉 /auth/me）。
- * 这里刻意**不发请求**，避免出现一个"点了没反应"的假表单；
- * 开发态提供一个占位按钮，用于把路由守卫与拦截器的 401 分支跑通。
+ * 错误提示交给 `http.ts` 统一处理（401 统一文案"用户名或密码错误"，不区分账号是否存在）；
+ * 这里只兜住非 ApiError 的意外，避免双弹窗。
  */
-import { ElMessage } from 'element-plus'
-import { ref } from 'vue'
+import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { login } from '../api/auth'
+import { ApiError } from '../api/http'
 import { useUserStore } from '../stores/user'
 
 const route = useRoute()
 const router = useRouter()
-const user = useUserStore()
+const store = useUserStore()
 
-const username = ref('')
-const password = ref('')
+const formRef = ref<FormInstance>()
+const form = reactive({ username: '', password: '' })
 const loading = ref(false)
 
-const isDev = import.meta.env.DEV
-
-function submitDisabled(): boolean {
-  return username.value.trim() === '' || password.value === ''
+const rules: FormRules = {
+  username: [
+    { required: true, message: '请输入用户名', trigger: 'blur' },
+    { min: 3, max: 64, message: '用户名 3–64 个字符', trigger: 'blur' },
+  ],
+  password: [
+    { required: true, message: '请输入口令', trigger: 'blur' },
+    { min: 8, max: 128, message: '口令 8–128 个字符', trigger: 'blur' },
+  ],
 }
 
-/** 仅开发态：塞一个占位 token，让守卫放行（S2-2 会删掉这段） */
-function devSignIn(): void {
+async function submit(): Promise<void> {
+  if (!formRef.value || loading.value) return
+  const valid = await formRef.value.validate().catch(() => false)
+  if (!valid) return
+
   loading.value = true
-  user.setToken('dev-placeholder-token')
-  user.setUser({
-    id: 0,
-    username: username.value.trim() || 'dev',
-    real_name: '开发占位用户',
-    dept: null,
-    role: 'submitter',
-    status: 'active',
-    created_at: new Date().toISOString(),
-  })
-  loading.value = false
-  ElMessage.success('已写入占位 token（仅开发态）')
-  const redirect = (route.query.redirect as string | undefined) ?? '/'
-  void router.replace(redirect)
+  try {
+    const data = await login(form.username.trim(), form.password)
+    store.setSession(data)
+    ElMessage.success(`欢迎，${data.user.real_name ?? data.user.username}`)
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+    await router.replace(redirect.startsWith('/') ? redirect : '/')
+  } catch (error) {
+    // 后端错误（含 401 用户名/密码错误）已由 http.ts 弹出；非 ApiError 才是意外
+    if (!(error instanceof ApiError)) {
+      ElMessage.error('登录失败，请稍后重试')
+    }
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 
@@ -53,44 +62,48 @@ function devSignIn(): void {
         <template #header>
           <div class="login-header">
             <strong>登录</strong>
-            <el-tag size="small" type="info">登录接口待 S2-2 接入</el-tag>
+            <span class="login-sub">报销票据识别与加密系统</span>
           </div>
         </template>
 
-        <el-alert
-          type="info"
-          :closable="false"
-          show-icon
-          title="当前是 S0-6 骨架阶段"
-          description="登录、角色与权限在 S2-2 / S2-3 实装；本页暂不调用后端。"
-          class="login-alert"
-        />
-
-        <el-form label-position="top" @submit.prevent>
-          <el-form-item label="用户名">
-            <el-input v-model="username" placeholder="学号或工号" autocomplete="username" />
-          </el-form-item>
-          <el-form-item label="口令">
+        <el-form
+          ref="formRef"
+          :model="form"
+          :rules="rules"
+          label-position="top"
+          @submit.prevent="submit"
+        >
+          <el-form-item label="用户名" prop="username">
             <el-input
-              v-model="password"
+              v-model="form.username"
+              placeholder="学号或工号"
+              autocomplete="username"
+              :disabled="loading"
+            />
+          </el-form-item>
+          <el-form-item label="口令" prop="password">
+            <el-input
+              v-model="form.password"
               type="password"
               show-password
               placeholder="8–128 字符"
               autocomplete="current-password"
+              :disabled="loading"
             />
           </el-form-item>
+
+          <el-button
+            type="primary"
+            native-type="submit"
+            class="login-submit"
+            :loading="loading"
+          >
+            登录
+          </el-button>
         </el-form>
 
-        <el-button type="primary" class="login-submit" disabled :loading="loading">
-          登录（S2-2 开放）
-        </el-button>
-
-        <el-divider v-if="isDev" content-position="left">开发态</el-divider>
-        <el-button v-if="isDev" :disabled="submitDisabled()" class="login-submit" @click="devSignIn">
-          写入占位 token 并进入
-        </el-button>
-        <p v-if="isDev" class="login-hint">
-          这段只在 `npm run dev` 下出现（`import.meta.env.DEV`），生产构建会被摇掉。
+        <p class="login-hint">
+          账号由管理员创建；提交人可自助注册（如需开放），审核人与管理员由初始化脚本创建。
         </p>
       </el-card>
     </el-col>
@@ -103,19 +116,21 @@ function devSignIn(): void {
 }
 .login-header {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
 }
-.login-alert {
-  margin-bottom: 16px;
+.login-sub {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .login-submit {
   width: 100%;
   margin-top: 4px;
 }
 .login-hint {
-  margin: 8px 0 0;
+  margin: 12px 0 0;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+  line-height: 1.6;
 }
 </style>

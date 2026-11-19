@@ -1,18 +1,18 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-19（S2-8 完成）
+> 最后更新：2026-11-19（S2-9 完成）
 
 ## 1. 一句话现状
 
-**S0 + S1 + S2-1 ~ S2-8 全部完成**，自动化验收全绿；
-**下一步是 S2 阶段的第九张卡：S2-9 前端登录与主框架**。
+**S0 + S1 + S2-1 ~ S2-9 全部完成**（后端基础框架 + 前端登录/主框架），自动化验收全绿；
+**下一步是 S2 阶段的第十张卡：S2-10 前端上传页**。
 
 ## 2. 仓库与环境
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 20 个 commit，待用户 push**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 21 个 commit，待用户 push**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
 | 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**、python-multipart **0.0.34**、ARQ **0.28.0**、redis-py **5.3.1**（ARQ 要求 `redis<6`，D-045） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
@@ -39,6 +39,8 @@ backend/app/services/job_service.py  ← S2-7：作业状态机/幂等锁/重试
 backend/app/services/{template_service,template_registry,template_seed}.py  ← S2-8：模板 CRUD/升版本/60s 缓存/seed
 backend/app/tasks/{worker,ocr_task,queue}.py  ← S2-7：ARQ WorkerSettings、任务函数、入队协议
 backend/app/api/v1/{invoices,files,templates}.py + schemas/{invoice,template}.py  ← 票据/上传/模板接口
+web/src/api/{http,auth}.ts + stores/user.ts + router + layout/MainLayout.vue  ← S2-9：401 单飞刷新、会话、角色菜单
+web/src/views/{Login,Forbidden,Placeholder}.vue  ← S2-9：登录 / 403 / 未实现页占位
 scripts/bench_list.py               ← S2-4：5 万行 p50/p95 + EXPLAIN ANALYZE（临时库，跑完自删）
 backend/app/ocr/          ← S1 的全部产出
   preprocess.py             预处理（EXIF→定位→透视/降级→去斜→照度→印章）+ needs_retake
@@ -87,6 +89,12 @@ cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m arq app.tasks.worker.WorkerSettings)
 # 上传（后端起）：先登录拿 token，再 multipart 上传；同文件二次上传应 409
 curl -s -F "file=@票据.jpg" localhost:8000/api/v1/invoices/upload -H "Authorization: Bearer <token>"
+# 前端（Vite 5173 + 无头 Edge 9222）：类型检查/构建 + 真实登录冒烟（需要先起后端）
+(cd web && npm run typecheck && npm run build)
+node scripts/ui_smoke.mjs "http://127.0.0.1:5173/login" --clear \
+  --fill 'input[autocomplete="username"]' <用户名> \
+  --fill 'input[autocomplete="current-password"]' <口令> \
+  --click 登录 --expect 我的票据
 .venv/Scripts/python.exe scripts/bench_list.py --rows 50000 --iterations 50  # 分页基准（临时库）
 .venv/Scripts/python.exe scripts/smoke.py                                   # 8 OK / 0 FAIL
 # 建 reviewer / admin 账号（注册接口只产生 submitter）
@@ -123,22 +131,26 @@ curl -s -F "file=@票据.jpg" localhost:8000/api/v1/invoices/upload -H "Authoriz
 | D-044 | S4 前上传走**本地明文调试**（`is_cipher=false`，prod 启动拒绝）；对象名按 SCHEMA `invoices/yyyy/mm/<hex>.bin`；ARQ 入队留 S2-7 |
 | D-045 | 作业框架：ARQ 0.28 强制 redis-py **8.1→5.3.1**；幂等=终态跳过 + `SET NX EX 600`；重试 5s/30s（120 预留）；僵尸恢复用 `created_at` 近似（无 `started_at` 列） |
 | D-046 | 模板：DB 用 SCHEMA 的 6 列（锚定规格进 `field_specs_json`）、PUT 升版本、active 互斥、60s 缓存、**seed 用显式脚本**；补 `vat_digital`（SCHEMA + 0003） |
+| D-047 | 前端会话：401 **单飞 refresh**（并发复用同一 Promise）+ 守卫 `/me` 水合 + `meta.roles`；未实现页用占位；DEV `__httpDebug` 仅开发态 |
 
-## 7. 下一步：S2-9 前端登录与主框架
+## 7. 下一步：S2-10 前端上传页
 
-- 契约：`docs/API.md` §1（login/refresh/me/logout）与 §0 权限矩阵；
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-9；
-- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-9-fe-login.md`）→ plan → 用户确认 → 写码**；
-- 底座：`web/src/api/http.ts`（拦截器/统一解包/401 跳登录/`ApiError`）、`router/index.ts`（守卫 + `meta.roles` 预留）、
-  `stores/user.ts`（token 在 localStorage）、`views/Debug.vue`；
-- 关键：三角色菜单（submitter 我的票据/上传；reviewer 待核对/待审；admin 模板/规则/证书/审计）；
-  `/login` 表单与前端校验；401 → **自动 refresh 一次**（并发请求必须复用同一个 refresh Promise，
-  后端是**轮换式** refresh，重复用旧 token 会 401）；refresh 失败清会话跳登录；`/403` 页；
-- 注意：前端只经 `src/api/` 调接口（AGENTS §10.7），组件里禁止直接 `import axios`。
+- 契约：`docs/API.md` §2 `POST /invoices/upload`（202，`data.invoice_id/file_id/job_id/sha256/dedup`；
+  重复 409/40901 + `data.invoice_id`）；单文件上限 **20MB**（D-018；任务卡写 10MB，以契约为准）；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-10；
+- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-10-upload-ui.md`）→ plan → 用户确认 → 写码**；
+- 底座：`web/src/api/http.ts`（已支持 multipart/进度需扩展 `post` 的 config）、`MainLayout`/守卫（S2-9）、
+  后端上传接口（S2-6）与入队（S2-7）；
+- **依赖缺口**：任务卡要求上传后轮询 `GET /invoices/{id}/ocr-status`，但该接口在 API.md 标注
+  S3-1 / S2-7，**目前还没实现**（S2-7 只做了作业状态机）。S2-10 的 spec 必须先定：
+  是补一个最小 `ocr-status` 接口（读 `ocr_jobs` 最新状态，S3-1 再补 stages/progress），
+  还是先跳详情页、把轮询留到 S3-1；**不要在前端假造轮询**。
+- 关键：`el-upload` 拖拽/多选；逐文件状态（等待/上传/成功/失败+原因）；409 去重**单独绿色提示 + 跳详情**，
+  不弹红色错误；组件里禁止直接 `import axios`（走 `api/files.ts`）。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地 20 个 commit 需要用户执行 `git push`（AI 不推）；
+1. **push**：本地 21 个 commit 需要用户执行 `git push`（AI 不推）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；

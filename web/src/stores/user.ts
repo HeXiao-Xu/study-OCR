@@ -1,29 +1,67 @@
 /**
- * 用户状态：token 与当前用户。
+ * 用户状态：token / refresh token / 当前用户 / 角色与能力。
  *
- * token 存 **localStorage**（决定已记入 docs/DECISIONS.md D-021）。
- * 为什么不是 httpOnly Cookie：前后端分离 + 跨域开发时 Cookie 要处理 SameSite/Secure/CORS 携带，
- * 毕设阶段成本高；localStorage 的代价是"XSS 可读"，所以要求**所有动态内容走 Vue 插值**（天然转义），
- * 禁止 `v-html` 渲染用户可控内容。S4 讨论私钥存储时会引用这条结论。
+ * 存储决定见 D-021：access+refresh 都放 **localStorage**（前后端分离、开发跨域最简单），
+ * 代价是 XSS 可读——所以全项目要求动态内容只走 Vue 插值，禁止 `v-html`。
+ *
+ * 这里只做状态；`/auth/me` 水合放在路由守卫（避免 store 反向 import api 造成循环依赖）。
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import type { UserInfo } from '../types/api'
+import type { UserInfo, UserRole } from '../types/api'
+import type { LoginData } from '../types/auth'
 
 export const TOKEN_KEY = 'study_ocr_token'
+export const REFRESH_KEY = 'study_ocr_refresh'
 export const USER_KEY = 'study_ocr_user'
+
+/** 角色 → 能力清单。菜单用它只是体验，**最终裁决永远在后端**（AGENTS §10.7）。 */
+export const ROLE_PERMISSIONS: Record<UserRole, readonly string[]> = {
+  submitter: [
+    'invoice:read:own',
+    'invoice:upload',
+    'invoice:field:edit:non_amount',
+    'report:create',
+    'report:sign',
+    'report:submit',
+  ],
+  reviewer: [
+    'invoice:read:all',
+    'invoice:field:edit:amount',
+    'report:read:submitted',
+    'finance:review',
+    'finance:verify',
+  ],
+  admin: [
+    'template:read',
+    'template:write',
+    'rule:write',
+    'cert:manage',
+    'audit:read',
+    'user:manage',
+  ],
+}
 
 export const useUserStore = defineStore('user', () => {
   const token = ref<string>(localStorage.getItem(TOKEN_KEY) ?? '')
+  const refreshToken = ref<string>(localStorage.getItem(REFRESH_KEY) ?? '')
   const user = ref<UserInfo | null>(readUser())
 
   const isAuthenticated = computed(() => token.value !== '')
-  const role = computed(() => user.value?.role ?? null)
+  const role = computed<UserRole | null>(() => user.value?.role ?? null)
+  const permissions = computed<readonly string[]>(() =>
+    role.value ? ROLE_PERMISSIONS[role.value] : [],
+  )
 
-  function setToken(value: string): void {
+  function setAccessToken(value: string): void {
     token.value = value
     localStorage.setItem(TOKEN_KEY, value)
+  }
+
+  function setRefreshToken(value: string): void {
+    refreshToken.value = value
+    localStorage.setItem(REFRESH_KEY, value)
   }
 
   function setUser(value: UserInfo | null): void {
@@ -35,15 +73,45 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
-  /** 清空会话（401 时由 http 拦截器调用，登出时手动调用） */
+  /** 登录成功后一次性写入 access/refresh/user。 */
+  function setSession(data: LoginData): void {
+    setAccessToken(data.access_token)
+    setRefreshToken(data.refresh_token)
+    setUser(data.user)
+  }
+
   function clear(): void {
     token.value = ''
+    refreshToken.value = ''
     user.value = null
     localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(REFRESH_KEY)
     localStorage.removeItem(USER_KEY)
   }
 
-  return { token, user, isAuthenticated, role, setToken, setUser, clear }
+  function hasRole(...roles: UserRole[]): boolean {
+    return role.value !== null && roles.includes(role.value)
+  }
+
+  function hasPermission(code: string): boolean {
+    return permissions.value.includes(code)
+  }
+
+  return {
+    token,
+    refreshToken,
+    user,
+    isAuthenticated,
+    role,
+    permissions,
+    setAccessToken,
+    setRefreshToken,
+    setUser,
+    setSession,
+    clear,
+    hasRole,
+    hasPermission,
+  }
 })
 
 function readUser(): UserInfo | null {
