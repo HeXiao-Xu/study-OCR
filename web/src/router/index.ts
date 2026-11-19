@@ -12,6 +12,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { fetchMe } from '../api/auth'
 import { useUserStore } from '../stores/user'
 import type { UserRole } from '../types/api'
+import { landingFor } from '../utils/landing'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -152,6 +153,10 @@ router.beforeEach(async (to) => {
 
   if (to.meta.roles?.length && user.role && !to.meta.roles.includes(user.role)) {
     return { path: '/403' }
+  }
+  // 概览不再作为落地页：登录后直接进角色工作页
+  if (to.path === '/' && user.role) {
+    return { path: landingFor(user.role) }
   }
   return true
 })

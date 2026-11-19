@@ -232,11 +232,19 @@ onBeforeUnmount(() => {
 
 <template>
   <el-space direction="vertical" fill size="large" class="upload-page">
+    <div class="page-heading">
+      <div>
+        <h2>上传票据</h2>
+        <p>拖拽或选择票据影像，上传成功后自动排队识别。</p>
+      </div>
+      <span class="heading-hint">单文件 ≤ {{ MAX_UPLOAD_MB }}MB · 一次最多 {{ MAX_FILES }} 个</span>
+    </div>
+
     <el-card shadow="never">
       <template #header>
         <div class="card-header">
-          <span>上传票据</span>
-          <span class="card-sub">一次最多 {{ MAX_FILES }} 个；单文件 ≤ {{ MAX_UPLOAD_MB }}MB</span>
+          <span>选择文件</span>
+          <span class="card-sub">JPG / PNG / PDF；后端会按魔数复核</span>
         </div>
       </template>
 
@@ -253,8 +261,9 @@ onBeforeUnmount(() => {
         class="uploader"
       >
         <div class="drop-zone">
+          <div class="drop-icon">↑</div>
           <div class="drop-title">把票据拖到这里，或点击选择文件</div>
-          <div class="drop-sub">JPG / PNG / PDF；后端会按魔数复核，改扩展名会被拒</div>
+          <div class="drop-sub">改扩展名会被后端的魔数校验拒绝</div>
         </div>
       </el-upload>
 
@@ -262,8 +271,8 @@ onBeforeUnmount(() => {
         type="info"
         :closable="false"
         show-icon
-        title="上传后会自动排队识别"
-        description="表格里跟踪每个文件的进度与识别状态；轮询最多 120 秒，超时会提示到详情页查看。"
+        title="上传后自动排队识别"
+        description="表格里跟踪进度与识别状态；轮询最多 120 秒，超时会提示到详情页查看。"
         class="upload-alert"
       />
     </el-card>
@@ -355,6 +364,11 @@ onBeforeUnmount(() => {
   max-width: 1080px;
   margin: 0 auto;
 }
+.heading-hint {
+  font-size: 12px;
+  color: var(--app-muted);
+  white-space: nowrap;
+}
 .card-header {
   display: flex;
   align-items: baseline;
@@ -368,13 +382,43 @@ onBeforeUnmount(() => {
 .uploader {
   width: 100%;
 }
+.uploader :deep(.el-upload) {
+  width: 100%;
+}
+.uploader :deep(.el-upload-dragger) {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px dashed #cbd5e1;
+  background: #fbfcfe;
+  padding: 0;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease;
+}
+.uploader :deep(.el-upload-dragger:hover) {
+  border-color: var(--app-brand);
+  background: #f5f8ff;
+}
 .drop-zone {
-  padding: 28px 16px;
+  padding: 40px 16px;
   text-align: center;
+}
+.drop-icon {
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #e8f0ff;
+  color: #1d4ed8;
+  font-size: 22px;
+  font-weight: 600;
 }
 .drop-title {
   font-size: 15px;
   color: var(--el-text-color-regular);
+  font-weight: 550;
 }
 .drop-sub {
   margin-top: 6px;

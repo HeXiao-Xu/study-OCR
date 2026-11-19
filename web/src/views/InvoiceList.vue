@@ -10,6 +10,7 @@ import { useRoute, useRouter, type LocationQueryValue } from 'vue-router'
 
 import { listInvoices } from '../api/invoices'
 import { ApiError } from '../api/http'
+import { useUserStore } from '../stores/user'
 import type {
   ExtractStatus,
   InvoiceListParams,
@@ -30,6 +31,7 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+const store = useUserStore()
 
 const filters = reactive({
   status: '',
@@ -197,14 +199,15 @@ watch(
 
 <template>
   <el-space direction="vertical" fill size="large" class="list-page">
-    <el-card shadow="never">
-      <template #header>
-        <div class="card-header">
-          <span>票据列表</span>
-          <span class="card-sub">共 {{ total }} 张</span>
-        </div>
-      </template>
+    <div class="page-heading">
+      <div>
+        <h2>{{ store.role === 'reviewer' ? '票据查询' : '我的票据' }}</h2>
+        <p>筛选条件会同步到地址栏，刷新或后退不会丢。</p>
+      </div>
+      <span class="heading-total">共 {{ total }} 张</span>
+    </div>
 
+    <el-card shadow="never">
       <div class="filters">
         <el-input
           v-model="filters.q"
@@ -339,20 +342,15 @@ watch(
   max-width: 1200px;
   margin: 0 auto;
 }
-.card-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-}
-.card-sub {
+.heading-total {
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: var(--app-muted);
 }
 .filters {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 .filter-q {
   width: 220px;

@@ -208,6 +208,13 @@ watch(invoiceId, () => {
     </el-result>
 
     <template v-else-if="detail">
+      <div class="page-heading">
+        <div>
+          <h2>票据详情</h2>
+          <p>核对识别字段；草稿态可修改，金额字段仅审核人可改并留痕。</p>
+        </div>
+      </div>
+
       <el-card shadow="never">
         <template #header>
           <div class="card-header">
@@ -387,8 +394,13 @@ watch(invoiceId, () => {
 }
 .detail-grid {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 340px minmax(0, 1fr);
   gap: 16px;
+  align-items: start;
+}
+.preview-card {
+  position: sticky;
+  top: 16px;
 }
 @media (max-width: 960px) {
   .detail-grid {

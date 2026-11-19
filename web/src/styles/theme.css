@@ -1,0 +1,98 @@
+/* 全局视觉基线：只放跨页面的底色、字体、圆角与 Element Plus 轻量覆盖。
+   组件自己的布局仍写在 scoped style 里，避免这里变成一锅样式汤。 */
+
+:root {
+  --app-bg: #f4f6fa;
+  --app-card-radius: 10px;
+  --app-sidebar: #0f172a;
+  --app-sidebar-soft: #16213a;
+  --app-brand: #2563eb;
+  --app-text: #0f172a;
+  --app-muted: #64748b;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--app-bg);
+  color: var(--app-text);
+  font-family:
+    'Inter', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui, -apple-system,
+    'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* 滚动条细一点，后台页面信息密度高时更干净 */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.el-card {
+  border-radius: var(--app-card-radius);
+  border-color: #e6eaf2;
+}
+
+.el-card__header {
+  font-weight: 600;
+}
+
+.el-button {
+  border-radius: 8px;
+}
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  border-radius: 8px;
+}
+
+.el-table th.el-table__cell {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 600;
+}
+
+.el-table {
+  --el-table-border-color: #edf1f7;
+}
+
+/* 页面级统一标题 */
+.page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.page-heading h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+.page-heading p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--app-muted);
+}
+
+.text-muted {
+  color: var(--app-muted);
+}

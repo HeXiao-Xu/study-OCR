@@ -1,7 +1,7 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-19（S2-12 完成，阶段 2 收口）
+> 最后更新：2026-11-19（S2 收口 + 第一版 UI 整理）
 
 ## 1. 一句话现状
 
@@ -43,6 +43,7 @@ backend/app/api/v1/{invoices,files,templates}.py + schemas/{invoice,template}.py
 web/src/api/{http,auth,files,invoices}.ts + stores/user.ts + router + layout/MainLayout.vue  ← 会话/刷新/上传/轮询
 web/src/views/{Login,Forbidden,Placeholder,Upload,InvoiceList,InvoiceDetail}.vue  ← 登录/403/占位/上传/列表/详情
 web/src/utils/format.ts + types/invoice.ts  ← 金额/时间/标签 + 完整票据类型
+web/src/styles/theme.css + utils/landing.ts  ← 全局视觉基线 + 登录后角色落地
 scripts/bench_list.py               ← S2-4：5 万行 p50/p95 + EXPLAIN ANALYZE（临时库，跑完自删）
 backend/app/ocr/          ← S1 的全部产出
   preprocess.py             预处理（EXIF→定位→透视/降级→去斜→照度→印章）+ needs_retake
@@ -93,10 +94,10 @@ cd /e/BiSheXZY/study-OCR
 curl -s -F "file=@票据.jpg" localhost:8000/api/v1/invoices/upload -H "Authorization: Bearer <token>"
 # 前端（Vite 5173 + 无头 Edge 9222）：类型检查/构建 + 真实登录冒烟（需要先起后端）
 (cd web && npm run typecheck && npm run build)
-node scripts/ui_smoke.mjs "http://127.0.0.1:5173/login" --clear \
+node scripts/ui_smoke.mjs "http://127.0.0.1:5173/login" --clear --view 1440x900 \
   --fill 'input[autocomplete="username"]' <用户名> \
   --fill 'input[autocomplete="current-password"]' <口令> \
-  --click 登录 --expect 我的票据
+  --click 登录 --expect 我的票据 --shot ui.png
 # 上传页冒烟（先登录，再直接打开 /upload；--upload 走 CDP 塞文件）
 node scripts/ui_smoke.mjs "http://127.0.0.1:5173/upload" \
   --upload 'input[type=file]' 'E:\BiSheXZY\study-OCR\samples\synth_v1\vat_digital_landscape_001.jpg' \
@@ -150,6 +151,7 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-048 | 上传页：轮询用 `GET /invoices/{id}`（`ocr-status` 待 S3-1）；串行上传；409 绿色去重；上限 20MB；批量不自动跳详情 |
 | D-049 | 列表筛选以 `route.query` 为唯一状态源；详情影像用占位"待 S3-5"；字段编辑权限/金额确认/乐观锁；补 `vat_digital` 筛选漏项 |
 | D-050 | APScheduler 3.11.1 进程内调度；每 tick 抢 Redis 锁，**成功后锁留到 TTL**（1h < 每日）做时段去重，失败释放；文档对账测试 |
+| D-051 | 第一版 UI：分栏登录、深色侧栏、移除概览/联调菜单、按角色落地；不改业务逻辑，详情工作区仍等 S3-5 |
 
 ## 7. 下一步：S3-1 OCR Worker 串起全链路（阶段 3 开始）
 

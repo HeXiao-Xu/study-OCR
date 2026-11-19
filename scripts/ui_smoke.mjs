@@ -8,16 +8,19 @@
  *
  * 用法（先起后端 8000 与前端 5173，再起一个带调试端口的 Edge）：
  *   "msedge.exe" --headless=new --remote-debugging-port=9222 --user-data-dir=<临时目录> about:blank &
- *   node scripts/ui_smoke.mjs <url> [--expect 关键字]... [--click 按钮文字] [--eval "<js>"]
+ *   node scripts/ui_smoke.mjs <url> [--expect 关键字]... [--click 按钮文字] [--fill 选择器 值]
+ *        [--view 1440x900] [--shot out.png] [--steps JSON]
  *
  * 例：
- *   node scripts/ui_smoke.mjs http://127.0.0.1:5173/ --expect 登录 --expect S0-6
+ *   node scripts/ui_smoke.mjs http://127.0.0.1:5173/ --expect 登录
  *   node scripts/ui_smoke.mjs "http://127.0.0.1:5173/debug?dev_token=smoke" --expect 后端连通性
  *   node scripts/ui_smoke.mjs ".../debug?dev_token=smoke" --click "触发一个 404" --expect 资源不存在
  *   node scripts/ui_smoke.mjs ".../debug?dev_token=smoke" --eval "[...document.querySelectorAll('.el-tag')].map(t=>t.innerText)"
  *
  * 退出码：0 断言全过；1 有失败。
  */
+
+import { writeFileSync } from 'node:fs'
 
 const CDP_PORT = process.env.CDP_PORT || '9222'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -37,11 +40,22 @@ const uploads = []
 const steps = []
 let graceMs = 2500 // 页面导航后先等异步请求落地，再断言（健康检查最长 2s 超时）
 let clearStorage = false
+let viewport = null
+let shotPath = null
 for (let i = 1; i < argv.length; i += 1) {
   const flag = argv[i]
   const value = argv[i + 1]
   if (flag === '--clear') {
     clearStorage = true
+  } else if (flag === '--shot') {
+    if (!value) throw new Error('--shot 需要输出文件路径')
+    shotPath = value
+    i += 1
+  } else if (flag === '--view') {
+    const match = /^(\d+)x(\d+)$/.exec(value || '')
+    if (!match) throw new Error('--view 需要 WIDTHxHEIGHT，例如 1440x900')
+    viewport = { width: Number(match[1]), height: Number(match[2]) }
+    i += 1
   } else if (flag === '--steps') {
     const parsed = JSON.parse(value)
     if (!Array.isArray(parsed)) throw new Error('--steps 需要 JSON 数组')
@@ -149,6 +163,14 @@ async function main() {
   await send(ws, 'Runtime.enable')
   await send(ws, 'Log.enable')
   await send(ws, 'Page.enable')
+  if (viewport) {
+    await send(ws, 'Emulation.setDeviceMetricsOverride', {
+      width: viewport.width,
+      height: viewport.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+    })
+  }
   await send(ws, 'Page.navigate', { url })
 
   // 同一浏览器 profile 会保留上一个角色的 localStorage；需要干净会话时先清再重载
@@ -269,6 +291,12 @@ for (const text of clicks) {
 
   const location = await evaluate(ws, 'location.pathname + location.search')
   console.log('URL      :', location)
+
+  if (shotPath) {
+    const shot = await send(ws, 'Page.captureScreenshot', { format: 'png' })
+    writeFileSync(shotPath, Buffer.from(shot.data, 'base64'))
+    console.log('截图      :', shotPath)
+  }
   console.log('正文长度 :', bodyText.length)
   console.log('--- 正文（前 800 字）---')
   console.log(bodyText.slice(0, 800))

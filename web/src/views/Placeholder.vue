@@ -12,13 +12,26 @@ const plan = computed(() => route.meta.placeholder ?? '后续任务')
 </script>
 
 <template>
-  <el-result
-    icon="info"
-    :title="`${title}（待实现）`"
-    :sub-title="`该页面计划在 ${plan} 实现；当前版本只完成登录与主框架。`"
-  >
-    <template #extra>
-      <router-link to="/">回概览</router-link>
-    </template>
-  </el-result>
+  <div class="placeholder-page">
+    <div class="page-heading">
+      <div>
+        <h2>{{ title }}</h2>
+        <p>该模块在后续任务卡实现。</p>
+      </div>
+    </div>
+    <el-card shadow="never">
+      <el-result
+        icon="info"
+        :title="`${title}（待实现）`"
+        :sub-title="`计划在 ${plan} 实现；当前版本只完成登录、上传、票据列表与详情。`"
+      />
+    </el-card>
+  </div>
 </template>
+
+<style scoped>
+.placeholder-page {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+</style>
