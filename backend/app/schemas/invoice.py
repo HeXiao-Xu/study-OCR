@@ -104,7 +104,12 @@ class InvoiceListQuery(PageParams):
     status: Literal["draft", "confirmed", "in_report", "archived", "void"] | None = None
     extract_status: Literal["raw", "need_confirm", "confirmed"] | None = None
     invoice_type: Literal[
-        "vat_general", "train_ticket", "flight_itinerary", "taxi_ticket", "unknown"
+        "vat_general",
+        "vat_digital",
+        "train_ticket",
+        "flight_itinerary",
+        "taxi_ticket",
+        "unknown",
     ] | None = None
     q: str | None = Field(default=None, max_length=100, description="发票号/销售方名称子串")
     date_from: date | None = None

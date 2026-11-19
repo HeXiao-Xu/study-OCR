@@ -25,6 +25,7 @@ interface MenuItem {
 const MENU: MenuItem[] = [
   { path: '/', label: '概览' },
   { path: '/invoices', label: '我的票据', roles: ['submitter'] },
+  { path: '/invoices', label: '票据查询', roles: ['reviewer'] },
   { path: '/upload', label: '上传票据', roles: ['submitter'] },
   { path: '/review', label: '待核对', roles: ['reviewer'] },
   { path: '/finance/pending', label: '待审核', roles: ['reviewer'] },

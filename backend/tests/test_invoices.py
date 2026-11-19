@@ -275,6 +275,12 @@ def test_list_filters(client, session_factory, actors) -> None:
     )
     confirmed = _make_invoice(session_factory, actors["alice"].id)
     _set_status(session_factory, confirmed, "confirmed")
+    digital = _make_invoice(
+        session_factory,
+        actors["alice"].id,
+        invoice_no="77777777",
+        invoice_type="vat_digital",
+    )
 
     cases = [
         ("q=8888", {target}),
@@ -282,8 +288,9 @@ def test_list_filters(client, session_factory, actors) -> None:
         ("date_from=2026-01-01", {target}),
         ("date_to=2025-12-31", {other}),
         ("invoice_type=vat_general", {target}),
-        ("extract_status=raw", {target, other, confirmed}),
-        ("status=draft", {target, other}),
+        ("invoice_type=vat_digital", {digital}),
+        ("extract_status=raw", {target, other, confirmed, digital}),
+        ("status=draft", {target, other, digital}),
     ]
     for query, expected in cases:
         response = client.get(f"{BASE}?{query}", headers=_auth(actors["alice"]))

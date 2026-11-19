@@ -936,3 +936,29 @@
   上传真实 JPEG → 行 "失败 / 识别失败：TaskNotReadyError: OCR 流水线未接入（S3-1）"（S2-7 的真实行为）；
   同文件重传 → "已上传 / 该票据已上传 + 查看链接"（无红色全局错误）；`.txt` → 本地拒绝"只支持 JPG/PNG/PDF"；
   `smoke.py` 9 OK / 0 FAIL；测试用户/票据/MinIO 对象/Redis key 已清理。
+
+---
+
+## D-049 票据列表/详情：URL 作为筛选唯一状态源；影像预览占位；字段编辑规则
+
+- **日期**：2026-11-19（S2-11，预览方案 A）
+- **背景**：S2-11 要列表筛选/翻页、详情字段核对与草稿编辑；`GET /invoices/{id}/image` 依赖 S4 信封/解密
+  （API 标 S3-5/S5-4），当前未实现。
+- **决策**：
+  1. **列表筛选以 `route.query` 为唯一状态源**：控件改 query，`watch(route.query)` 统一拉数据；
+     刷新/前进后退/分享链接都能还原筛选，不需要两套状态互相同步。
+  2. **影像预览用占位**：详情左侧展示文件名/MIME/大小/sha256 前 12 位 + "影像预览待 S3-5（加密信封落地后）"；
+     **不**临时加明文下载接口（会绕过 S4 的安全边界），S3-5 落地后替换预览组件。
+  3. **字段编辑规则**：仅 `status=draft` 且 `extract_status ∈ {raw, need_confirm}`；submitter 只能改非金额字段；
+     reviewer 改金额必须勾选"确认修改金额"（`confirm_amount=true`）；保存带 `version` 乐观锁，
+     失败 40900 自动刷新详情并提示，42201 保留用户输入并展示后端原因。
+  4. **后端补漏**：`InvoiceListQuery.invoice_type` 的 Literal 漏了 `vat_digital`（S2-8 已加票种），补上并加
+     `invoice_type=vat_digital` 列表用例（此前会 422）。
+  5. **reviewer 菜单增加"票据查询"**：审核人需要进入全量列表；submitter 仍是"我的票据"。
+- **理由**：URL 单一状态源是筛选页最不容易漂移的做法；预览必须等加密链路，不能为了演示开明文后门。
+- **代价**：预览暂不可用；字段中文标签/票种文案维护在前端（新增字段需两边同步）；编辑只覆盖字段值，
+  不做冲突候选选择（S3-5/S3-6）。
+- **验证**：`npm run typecheck` / `npm run build`；后端 `pytest`（含新增 vat_digital 用例）；
+  后端 + Vite + 无头 Edge：列表 → 详情 → 编辑 buyer_name → 保存 → 页面刷新可见，
+  DB `buyer_name` 更新、`confirmed=true`、`source=manual`、`version 0→1`；reviewer 登录菜单"票据查询"且能看全量；
+  `?status=draft&invoice_type=vat_digital` 刷新后 URL 与结果一致；`smoke.py` 9 OK；测试数据/MinIO/Redis 已清理。

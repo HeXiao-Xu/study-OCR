@@ -34,6 +34,7 @@ const clicks = []
 const evals = []
 const fills = []
 const uploads = []
+const steps = []
 let graceMs = 2500 // 页面导航后先等异步请求落地，再断言（健康检查最长 2s 超时）
 let clearStorage = false
 for (let i = 1; i < argv.length; i += 1) {
@@ -41,6 +42,11 @@ for (let i = 1; i < argv.length; i += 1) {
   const value = argv[i + 1]
   if (flag === '--clear') {
     clearStorage = true
+  } else if (flag === '--steps') {
+    const parsed = JSON.parse(value)
+    if (!Array.isArray(parsed)) throw new Error('--steps 需要 JSON 数组')
+    steps.push(...parsed)
+    i += 1
   } else if (flag === '--upload') {
     const selector = argv[i + 1]
     const filePath = argv[i + 2]
@@ -157,7 +163,7 @@ async function main() {
   await sleep(graceMs)
   const deadline = Date.now() + 15000
   let bodyText = ''
-  if (!fills.length && !clicks.length && !uploads.length) {
+  if (!fills.length && !clicks.length && !uploads.length && !steps.length) {
     while (Date.now() < deadline) {
       bodyText = (await evaluate(ws, 'document.body ? document.body.innerText : ""')) ?? ''
       if (!expects.length) break
@@ -199,6 +205,43 @@ for (const { selector, file } of uploads) {
   await sleep(1500)
 }
 
+// 有序动作：先点"编辑字段"，再填输入框，再点"保存修改"这类多步交互只能靠它
+for (const step of steps) {
+  if (step.type === 'click') {
+    const result = await evaluate(
+      ws,
+      `(() => {
+        const btn = [...document.querySelectorAll('button')].find((b) => b.innerText.includes(${JSON.stringify(step.value)}));
+        if (!btn) return 'NOT_FOUND';
+        btn.click();
+        return 'CLICKED';
+      })()`,
+    )
+    if (result !== 'CLICKED') throw new Error(`没找到按钮：${step.value}`)
+    console.log(`[step] 点击：${step.value}`)
+    await sleep(1200)
+  } else if (step.type === 'fill') {
+    const result = await evaluate(
+      ws,
+      `(() => {
+        const el = document.querySelector(${JSON.stringify(step.selector)});
+        if (!el) return 'NOT_FOUND';
+        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(step.value ?? '')});
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return 'FILLED';
+      })()`,
+    )
+    if (result !== 'FILLED') throw new Error(`没找到输入框：${step.selector}`)
+    console.log(`[step] 填写：${step.selector}`)
+    await sleep(300)
+  } else if (step.type === 'wait') {
+    await sleep(Number(step.ms) || 1000)
+  } else {
+    throw new Error(`未知 step 类型：${step.type}`)
+  }
+}
+
 for (const text of clicks) {
     const result = await evaluate(
       ws,
@@ -216,7 +259,7 @@ for (const text of clicks) {
   }
 
   // 动作（填表/上传/点击）后再轮询关键字，给异步请求留时间
-  if (fills.length || clicks.length || uploads.length) {
+  if (fills.length || clicks.length || uploads.length || steps.length) {
     while (Date.now() < deadline) {
       bodyText = (await evaluate(ws, 'document.body ? document.body.innerText : ""')) ?? ''
       if (!expects.length || expects.every((k) => bodyText.includes(k))) break

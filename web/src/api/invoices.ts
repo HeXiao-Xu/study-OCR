@@ -1,6 +1,13 @@
-/** 票据读接口（S2-10 的轮询用；S2-11 复用）。 */
-import { get, unwrap } from './http'
-import type { InvoiceDetail, OcrStatus } from '../types/invoice'
+/** 票据读/写接口（S2-11；轮询在 S2-10 已加）。 */
+import { get, patch, unwrap } from './http'
+import type {
+  InvoiceDetail,
+  InvoiceFieldsUpdateData,
+  InvoiceFieldsUpdateRequest,
+  InvoiceListData,
+  InvoiceListParams,
+  OcrStatus,
+} from '../types/invoice'
 
 const TERMINAL_STATUSES = new Set<OcrStatus>(['succeeded', 'failed'])
 const START_DELAY_MS = 3000
@@ -9,8 +16,29 @@ const TOTAL_TIMEOUT_MS = 120_000
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+export async function listInvoices(params: InvoiceListParams = {}): Promise<InvoiceListData> {
+  const query: Record<string, string | number> = {}
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== '') {
+      query[key] = value as string | number
+    }
+  }
+  const envelope = await get<InvoiceListData>('/invoices', { params: query, silent: true })
+  return unwrap(envelope)
+}
+
 export async function getInvoiceDetail(invoiceId: number): Promise<InvoiceDetail> {
   const envelope = await get<InvoiceDetail>(`/invoices/${invoiceId}`, { silent: true })
+  return unwrap(envelope)
+}
+
+export async function updateInvoiceFields(
+  invoiceId: number,
+  payload: InvoiceFieldsUpdateRequest,
+): Promise<InvoiceFieldsUpdateData> {
+  const envelope = await patch<InvoiceFieldsUpdateData>(`/invoices/${invoiceId}/fields`, payload, {
+    silent: true,
+  })
   return unwrap(envelope)
 }
 

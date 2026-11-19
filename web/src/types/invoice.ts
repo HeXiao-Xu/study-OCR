@@ -1,5 +1,16 @@
 /** 票据相关类型（与后端 `schemas/invoice.py` 对齐，字段名一律 snake_case）。 */
 
+export type InvoiceStatus = 'draft' | 'confirmed' | 'in_report' | 'archived' | 'void'
+export type ExtractStatus = 'raw' | 'need_confirm' | 'confirmed'
+export type OcrStatus = 'pending' | 'running' | 'succeeded' | 'failed'
+export type InvoiceType =
+  | 'vat_general'
+  | 'vat_digital'
+  | 'train_ticket'
+  | 'flight_itinerary'
+  | 'taxi_ticket'
+  | 'unknown'
+
 export interface UploadDedup {
   hit: boolean
   invoice_id: number | null
@@ -16,8 +27,6 @@ export interface UploadData {
   dedup: UploadDedup
 }
 
-export type OcrStatus = 'pending' | 'running' | 'succeeded' | 'failed'
-
 export interface LatestJob {
   job_id: number
   stage: string
@@ -27,18 +36,106 @@ export interface LatestJob {
   error: string | null
 }
 
-/** GET /invoices/{id} 里轮询需要的最小字段。 */
-export interface InvoiceSummary {
+/** GET /invoices/{id} 的 invoice 部分（含 join 出来的文件元数据）。 */
+export interface InvoiceOut {
   id: number
-  invoice_type: string
-  status: string
-  ocr_status: OcrStatus
-  extract_status: string
+  uploader_id: number
+  template_id: number | null
+  invoice_type: InvoiceType
+  status: InvoiceStatus
+  version: number
+  created_at: string
+  updated_at: string
+
+  invoice_code: string | null
+  invoice_no: string | null
+  invoice_date: string | null
+  buyer_name: string | null
+  buyer_tax_no: string | null
+  seller_name: string | null
+  seller_tax_no: string | null
+  amount: string | null
+  tax_amount: string | null
   total_amount: string | null
+  check_code: string | null
+  ocr_status: OcrStatus
+  extract_status: ExtractStatus
+  overall_confidence: string | number | null
+  quality_flag: string | null
+  duplicate_of: number | null
+
+  file_id: number
+  filename: string
+  sha256: string
+  mime: string
+  size: number
+  page_count: number
+}
+
+export interface InvoiceField {
+  id: number
+  invoice_id: number
+  field_name: string
+  field_value: string | null
+  normalized_value: string | null
+  raw_text: string | null
+  confidence: string | number | null
+  bbox: number[] | null
+  source: string
+  source_page_no: number
+  source_line_no: number | null
+  rule_id: number | null
+  need_review: boolean
+  conflict: boolean
+  conflict_value: string | null
+  confirmed: boolean
+  updated_by: number | null
+  updated_at: string
 }
 
 export interface InvoiceDetail {
-  invoice: InvoiceSummary
-  fields: unknown[]
+  invoice: InvoiceOut
+  fields: InvoiceField[]
   latest_job: LatestJob | null
+}
+
+export interface InvoiceListData {
+  items: InvoiceOut[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface InvoiceListParams {
+  status?: InvoiceStatus
+  extract_status?: ExtractStatus
+  invoice_type?: InvoiceType
+  q?: string
+  date_from?: string
+  date_to?: string
+  page?: number
+  page_size?: number
+  sort_by?: 'created_at' | 'invoice_date' | 'total_amount'
+  order?: 'asc' | 'desc'
+}
+
+export interface FieldUpdateItem {
+  field_name: string
+  value: string
+  confirm?: boolean
+}
+
+export interface InvoiceFieldsUpdateRequest {
+  version: number
+  fields: FieldUpdateItem[]
+  confirm_amount?: boolean
+}
+
+export interface InvoiceFieldsUpdateData {
+  invoice_id: number
+  version: number
+  status: InvoiceStatus
+  updated: Array<{ field_name: string; before: string | null; after: string }>
+  needs_confirm: string[]
+  conflicts: Array<{ field_name: string; reason: string; expected?: string | null; actual?: string | null }>
 }

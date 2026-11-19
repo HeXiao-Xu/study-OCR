@@ -54,8 +54,14 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'invoices',
         name: 'invoices',
-        component: Placeholder,
-        meta: { title: '我的票据', roles: ['submitter', 'reviewer'], placeholder: 'S2-11' },
+        component: () => import('../views/InvoiceList.vue'),
+        meta: { title: '票据列表', roles: ['submitter', 'reviewer'] },
+      },
+      {
+        path: 'invoices/:id',
+        name: 'invoice-detail',
+        component: () => import('../views/InvoiceDetail.vue'),
+        meta: { title: '票据详情', roles: ['submitter', 'reviewer'] },
       },
       {
         path: 'upload',
