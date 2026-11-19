@@ -99,6 +99,22 @@ class ValidationFailedError(AppError):
     message = "参数校验失败"
 
 
+class UnresolvedConflictError(AppError):
+    """字段修改后仍存在未决冲突（金额和/日期/号码等），事务已回滚。"""
+
+    code = 42201
+    http_status = 422
+    message = "字段仍存在未决冲突"
+
+
+class FieldConfirmationRequiredError(AppError):
+    """修改金额类字段必须带 confirm_amount=true（D-017）。"""
+
+    code = 42202
+    http_status = 422
+    message = "修改金额字段需要二次确认（confirm_amount=true）"
+
+
 class ServiceUnavailableError(AppError):
     code = 50300
     http_status = 503

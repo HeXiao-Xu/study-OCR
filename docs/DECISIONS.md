@@ -764,3 +764,34 @@
   排序方向、可见性组合、2 条 SQL 的 N+1 断言、HTTP 422 边界）；
   `scripts/bench_list.py --rows 50000 --iterations 50`：四组 p95 = **15.9 / 25.4 / 21.9 / 32.3 ms**，
   `EXPLAIN ANALYZE` 走 `Index Scan using ix_invoices_uploader_created`。
+
+---
+
+## D-043 票据 CRUD：状态机按 D-011、建票不设 HTTP 口、字段修改提前按契约实现
+
+- **日期**：2026-11-19（S2-5）
+- **背景**：任务卡 S2-5 与契约有三处不一致：
+  ① 状态图写的是 `draft → ocr_pending → ocr_done → confirmed → signed → submitted → approved|rejected → archived`；
+  ② 要求 `POST /invoices` 建草稿、`PATCH /invoices/{id}` 修改，但 API.md 没有这两条；
+  ③ 要求 `PUT /invoices/{id}/fields`，API.md 是 `PATCH /invoices/{id}/fields`（标注 S3-6）。
+- **决策**：
+  1. **状态机以 D-011 / SCHEMA / API.md 为准**：`invoices.status` 只有
+     `draft / confirmed / in_report / archived / void`；`ocr_pending/ocr_done/signed/submitted/approved/rejected`
+     分别是 `ocr_status` 与 `report_forms.status` 的值，**不混入**。`transition()` 是唯一迁移入口，
+     非法迁移 409 并带当前状态；`ocr_status` 由 Worker（S3-1）单独维护。
+  2. **建票不新增 HTTP 接口**：契约里建票是 `POST /invoices/upload`（S2-6，含 sha256 去重/信封/MinIO）。
+     S2-5 只提供内部 `create_draft()`，S2-6 上传成功后调用；不在契约外造 `POST /invoices`。
+  3. **字段修改按契约的 `PATCH /invoices/{id}/fields` 实现**（任务卡的 `PUT /{id}/fields` 视为旧稿）。
+     行为（乐观锁、D-017 权限矩阵、`confirm_amount`、42201/42202、`source=manual`）在 S2-5 落地，
+     S3-6 只在此基础上补整单复核与审计；不新增 `PATCH /invoices/{id}`。
+  4. **admin 列表 404 在入口判断**：仓库层对 admin 给空谓词（安全默认），但契约要求 404，
+     由 `invoice_service.list_invoices` 在查询前拒绝，不把"空列表"当"无权限"。
+  5. **42201 的语义**：字段修改后若交叉校验仍有未决冲突，**整次修改回滚**（不半提交），
+     返回 42201；成功时 `conflicts` 必为空。较严，但符合契约字面；S3-6 若要放宽须先改 API.md。
+- **理由**：契约是前后端唯一依据（AGENTS §9）；状态机混值会让前端、报表与审计同时错位；
+  内部 factory 既满足 S2-6 的调用需要，又不制造一个"上传之外还能凭空建票"的入口（安全面更小）。
+- **代价**：S2-5 的验收链路只能通过 TestClient 走"内部建单 → PATCH → 详情"，真正的 HTTP 建单要等 S2-6；
+  字段修改与 S3-6 有重叠，S3-6 必须复用本卡实现而不是重写。
+- **验证**：`tests/test_invoices.py` 31 条（三权限列表/筛选/分页、详情 fields/latest_job、软删幂等与 409、
+  void 释放唯一索引、状态机合法路径/非法跳转/版本冲突、字段修改 200/403/42202/409/42200/42201 与回滚、
+  确认标记、建单→改字段→查详情链路）；`pytest 310 passed`、`pytest -m integration 118 passed`。

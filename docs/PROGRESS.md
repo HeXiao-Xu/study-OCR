@@ -6,15 +6,15 @@
 
 ## 当前状态
 
-- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-4 已完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-4**（共 17 张卡，全部 ✅ 通过）
-- 最近完成：**S2-4 分页、筛选与排序**（统一 `PageParams/PageResult` + 白名单排序 + 同一 stmt count；5 万行 p95 ≤ **32.3ms**；`pytest 310 passed`，集成 87 条）
-- 下一步：**S2-5 票据表与 CRUD**（`invoices` / `invoice_files`；状态机 + 软删 + 接入隔离与分页；契约见 `docs/API.md` §2）
+- 阶段：**阶段 2（基础框架，M1）进行中**（S2-1 ~ S2-5 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-5**（共 18 张卡，全部 ✅ 通过）
+- 最近完成：**S2-5 票据 CRUD**（列表/详情/软删/状态机/字段修改；`pytest 310 passed`，集成 118 条）
+- 下一步：**S2-6 文件上传 + MinIO + sha256 去重**（上传链路 + 调用 `create_draft`；契约见 `docs/API.md` §2）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
-  - 本地领先 origin **16 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **17 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -41,7 +41,7 @@
 [x] S2-2 JWT 认证 + RBAC 三角色 ★关键
 [x] S2-3 行级数据隔离
 [x] S2-4 分页、筛选与排序
-[ ] S2-5 票据表与 CRUD（invoices / invoice_files）
+[x] S2-5 票据表与 CRUD（invoices / invoice_files）
 [ ] S2-6 文件上传 + MinIO + sha256 去重 ★关键
 [ ] S2-7 ARQ 异步任务框架（状态机 + 重试 + 幂等）
 [ ] S2-8 票种模板与规则管理
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S2-5 | `backend/app/services/invoice_service.py`、`backend/app/api/v1/invoices.py`、`backend/app/schemas/invoice.py`、`backend/app/core/exceptions.py`（42201/42202）、`backend/tests/test_invoices.py`、`docs/{spec,plan}/s2-5-invoices.md` | ① `transition()` 单入口：`draft→confirmed→in_report→archived` 合法、非法跳转/终态 409；② 列表：三权限（submitter 本人 / reviewer 全量 / admin **404**）+ 7 类筛选 + 分页 + 默认排除 void + 金额两位小数字符串 + 无 `storage_key`；③ 详情：`invoice + fields + latest_job`，他人/不存在/admin 均 404；④ 软删：204、重复 204、`in_report/archived` 409、他人 404、**void 释放 `(code,no)` 唯一索引后可重建**；⑤ 字段修改：submitter 非金额 200 / 金额 403、reviewer 金额需 `confirm_amount`（否则 42202）、版本冲突 409、非草稿 409、非法字段/值 422、未决冲突 42201 且**回滚**、`confirm` 控制 `need_review`；⑥ 链路 `create_draft → PATCH fields → GET detail` 通过；⑦ `pytest 310 passed`、`pytest -m integration 118 passed` | ✅ 通过（按契约范围：无 `POST /invoices`、无 `PATCH /invoices/{id}`；字段修改用 PATCH /fields，见 D-043） |
 | S2-4 | `backend/app/schemas/common.py`（`PageParams/PageResult`）、`backend/app/services/pagination.py`、`backend/app/utils/text.py`（`escape_like`）、`backend/tests/test_pagination.py`、`scripts/bench_list.py`、`docs/{spec,plan}/s2-4-pagination.md` | ① `PageParams`：默认 1/20、`page=0` 与 `page_size=1000` → 422、`order` 只允许 asc/desc；② 排序白名单（created_at/invoice_date/total_amount）+ `id asc` 稳定兜底，未知字段 **42200** 并列出可选值；③ `count` 与数据共用同一 `Select`（`order_by(None).subquery()`），翻页并集=全集、无重叠、超末页 `items=[]` 且 `total` 不变；④ 与 S2-3 组合：submitter/reviewer 的 `total` 按可见性分别计算；⑤ N+1 断言：join 列表每页恰好 **2 条 SELECT**；⑥ 50,000 行基准四组 p50/p95 = **13.4/15.9、20.1/25.4、19.3/21.9、27.6/32.3 ms**，`EXPLAIN ANALYZE` 走 `Index Scan using ix_invoices_uploader_created`；⑦ `pytest 310 passed`、`pytest -m integration 87 passed` | ✅ 通过（关系方案选 A：显式 join，不改 S2-1 锚点，见 D-042） |
 | S2-3 | `backend/app/services/repository.py`、`backend/tests/{test_repository,test_isolation}.py`、`docs/{spec,plan}/s2-3-isolation.md` | ① 策略表覆盖 `invoices` / `invoice_files` / `report_forms`；未登记模型 `false()` 默认拒绝；② submitter A/B 列表互相不可见、B 查 A 详情抛 `PermissionDeniedError`（存在但无权）与 `NotFoundError`（确实不存在）内部可区分；③ reviewer 能看到全部票据/文件，报销单只看到 `submitted/approved/rejected/archived`（8 状态参数化）；④ admin 三类业务数据全 404；⑤ 列表与详情对四种角色逐一一致；⑥ HTTP（真实 `create_app()` + 异常处理器）：B 查 A → **404/40400**、reviewer 200、admin 404、未登录 401、B 列表不含 A；⑦ `pytest 297 passed`、`pytest -m integration 74 passed`（隔离 23 条） | ✅ 通过（生产 `/invoices` 接口在 S2-5 接同一函数，届时补手工换 id 验收） |
 | S2-2 | `backend/app/{core/{security,redis}.py, services/{auth_service,token_store}.py, schemas/auth.py, api/deps.py, api/v1/auth.py, utils/text.py}`、`backend/alembic/versions/0002_audit_action_login_logout.py`、`scripts/create_user.py`、`backend/tests/{test_security,test_auth}.py`、`docs/{spec,plan}/s2-2-auth.md` | ① `POST /auth/register`（201，固定 submitter、用户名 trim+小写）/ `login`（200，`expires_in=1800`、`refresh_expires_in=604800`）/ `me`（角色来自数据库）/ `refresh`（轮换：旧 refresh 立即 401）/ `logout`（吊销 refresh，幂等）；② 登录失败未知账号与错口令**同码同文案**（401/40101），`disabled/locked` → 403/40301；③ `require_roles("reviewer")` 对 submitter 返回 **403**、reviewer 200；④ 真实 uvicorn + Redis 手工链路：login→redis 白名单 1 key→refresh 轮换→旧令牌 401→logout→refresh 401，冒烟用户与 Redis key 均已清理；⑤ `cat /dev/null` 无泄漏：失败日志只含 `username_sha256`，不含口令；⑥ Argon2id 实测 hash **59.4ms** / verify **45.7ms**（m=64MiB,t=3,p=4）；⑦ `pytest 288 passed`、`pytest -m integration 51 passed`、smoke **8 OK / 0 FAIL** | ✅ 通过（register 按 API.md 开放；审计枚举补 3 值 + 0002，但审计行留 S4-7，见 D-040） |
@@ -166,11 +167,25 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 24 | 生产 `/invoices` 列表/详情接口尚未接入隔离层 | S2-3 只用测试专用路由证明 HTTP 404 语义（接口属 S2-5） | S2-5 必须调用 `filter_visible` / `get_visible_or_404`，并补"手工换 id 得 404"验收 |
 | 25 | keyset/游标分页未做（当前 offset） | 5 万行深页（page=1000）p95 25.4ms，offset 够用 | S2-5/S5 若出现更深页或更大规模再评估，只改分页层、端点不动（D-042） |
 | 26 | `q` 用 `ILIKE` 子串，无 trigram/GIN 索引 | 5 万行 p95 32.3ms，可接受 | 真实数据规模上升时评估 `pg_trgm`；论文里作为范围限定写明 |
+| 27 | 字段修改的审计行（`action=confirm_field`）未写 | 哈希链在 S4-7；当前只写应用日志（仅字段名，不含值） | S4-7 实现链时补 before/after（脱敏），D-040 原则 |
+| 28 | 真 HTTP 建单链路待 S2-6 | 契约建票是 `POST /invoices/upload`（S2-6） | S2-6 调用 `create_draft` 后补 curl 建单→改字段→详情；S3-6 复用本卡字段修改 |
+| 29 | 字段修改的 42201 较严（任何未决冲突都回滚） | 契约字面如此；已有冲突的票据需一次性提交修复字段 | S3-6 若需放宽，先改 API.md（D-043） |
 
 ## 变更日志
 
 ### 2026-11-19
 
+- **S2-5 完成**：票据 CRUD、状态机与契约版字段修改。
+  · `transition()` 单一状态机（D-011 的 5 值；非法迁移 409；`ocr_status` 不混入）；
+  · 列表：复用 S2-3 隔离 + S2-4 分页；submitter 本人 / reviewer 全量 / admin 404；
+    7 类筛选、默认排除 void、金额两位小数字符串、永不返回 `storage_key`；
+  · 详情：`{invoice, fields, latest_job}`；软删 `void` 幂等、`in_report/archived` 409、
+    void 释放 `(code,no)` 唯一索引后可重建；
+  · 字段修改：乐观锁 + D-017 权限矩阵 + `confirm_amount`（42202）+ 交叉校验冲突回滚（42201），
+    `source=manual`、`confirm` 控制 `need_review`；
+  · 契约冲突处理：不新增 `POST /invoices`（建票走 S2-6）、不新增 `PATCH /invoices/{id}`
+    （用契约的 `PATCH /{id}/fields`），任务卡状态图按 D-011 修正（D-043）；
+  · 实测：`pytest 310 passed`、`pytest -m integration 118 passed`，`alembic check` 零差异。
 - **S2-4 完成**：分页、筛选与排序协议。
   · `PageParams`（page≥1 / page_size 1–100 / 白名单 sort_by / order Literal）与 `PageResult`；
   · `paginate()`：同一 `Select` 上求 total（`order_by(None).subquery()`）再 offset/limit，

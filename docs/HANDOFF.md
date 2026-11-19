@@ -1,18 +1,18 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-19（S2-4 完成）
+> 最后更新：2026-11-19（S2-5 完成）
 
 ## 1. 一句话现状
 
-**S0 + S1 + S2-1（16 表）+ S2-2（JWT 认证）+ S2-3（行级隔离）+ S2-4（分页/排序）全部完成**，自动化验收全绿；
-**下一步是 S2 阶段的第五张卡：S2-5 票据表与 CRUD（invoices / invoice_files）**。
+**S0 + S1 + S2-1（16 表）+ S2-2（JWT）+ S2-3（隔离）+ S2-4（分页）+ S2-5（票据 CRUD）全部完成**，自动化验收全绿；
+**下一步是 S2 阶段的第六张卡：S2-6 文件上传 + MinIO + sha256 去重**。
 
 ## 2. 仓库与环境
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 16 个 commit，待用户 push**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 17 个 commit，待用户 push**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
 | 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**（Argon2id） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
@@ -33,6 +33,8 @@ backend/app/services/{auth_service,token_store}.py  ← S2-2：注册/认证/签
 backend/app/api/{deps.py,v1/auth.py}  ← S2-2：Bearer 解析、get_current_user、require_roles、5 条 auth 路由
 backend/app/services/repository.py  ← S2-3：行级隔离（策略表 + filter_visible + get_visible_or_404，deny-by-default）
 backend/app/services/pagination.py  ← S2-4：分页/排序协议（PageParams/PageResult、白名单排序、同一 stmt 求 total）
+backend/app/services/invoice_service.py  ← S2-5：票据建草稿/状态机/列表/详情/软删/字段修改
+backend/app/api/v1/invoices.py + schemas/invoice.py  ← S2-5：票据 4 条 HTTP 接口与出入参
 scripts/bench_list.py               ← S2-4：5 万行 p50/p95 + EXPLAIN ANALYZE（临时库，跑完自删）
 backend/app/ocr/          ← S1 的全部产出
   preprocess.py             预处理（EXIF→定位→透视/降级→去斜→照度→印章）+ needs_retake
@@ -74,7 +76,7 @@ cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表，head=0002
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
 (cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 310 passed（默认跳过集成）
-(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 87 passed（需 Docker）
+(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 118 passed（需 Docker）
 .venv/Scripts/python.exe scripts/bench_list.py --rows 50000 --iterations 50  # 分页基准（临时库）
 .venv/Scripts/python.exe scripts/smoke.py                                   # 8 OK / 0 FAIL
 # 建 reviewer / admin 账号（注册接口只产生 submitter）
@@ -107,21 +109,24 @@ cd /e/BiSheXZY/study-OCR
 | D-040 | `audit_logs.action` 补 `login_failed` / `logout` / `forbidden`（0002 迁移）；**审计行留 S4-7**，S2-2 只写脱敏应用日志 |
 | D-041 | 行级隔离用**应用层统一过滤**（`services/repository.py`），不用 RLS：连接池 + `SET LOCAL` 会串身份、policy 复杂度高、可测试性差 |
 | D-042 | 分页层：**显式 join 而非 relationship**、count 与数据共用同一 `Select`、`id asc` 稳定兜底；keyset 分页暂不做（5 万行深页 p95 25.4ms） |
+| D-043 | 票据状态机按 **D-011 的 5 值**（任务卡图不采用）；建票无 HTTP 口（S2-6 upload 调 `create_draft`）；字段修改按契约 `PATCH /{id}/fields` 在 S2-5 提前实现 |
 
-## 7. 下一步：S2-5 票据表与 CRUD
+## 7. 下一步：S2-6 文件上传 + MinIO + sha256 去重
 
-- 契约：`docs/API.md` §2（`POST /invoices` 建草稿、`GET /invoices` 列表、`GET /{id}` 详情、
-  `PATCH /{id}` 仅草稿可改、`DELETE` 软删、`PUT /{id}/fields` 批量改字段）；
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-5；
-- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-5-invoices.md`）→ plan → 用户确认 → 写码**；
-- 底座：`repository.py`（`filter_visible` / `get_visible_or_404`）、`pagination.py`（`PageParams` / `paginate`）、
-  `api/deps.py`（`get_current_user` / `require_roles`）；
-- 关键约定：状态机写成**单一 `transition(invoice, target, actor)`**，非法迁移 409；软删 = `status='void'`，
-  列表默认不返回；同发票号重传与唯一索引的策略要明确（任务卡坑）；列表 join 一次取文件字段（2 条 SQL）。
+- 契约：`docs/API.md` §2 `POST /invoices/upload`（202 + `invoice_id/file_id/job_id/sha256`；`sha256` 去重 409/40901；
+  ≤20MB；MIME + 魔数双校验；PDF ≤5 页；响应**不得出现**对象名/路径）；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S2-6；
+- 流程（AGENTS §11）：**先 spec（`docs/spec/s2-6-upload.md`）→ plan → 用户确认 → 写码**；
+- 底座：`invoice_service.create_draft()`（建票）、`api/deps.py`、`Settings`（minio/MAX_UPLOAD_MB）、`core/redis.py`、
+  `ocr/intake.py`（S1 的 PDF/照片分流）；
+- 需要先想清楚的一点：契约要求"内存中信封加密"再写 MinIO，但信封/ SM4 在 S4-3/S4-4 才实现。
+  S2-6 的 spec 必须先定：**是先把密文链路做出来（提前 S4-3/4 的一部分），还是按 SCHEMA 允许的
+  `is_cipher=false` 本地调试路径先落明文并在 S4 补加密**（SCHEMA §3.1 明确 `false` 只允许出现在本地调试配置下）。
+  这个取舍要在 S2-6 的 spec 里报告并让你拍板，**不要默默落明文**。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地 16 个 commit 需要用户执行 `git push`（AI 不推）；
+1. **push**：本地 17 个 commit 需要用户执行 `git push`（AI 不推）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；
