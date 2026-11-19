@@ -222,7 +222,7 @@ deploy/   scripts/   samples/（图片不入库）   secrets/（整目录不入�
 | 字段抽取器与校验器 | `backend/app/ocr/{extractor.py,validators.py}` + `templates/field_rules.yaml`（锚点优先级 + 同行/邻近取值 + 忽略 OCR 空格 + exclude 表头陷阱 + whole_line 无标签名称行；冲突保留 candidates 不静默替换）+ `scripts/{field_demo,field_eval}.py` | S1-5 ✅ |
 | 密码封装（canonical / sm / signature / envelope / keystore） | 待回填 | S4-1 ~ S4-6 |
 | 审计哈希链 | 待回填 | S4-7 |
-| 评测脚本与指标函数 | 待回填 | S1-6 |
+| 评测脚本与指标函数 | `backend/eval/metrics.py`（纯函数指标：覆盖匹配检测 P/R/Hmean、字符准确率、字段级、整单、待确认率、分位数）+ `backend/eval/configs/baseline.yaml` + `scripts/ocr_baseline.py`（逐张跑全链路 → JSON + Markdown 报告，支持预处理开关对照） | S1-6 ✅ |
 | 合成票据生成器 | `scripts/{invoice_layout,invoice_templates,perturb,sample_data,sample_fonts,make_samples}.py`（绘制即记录坐标 → 几何扰动同步变换 bbox → 光度/叠加 → JSONL 标注；`check_annotations.py` 校验、`verify_samples.py` 五项自动验收） | S1-1 ✅ |
 | 前端 http 封装与页面骨架 | `web/src/api/http.ts`（拦截器注入 token、统一解包、401 跳登录、`ApiError` 带 `payload`）+ `web/src/router/index.ts`（守卫 + `meta.roles` 预留）+ `web/src/stores/user.ts`（token 在 localStorage）+ `web/src/views/Debug.vue`（联调自检页）+ `scripts/ui_smoke.mjs`（无头浏览器冒烟） | S0-6 ✅ |
 

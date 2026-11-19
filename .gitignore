@@ -34,6 +34,8 @@ samples/*
 
 # ===== 评测生成物（结果按时间戳命名，不入库）=====
 backend/eval/results/*
+# 基线的 Markdown 报告是论文素材，要入库（原始 JSON 仍不入库）
+!backend/eval/results/baseline_report.md
 !backend/eval/results/.gitkeep
 !backend/eval/results/README.md
 backend/eval/datasets/*.png

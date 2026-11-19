@@ -6,9 +6,9 @@
 ## 当前状态
 
 - 阶段：**阶段 0（项目启动）**，M0 前段
-- 最近完成：**S1-5 关键字锚定 + 规则字段抽取 + 校验器**（字段级准确率 **85.6%**、133 个测试；强项 check_code/号码/日期 ≥95%）
-- 上一步完成：**S1-4 票种识别与版面区域划分**（5 类票种判对率 **100%**、区域按内容框归一化；顺带修掉 3 个预处理几何缺陷，85 个测试）
-- 下一步：**S1-6 端到端基线脚本与指标计算**（把 S1-2~S1-5 串成一条可重复的评测流水线，出论文口径的指标表）
+- 最近完成：**S1-6 端到端基线**——**S1 阶段（OCR 技术验证）全部收口**：检测 Hmean 0.948、字符准确率 0.816、字段级 0.856、整单 0.500；156 个测试
+- 上一步完成：**S1-5 字段抽取与校验**（字段级 85.6%）（5 类票种判对率 **100%**、区域按内容框归一化；顺带修掉 3 个预处理几何缺陷，85 个测试）
+- 下一步：**S2-1 数据库模型与迁移**（16 张表 + Alembic；契约见 `docs/SCHEMA.md`，定稿清单 20 项已全过）
 - 已知阻塞：无
 - 环境提醒：后端必须用 **Python 3.11**（`py -3.11 -m venv .venv`）；本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
 
@@ -30,7 +30,7 @@
 [x] S1-3 PaddleOCR 检测识别最小闭环 ★关键
 [x] S1-4 票种识别与版面区域划分
 [x] S1-5 关键字锚定 + 规则字段抽取 + 校验器 ★关键
-[ ] S1-6 端到端基线脚本与指标计算 ★关键
+[x] S1-6 端到端基线脚本与指标计算 ★关键
 
 ## 阶段 2：基础框架（M1）
 [ ] S2-1 模型与首批迁移（16 张表）
@@ -97,6 +97,7 @@
 |---|---|---|---|
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
+| S1-6 | `backend/eval/metrics.py`、`backend/eval/configs/baseline.yaml`、`scripts/ocr_baseline.py`、`backend/tests/test_metrics.py`、`backend/eval/results/baseline_report.md` | ① 60 张全链路基线：检测 **Hmean 0.948**（P 0.967/R 0.930）、字符准确率 **0.816**、字段级 **0.856**、整单 **0.500**；② 预处理开关对照：Hmean 0.974（关）vs 0.948（开）、字段级 0.847 vs 0.856；③ 耗时 P50：preprocess 111ms + ocr 1422ms + layout 52ms + extract 1ms = 1591ms；④ 23 条指标单测全部手算断言；⑤ `pytest` 156 passed；⑥ Markdown 报告可直接贴论文 | ✅ 通过（整单 0.500 为薄弱环节，已记遗留） |
 | S1-5 | `backend/app/ocr/{extractor.py,validators.py}`、`templates/field_rules.yaml`、`scripts/{field_demo,field_eval}.py`、`backend/tests/{test_validators,test_extractor}.py` | ① 字段级准确率 **85.6%（368/430）**：check_code 100%、invoice_code 96.7%、invoice_date 96.7%、invoice_no 95%、buyer_name 93.3%、passenger_name 90%、seller_tax_no 90%；短板 amount 60%、tax_amount 56.7%、total_amount 76.7%（已列遗留）；② 校验器 38 条单测（含"税号改一位必须报错"）；③ 抽取器 10 条单测（同优先级冲突保留候选、缺失必填、税号错折半）；④ `pytest` 133 passed | ✅ 通过 |
 | S1-4 | `backend/app/ocr/layout.py`、`backend/app/ocr/templates/*.yaml`（5 个）、`scripts/{layout_demo,layout_eval}.py`、`backend/tests/test_layout.py` | ① 60 张票种判对率 **100%（60/60）**，unknown 0（任务卡要求 ≥95%）；② 区域划分：单张数电票 header 10 / body 31 / footer 2、行程单 header 1–3 / body 13–15 / footer 2–4；③ 13 条单测（五类票种、未知、真歧义、区域单调、归一化不变、block 聚类）；④ 顺带修 3 个预处理几何缺陷（退化/自交/单边裁切），OCR 行数恢复 20→20、39→39、41→41；⑤ `pytest` 85 passed | ✅ 通过 |
 | S1-3 | `backend/app/ocr/{types,detector,recognizer}.py`、`scripts/ocr_demo.py`、`backend/tests/test_ocr_contract.py`、`docs/{spec,plan}/s1-3-ocr-engine.md` | ① 单张 `vat_digital_landscape_001`：**41 行**、平均置信度 ≈0.99、无乱码、**两次结果完全一致**；② 批量 20 张：行数均值 14.5（8–20）、平均置信度 0.958、推理 P50 944ms / P95 1541ms；③ 困难样本 `taxi_002` + 预处理：7 行、置信度 0.92–0.99（同图 Windows OCR 只能读出 0–2 个字段）；④ 7 条契约测试全过，含"3.x dict 结构必须报错"；⑤ `pytest` 72 passed | ✅ 通过 |
@@ -141,12 +142,24 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 10 | S1-4 只有 header/body/footer 三段，细分区（明细表/合计/印章）靠 S1-5 的关键字锚定 | 明细表区域定位不够精确 | S1-5 里用关键字 + 坐标邻近补足；必要时在模板里加 `zones` |
 | 11 | amount/tax 在旧版票竖屏截图上漏抽 10 张（合计行被拆行 + 印章遮挡） | 这两字段准确率只有 56.7%/60% | 下轮加"按列对齐"的表结构解析，或用 amount+tax 交叉校验 |
 | 12 | total_amount 错 11 张：合计行未检出时退到"金额"锚点 | 合计可能被取成明细金额 | 用 `amount + tax` 与候选交叉校验后择优 |
-| 13 | 票种判对率是**合成集**上的 100% | 真实票据（尤其遮挡严重的）会更低 | 论文如实写"合成集 100%，真实样本仅定性"；S6 用真实样本抽检 |
+| 13 | 整单正确率只有 0.500（taxi 0.20 / vat_general 0.35） | 论文里"整单全对率"这个指标偏低 | 下轮：amount/tax 的列对齐 + 二次识别（S3-3）；S6 分组报告并说明原因 |
+| 14 | 预处理对检测是负收益（Hmean -0.026） | 说明 S1-2 的部分步骤在"本来就没歪"的图上纯损失 | S6 做逐开关消融，按票种/扰动分组给出"什么情况下该开" |
+| 15 | 票种判对率是**合成集**上的 100% | 真实票据（尤其遮挡严重的）会更低 | 论文如实写"合成集 100%，真实样本仅定性"；S6 用真实样本抽检 |
 
 ## 变更日志
 
 ### 2026-11-18
 
+- **S1-6 完成（S1 阶段收口）**：端到端基线脚本与指标计算。
+  · 指标全部在 `backend/eval/metrics.py`（纯函数 + 23 条手算单测），脚本只调指标 → **打分与产结果分离**；
+  · 三个口径问题当场修掉：① 标注在原图、OCR 在校正图 → 用 `to_original` 逆矩阵映射（否则 Hmean 0.09）；
+    ② 标注是元素级、输出是行级 → 保持元素级真值 + **覆盖匹配**（合并成行反而掉到 0.12）；
+    ③ 报告里写明匹配口径，避免读者误以为是纯 IoU 匹配；
+  · **关键发现（S6 的素材）**：预处理对"检测"是负收益（Hmean 0.974 → 0.948），对"字段"是正收益
+    （0.847 → 0.856）。原因：合成图本来就没躺倒，透视重采样只有插值损失；而光照/背景归一化确实帮了字段抽取。
+    **不能只报"预处理有用"**——这条要写进论文的消融讨论。
+  · 瓶颈定位：整单 0.500 主要由 `taxi_ticket`（0.20）与 `vat_general`（0.35）拖累，
+    与 S1-5 的 amount/tax 短板一致（小票字小、旧版票合计行被印章压住）。
 - **S1-5 完成**：关键字锚定 + 规则字段抽取 + 校验器。
   · 13 条显式规则（anchors 顺序即优先级、direction、regex、max_distance、zone、value_index、occurrence、
     exclude、whole_line_anchors、if_multiple、tickets），**禁止"取最后一行金额"这类模糊规则**；

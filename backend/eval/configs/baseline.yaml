@@ -1,0 +1,30 @@
+# S1-6 基线配置。S6 的对比实验直接复制本文件改参数即可。
+name: baseline
+dataset: backend/eval/datasets/annotations_synth_v1.jsonl
+split: all
+limit: 0
+
+# 预处理开关（每一项都对应 S1-2 的一个消融点）
+preprocess:
+  enabled: true
+  rectify: true
+  illum: true
+  denoise: true
+  detect_seal: true
+  max_side: 1600
+
+# 检测识别参数（S1-3）
+ocr:
+  use_angle_cls: true
+  det_db_unclip_ratio: 1.6
+  det_limit_side_len: 1600
+  drop_score: 0.0
+
+# 指标口径（与 docs/EVAL.md §2 对齐，别在这里临时改）
+metrics:
+  iou_threshold: 0.5
+  need_review_threshold: 0.7
+  char_accuracy: true
+
+# 字段规则（S2-8 起改为读库）
+rules: backend/app/ocr/templates/field_rules.yaml
