@@ -1,0 +1,32 @@
+# 电子发票（普通发票）· 数电票（2024-12 起全国推广的主流票种）
+#
+# 说明：
+# - keywords 分区计权：出现在标题行（图像上部 15%）的关键字权重 ×3
+# - exclusive_keywords 是"别的票种才有的特征"，命中要扣分（数电票没有发票代码/校验码）
+# - regions 用**归一化矩形** [x1,y1,x2,y2]（0–1），换分辨率不失效
+type_code: vat_digital
+type_name: 电子发票（普通发票）
+version: 1
+aspect_ratio: [1.1, 2.0]        # 横版；放宽容差（透视校正后比例会变）
+
+keywords:
+  - {text: "电子发票（普通发票）", weight: 6}
+  - {text: "全电发票", weight: 5}
+  - {text: "数电票", weight: 4}
+  - {text: "电子发票", weight: 3}
+  - {text: "普通发票", weight: 2}
+  - {text: "发票号码", weight: 1}
+  - {text: "开票日期", weight: 1}
+
+exclusive_keywords:
+  - {text: "增值税", weight: 2}
+  - {text: "校验码", weight: 3}
+  - {text: "发票代码", weight: 3}
+  - {text: "铁路", weight: 2}
+  - {text: "行程单", weight: 2}
+  - {text: "出租", weight: 2}
+
+regions:
+  header: [0.0, 0.0, 1.0, 0.36]     # 标题 + 号码/日期 + 购销方信息
+  body:   [0.0, 0.36, 1.0, 0.88]    # 明细表 + 合计 + 价税合计 + 备注
+  footer: [0.0, 0.88, 1.0, 1.0]     # 开票人等

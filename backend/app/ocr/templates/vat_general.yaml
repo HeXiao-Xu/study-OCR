@@ -1,0 +1,33 @@
+# 旧版增值税电子普通发票（历史形态：有发票代码、20 位校验码）
+# 同一 type 下有两种形态：横版 A4、手机竖屏截图 → 各给一套归一化区域
+type_code: vat_general
+type_name: 增值税电子普通发票
+version: 1
+aspect_ratio: [0.35, 2.0]   # 横版 A4 与手机竖屏截图两种形态都要覆盖
+
+keywords:
+  - {text: "增值税电子普通发票", weight: 6}
+  - {text: "电子普通发票", weight: 4}       # 标题被切成两段时，拼接后仍能命中
+  - {text: "普通发票", weight: 2}
+  - {text: "增值税普通发票", weight: 5}
+  - {text: "增值税", weight: 2}
+  - {text: "校验码", weight: 3}
+  - {text: "发票代码", weight: 2}
+  - {text: "价税合计", weight: 1}
+
+exclusive_keywords:
+  - {text: "电子发票（普通发票）", weight: 4}
+  - {text: "铁路", weight: 2}
+  - {text: "行程单", weight: 2}
+  - {text: "出租", weight: 2}
+
+regions:
+  header: [0.0, 0.0, 1.0, 0.40]     # 标题 + 代码/号码/日期 + 购销方
+  body:   [0.0, 0.40, 1.0, 0.88]    # 明细表 + 合计 + 价税合计 + 校验码
+  footer: [0.0, 0.88, 1.0, 1.0]
+
+# 竖屏截图形态（宽高比 < 1）用这一套：标题在上 12%，购销方在 25%–45%
+regions_portrait:
+  header: [0.0, 0.0, 1.0, 0.42]
+  body:   [0.0, 0.42, 1.0, 0.86]
+  footer: [0.0, 0.86, 1.0, 1.0]

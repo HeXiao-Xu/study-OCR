@@ -1,0 +1,23 @@
+# 航空运输电子客票行程单（横版）
+type_code: flight_itinerary
+type_name: 航空运输电子客票行程单
+version: 1
+aspect_ratio: [1.1, 2.4]
+
+keywords:
+  - {text: "航空运输电子客票行程单", weight: 6}
+  - {text: "行程单", weight: 4}
+  - {text: "航班号", weight: 3}
+  - {text: "承运人", weight: 2}
+  - {text: "民航发展基金", weight: 3}
+  - {text: "旅客姓名", weight: 2}
+
+exclusive_keywords:
+  - {text: "发票代码", weight: 2}
+  - {text: "车次", weight: 2}
+  - {text: "出租", weight: 2}
+
+regions:
+  header: [0.0, 0.0, 1.0, 0.32]     # 标题 + 旅客/日期/航班
+  body:   [0.0, 0.32, 1.0, 0.86]    # 票价表 + 合计
+  footer: [0.0, 0.86, 1.0, 1.0]

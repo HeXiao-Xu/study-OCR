@@ -6,8 +6,8 @@
 ## 当前状态
 
 - 阶段：**阶段 0（项目启动）**，M0 前段
-- 最近完成：**S1-3 PaddleOCR 检测识别最小闭环**（41 行/张、平均置信度 0.99、两次结果一致；72 个测试；依赖整组锁死 D-027）
-- 下一步：**S1-4 票种识别与版面区域划分**（先判票种，再把文本行聚成标题/表头/明细/合计/印章区）
+- 最近完成：**S1-4 票种识别与版面区域划分**（5 类票种判对率 **100%**、区域按内容框归一化；顺带修掉 3 个预处理几何缺陷，85 个测试）
+- 下一步：**S1-5 字段抽取与校验**（关键字锚定 + 坐标邻近 + 语义兜底，金额三件套/税号/号码位数校验）
 - 已知阻塞：无
 - 环境提醒：后端必须用 **Python 3.11**（`py -3.11 -m venv .venv`）；本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
 
@@ -27,7 +27,7 @@
 [x] S1-1 票据样本集、标注规范与合成票据脚本 ★关键
 [x] S1-2 图像预处理与透视校正 ★关键
 [x] S1-3 PaddleOCR 检测识别最小闭环 ★关键
-[ ] S1-4 票种识别与版面区域划分
+[x] S1-4 票种识别与版面区域划分
 [ ] S1-5 关键字锚定 + 规则字段抽取 + 校验器 ★关键
 [ ] S1-6 端到端基线脚本与指标计算 ★关键
 
@@ -96,6 +96,7 @@
 |---|---|---|---|
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
+| S1-4 | `backend/app/ocr/layout.py`、`backend/app/ocr/templates/*.yaml`（5 个）、`scripts/{layout_demo,layout_eval}.py`、`backend/tests/test_layout.py` | ① 60 张票种判对率 **100%（60/60）**，unknown 0（任务卡要求 ≥95%）；② 区域划分：单张数电票 header 10 / body 31 / footer 2、行程单 header 1–3 / body 13–15 / footer 2–4；③ 13 条单测（五类票种、未知、真歧义、区域单调、归一化不变、block 聚类）；④ 顺带修 3 个预处理几何缺陷（退化/自交/单边裁切），OCR 行数恢复 20→20、39→39、41→41；⑤ `pytest` 85 passed | ✅ 通过 |
 | S1-3 | `backend/app/ocr/{types,detector,recognizer}.py`、`scripts/ocr_demo.py`、`backend/tests/test_ocr_contract.py`、`docs/{spec,plan}/s1-3-ocr-engine.md` | ① 单张 `vat_digital_landscape_001`：**41 行**、平均置信度 ≈0.99、无乱码、**两次结果完全一致**；② 批量 20 张：行数均值 14.5（8–20）、平均置信度 0.958、推理 P50 944ms / P95 1541ms；③ 困难样本 `taxi_002` + 预处理：7 行、置信度 0.92–0.99（同图 Windows OCR 只能读出 0–2 个字段）；④ 7 条契约测试全过，含"3.x dict 结构必须报错"；⑤ `pytest` 72 passed | ✅ 通过 |
 | S1-2 | `backend/app/ocr/preprocess.py`（`PreprocessOptions` 8 开关 + `to_original` 3×3）、`scripts/{preprocess_demo,preprocess_eval}.py`、`backend/tests/{test_preprocess_exif,test_preprocess_geometry}.py` | ① 65 个测试全过（含 EXIF 旋转、已知梯形还原、坐标回算、开关组合冒烟）；② 60 张数据集：几何校正成功率 **85%**（其中 15 张判为"正视角满幅"免重采样）、quality ok 52 / low 8、耗时 **P50 84ms / P95 245ms**（预算 300ms）；③ `preprocess_eval`：可比样本 OCR 命中率 88% → 88%（**无样本变差**）；④ demo 输出 60 张前后对照图 | ✅ 通过 |
 | S1-1 | `scripts/{sample_fonts,sample_data,invoice_layout,invoice_templates,perturb,make_samples,check_annotations,verify_samples}.py`、`scripts/ocr_probe.ps1`、`backend/eval/datasets/{annotations_synth_v1.jsonl,README.md}`、`samples/MANIFEST.md`、`docs/{spec,plan}/s1-1-samples.md`、3 个测试文件 | ① `make_samples.py` 生成 **60 张**（dev 36 / test 24，**5 票种 × 6 版式**，含 2026 主流的数电票 `vat_digital`）；② `check_annotations.py --strict` 全过；③ `verify_samples.py` **5 项全过**（渲染一致性 4.1×、OCR 字段命中率 干净 0.89 / 困难 0.86、标注自洽、成像覆盖、划分完整）；④ `pytest` 50 passed（新增 26 条）；⑤ 系统 OCR 能读出合成票的字段值 | ✅ 通过 |
@@ -135,11 +136,24 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 7 | `preprocess` 最慢一张 447ms（2800px 原图） | 极端大图会超预算 | S3 的 Worker 里按任务超时兜底；必要时把 warp_max_side 降到 2000 |
 | 8 | `preprocess_eval.py` 目前用 **Windows OCR** 当基准 | 结论偏保守（PaddleOCR 明显更强） | S6 前把该脚本的 OCR 后端换成 PaddleOCR，重跑一次"预处理增益" |
 | 9 | PP-OCRv4 模型需首次下载（~18MB，到 `~/.paddleocr`） | 离线机器无法首次运行 | 已提供 `OCR_MODEL_ROOT`；S7 的冷启动检查里补"模型预置"步骤 |
+| 10 | S1-4 只有 header/body/footer 三段，细分区（明细表/合计/印章）靠 S1-5 的关键字锚定 | 明细表区域定位不够精确 | S1-5 里用关键字 + 坐标邻近补足；必要时在模板里加 `zones` |
+| 11 | 票种判对率是**合成集**上的 100% | 真实票据（尤其遮挡严重的）会更低 | 论文如实写"合成集 100%，真实样本仅定性"；S6 用真实样本抽检 |
 
 ## 变更日志
 
 ### 2026-11-18
 
+- **S1-4 完成**：票种识别与版面区域划分。
+  · 5 个 YAML 模板（归一化区域 + 关键字权重 + 互斥词 + 长宽比先验）；分类打分为
+    "关键字×标题加成(3×) − 互斥词 + 长宽比"，归一化 <0.25 或与第二名差距 <0.08 → **unknown**
+    （宁可判不出，也不猜错——猜错会让整页字段用错模板）；
+  · 标题常被检测切成 2–3 段，所以标题区所有行**拼接后再匹配一次**（否则"增值税电子普通发票"永远命不中）；
+  · **区域按内容框归一化**（不是整图高度）：透视校正多框进 13% 桌面就会让 footer 永远落空；
+  · 判票种依赖"标题读得出来"，于是暴露出 S1-2 的三个几何缺陷（D-029）：退化四边形（其实是三角形，
+    面积 50%、角度正常，全部阈值都能过，warp 后 OCR 20 行 → **0 行**）、四角点自交、单边裁切。
+    补上四项校验后：票种判对率 91.7% → **100%**，而 S1-2 的"几何校正成功率"从 85% 掉到 65%
+    ——**这个下降是好事**，原来的 85% 里混着"warp 成功但把内容裁坏"的样本；
+  · 顺带把检测改到 1000px 小图做、重采样用双线性：预处理 P50 77ms / P95 195ms（回到预算内）。
 - **S1-3 完成**：PaddleOCR 检测识别最小闭环。
   · `OcrEngine` 进程内单例（懒加载 + 互斥锁，模型加载 5–10s 只付一次）；`parse_paddle_result` 把 2.7 的
     `[[[box,(text,score)]]]` 解析成契约结构，**按 y 分桶再按 x 排序**给可复现的 `line_no`；

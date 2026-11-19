@@ -1,0 +1,22 @@
+# 出租车定额票（小票）
+type_code: taxi_ticket
+type_name: 出租汽车定额发票
+version: 1
+aspect_ratio: [1.0, 2.6]
+
+keywords:
+  - {text: "出租汽车", weight: 5}
+  - {text: "出租车", weight: 4}
+  - {text: "定额发票", weight: 4}
+  - {text: "车牌号", weight: 3}
+  - {text: "车费", weight: 2}
+
+exclusive_keywords:
+  - {text: "增值税", weight: 2}
+  - {text: "行程单", weight: 2}
+  - {text: "铁路", weight: 2}
+
+regions:
+  header: [0.0, 0.0, 1.0, 0.28]     # 标题 + 公司名
+  body:   [0.0, 0.28, 1.0, 0.88]    # 代码/号码/日期/车牌/金额
+  footer: [0.0, 0.88, 1.0, 1.0]

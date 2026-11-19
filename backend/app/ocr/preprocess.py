@@ -170,6 +170,26 @@ def _is_convex(quad: np.ndarray) -> bool:
     return bool(cv2.isContourConvex(quad.reshape(-1, 1, 2).astype(np.int32)))
 
 
+def _is_simple_convex(quad: np.ndarray) -> bool:
+    """简单凸四边形：四个连续叉积同号（排除自交的"蝴蝶结"）。
+
+    为什么必须单独判：`cv2.isContourConvex` 对**已排序**的点不保证排除自交；
+    实测一张行程单被排成 [[0,497],[1199,0],[1199,699],[0,498]]——自交、面积恰好半幅，
+    所有面积/角度阈值都能过，warp 出来的图 OCR 一行都读不出（20 → 0）。
+    """
+    signs = []
+    points = quad.reshape(4, 2).astype(np.float64)
+    for index in range(4):
+        a = points[index]
+        b = points[(index + 1) % 4]
+        c = points[(index + 2) % 4]
+        cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+        if abs(cross) < 1e-9:
+            return False
+        signs.append(np.sign(cross))
+    return len(set(signs)) == 1
+
+
 def _four_extreme_points(contour: np.ndarray) -> np.ndarray:
     """从任意轮廓取"最像四角"的四个点：x+y 最小/最大、x−y 最大/最小。
 
@@ -219,8 +239,20 @@ def _interior_is_paper(quad: np.ndarray, gray: np.ndarray) -> tuple[bool, str]:
 def _accept_quad(quad: np.ndarray, contour_area: float, options: PreprocessOptions,
                  total_area: float, gray: np.ndarray | None = None) -> tuple[np.ndarray | None, str]:
     """四项几何校验 + 「四边形不能比轮廓小太多」+ 「里面得是纸面」。"""
-    if not _is_convex(quad.reshape(-1, 1, 2).astype(np.int32)):
-        return None, "not_convex"
+    if not _is_simple_convex(quad):
+        return None, "self_intersecting"
+    # 退化检测：四个角点必须真的"散开"。实测一张行程单被检成 (0,497)(1199,0)(1199,699)(0,498)——
+    # 左下两点只差 1px，形状其实是三角形，却因为"面积 50%、角度正常"通过了所有阈值，
+    # warp 后 OCR 一行都读不出（20 → 0）。
+    points = quad.reshape(4, 2).astype(np.float64)
+    edges = [float(np.linalg.norm(points[(i + 1) % 4] - points[i])) for i in range(4)]
+    longest = max(edges)
+    if longest < 8 or min(edges) < max(12.0, 0.12 * longest):
+        return None, f"degenerate_quad:{min(edges):.0f}/{longest:.0f}"
+    # 对边长度不能差太多（透视允许一定差异，但不会一条边是另一条的 2.5 倍）
+    if abs(edges[0] - edges[2]) > 0.6 * max(edges[0], edges[2]) or \
+            abs(edges[1] - edges[3]) > 0.6 * max(edges[1], edges[3]):
+        return None, "unbalanced_edges"
     angles = _interior_angles(quad)
     if min(angles) < options.min_interior_angle or max(angles) > options.max_interior_angle:
         return None, "bad_angle"
@@ -342,6 +374,9 @@ def _warp_perspective(image: np.ndarray, quad: np.ndarray, max_side: int) -> tup
     width = max(np.linalg.norm(top_right - top_left), cv2.norm(bottom_right, bottom_left))
     height = max(np.linalg.norm(bottom_left - top_left), cv2.norm(bottom_right, top_right))
     width, height = max(8, int(round(width))), max(8, int(round(height)))
+    # 输出不得超过源图尺寸：超过只会把空白/边缘复制进来并拉伸内容
+    source_height, source_width = image.shape[:2]
+    width, height = min(width, source_width), min(height, source_height)
     # 输出尺寸按边长估算，再按 max_side 收敛（保持长宽比，避免拉伸）
     if max(width, height) > max_side:
         factor = max_side / float(max(width, height))
@@ -349,7 +384,7 @@ def _warp_perspective(image: np.ndarray, quad: np.ndarray, max_side: int) -> tup
 
     dst = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], dtype=np.float32)
     matrix = cv2.getPerspectiveTransform(quad.astype(np.float32), dst)
-    warped = cv2.warpPerspective(image, matrix, (width, height), flags=cv2.INTER_CUBIC)
+    warped = cv2.warpPerspective(image, matrix, (width, height), flags=cv2.INTER_LINEAR)
     return warped, matrix
 
 
@@ -546,32 +581,65 @@ def preprocess(source: str | Path | bytes | np.ndarray, options: PreprocessOptio
     rotate_deg = 0.0
     if options.rectify:
         step_started = time.perf_counter()
-        quad, notes = _find_quad(image, options)
+        # 定位不需要高分辨率：纸面边界是低频信号，1000px 足够，且比 1600px 快 2 倍以上
+        detect_image, detect_scale = image, 1.0
+        if max(image.shape[:2]) > 1000:
+            detect_scale = 1000.0 / max(image.shape[:2])
+            detect_image = cv2.resize(image, None, fx=detect_scale, fy=detect_scale,
+                                      interpolation=cv2.INTER_AREA)
+        quad, notes = _find_quad(detect_image, options)
         if quad is not None:
-            # 四角点此刻位于"缩放后图"的坐标系，用当前累计矩阵（缩放）映回原图。
-            # 注意必须在 compose **之前**做：compose 之后 to_original 变成了"校正图 → 原图"，
-            # 拿它去映射 pre-warp 的四角点会得到校正图坐标（实测误差 148px）。
+            quad = quad / detect_scale
+
+        # 重采样源图：先压到 warp_max_side 再 warp。直接在 2800px 的原图上做透视/旋转，
+        # 光重采样就要几百毫秒，而输出上限本来就只有 warp_max_side，多出来的分辨率是白花的。
+        warp_source = original_bgr
+        source_scale = 1.0
+        longest = max(original_bgr.shape[:2])
+        if longest > options.warp_max_side:
+            source_scale = options.warp_max_side / float(longest)
+            warp_source = cv2.resize(original_bgr, None, fx=source_scale, fy=source_scale,
+                                     interpolation=cv2.INTER_AREA)
+        source_to_original = np.diag([1.0 / source_scale, 1.0 / source_scale, 1.0])
+
+        if quad is not None:
+            # 四角点此刻位于"缩放后图"的坐标系，用当前累计矩阵（缩放）映回原图
             quad_original = cv2.perspectiveTransform(
                 quad.reshape(-1, 1, 2).astype(np.float64), to_original
             ).reshape(-1, 2)
             quad_in_original = [[float(x), float(y)] for x, y in quad_original]
-            # 关键：**在原图上重采样**（检测仍在小图做，快）。若从缩放图 warp，
-            # 纸面像素密度会被 max_side 压缩，字变小 → 实测 OCR 命中率从 56% 掉到 0%。
-            if _quad_is_frame(quad_original, original_bgr):
-                # 已经在"正视角 + 满幅"，不重采样（省一次插值，避免把字糊掉）
+
+            img_height, img_width = original_bgr.shape[:2]
+            xs, ys = quad_original[:, 0], quad_original[:, 1]
+            width_ratio = (xs.max() - xs.min()) / max(1.0, float(img_width))
+            height_ratio = (ys.max() - ys.min()) / max(1.0, float(img_height))
+            margin_x, margin_y = img_width * 0.02, img_height * 0.02
+            reasons: list[str] = []
+            if (height_ratio > 0.85 and width_ratio < 0.65) or (width_ratio > 0.85 and height_ratio < 0.65):
+                reasons.append(f"quad_lopsided:{width_ratio:.2f}x{height_ratio:.2f}")
+            if (xs.min() < -margin_x or ys.min() < -margin_y
+                    or xs.max() > img_width + margin_x or ys.max() > img_height + margin_y):
+                reasons.append("quad_out_of_bounds")
+            if reasons:
+                warnings.extend(reasons)
+                quad = None      # 走 minAreaRect 兜底（只修旋转，不裁内容）
+
+        if quad is not None:
+            if _quad_is_frame(quad_original * source_scale, warp_source):
                 steps["rectify"] = "quad_identity"
-                image = original_bgr
-                to_original = np.eye(3, dtype=np.float64)
+                image = warp_source
+                to_original = source_to_original
             else:
-                warped, forward = _warp_perspective(original_bgr, quad_original, options.warp_max_side)
-                to_original = np.linalg.inv(forward)
+                warped, forward = _warp_perspective(warp_source, quad_original * source_scale,
+                                                    options.warp_max_side)
+                to_original = source_to_original @ np.linalg.inv(forward)
                 to_original = to_original / to_original[2, 2]
                 image = warped
                 steps["rectify"] = "quad_perspective"
         else:
-            fallback, forward, reason = _warp_min_area_rect(original_bgr, options)
+            fallback, forward, reason = _warp_min_area_rect(warp_source, options)
             if fallback is not None:
-                to_original = np.linalg.inv(forward)
+                to_original = source_to_original @ np.linalg.inv(forward)
                 to_original = to_original / to_original[2, 2]
                 image = fallback
                 steps["rectify"] = "min_area_rect"
@@ -579,11 +647,23 @@ def preprocess(source: str | Path | bytes | np.ndarray, options: PreprocessOptio
             else:
                 steps["rectify"] = "none"
                 rectify_failed = True
+                image = warp_source
+                to_original = source_to_original
                 warnings.append(f"rectify_failed:{reason}")
                 warnings.extend(notes[:2])
         timings["rectify"] = (time.perf_counter() - step_started) * 1000
     else:
         steps["rectify"] = "disabled"
+
+    # 3.4) 降级路径可能返回原尺寸（未裁切），这里统一压到 warp_max_side，避免后续步骤超时
+    if max(image.shape[:2]) > options.warp_max_side:
+        factor = options.warp_max_side / float(max(image.shape[:2]))
+        new_w = max(8, int(round(image.shape[1] * factor)))
+        new_h = max(8, int(round(image.shape[0] * factor)))
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        to_original = _compose(to_original,
+                               np.array([[factor, 0, 0], [0, factor, 0], [0, 0, 1]], dtype=np.float64))
+        warnings.append(f"downscaled:{factor:.2f}")
 
     # 3.5) 小票放大：短边不足 min_side 时放大（最多 2 倍），否则字太小识别不出来
     # 只在真的做过几何校正后放大：没校正时放大只是把原图吹大，没有信息增益
