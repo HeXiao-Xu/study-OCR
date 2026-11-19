@@ -85,14 +85,12 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'templates',
         name: 'templates',
-        component: Placeholder,
-        meta: { title: '票种模板', roles: ['admin'], placeholder: '后端接口已在 S2-8 完成，管理端页面尚未排期' },
+        component: () => import('../views/TemplateAdmin.vue'),
+        meta: { title: '票种模板', roles: ['admin'] },
       },
       {
         path: 'rules',
-        name: 'rules',
-        component: Placeholder,
-        meta: { title: '字段规则', roles: ['admin'], placeholder: '规则随模板维护，后端接口已在 S2-8 完成；管理端页面尚未排期' },
+        redirect: '/templates',
       },
       {
         path: 'certs',

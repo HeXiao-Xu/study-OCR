@@ -257,6 +257,30 @@ for (const step of steps) {
     if (result !== 'FILLED') throw new Error(`没找到输入框：${step.selector}`)
     console.log(`[step] 填写：${step.selector}`)
     await sleep(300)
+  } else if (step.type === 'tab') {
+    const result = await evaluate(
+      ws,
+      `(() => {
+        const tab = [...document.querySelectorAll('.el-tabs__item')].find((el) => el.innerText.includes(${JSON.stringify(step.value)}));
+        if (!tab) return 'NOT_FOUND';
+        tab.click();
+        return 'CLICKED';
+      })()`,
+    )
+    if (result !== 'CLICKED') throw new Error(`没找到标签页：${step.value}`)
+    console.log(`[step] 标签页：${step.value}`)
+    await sleep(800)
+  } else if (step.type === 'upload') {
+    await send(ws, 'DOM.enable')
+    const documentNode = await send(ws, 'DOM.getDocument', { depth: -1 })
+    const node = await send(ws, 'DOM.querySelector', {
+      nodeId: documentNode.root.nodeId,
+      selector: step.selector ?? 'input[type=file]',
+    })
+    if (!node.nodeId) throw new Error(`没找到文件输入框：${step.selector}`)
+    await send(ws, 'DOM.setFileInputFiles', { nodeId: node.nodeId, files: [step.file] })
+    console.log(`[step] 选择文件：${step.file}`)
+    await sleep(1500)
   } else if (step.type === 'wait') {
     await sleep(Number(step.ms) || 1000)
   } else {

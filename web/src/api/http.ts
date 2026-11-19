@@ -222,6 +222,15 @@ export async function patch<T>(
   return response.data
 }
 
+export async function put<T>(
+  url: string,
+  data?: unknown,
+  config?: HttpRequestConfig,
+): Promise<Envelope<T>> {
+  const response = await http.put<Envelope<T>>(url, data, config)
+  return response.data
+}
+
 export async function del<T>(url: string, config?: HttpRequestConfig): Promise<Envelope<T>> {
   const response = await http.delete<Envelope<T>>(url, config)
   return response.data

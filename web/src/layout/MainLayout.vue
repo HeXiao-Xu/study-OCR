@@ -29,7 +29,6 @@ const MENU: MenuItem[] = [
   { path: '/review', label: '待核对', roles: ['reviewer'] },
   { path: '/finance/pending', label: '待审核', roles: ['reviewer'] },
   { path: '/templates', label: '票种模板', roles: ['admin'] },
-  { path: '/rules', label: '字段规则', roles: ['admin'] },
   { path: '/certs', label: '证书管理', roles: ['admin'] },
   { path: '/audit', label: '审计日志', roles: ['admin'] },
 ]
