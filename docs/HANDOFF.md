@@ -12,7 +12,7 @@
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 29 个 commit，待用户 push**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 30 个 commit，待用户 push**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
 | 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**、python-multipart **0.0.34**、ARQ **0.28.0**、redis-py **5.3.1**（ARQ 要求 `redis<6`，D-045） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
@@ -155,7 +155,7 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-051 | 第一版 UI：分栏登录、深色侧栏、移除概览/联调菜单、按角色落地；不改业务逻辑，详情工作区仍等 S3-5 |
 | D-052 | 管理端模板页：`/templates` 列表+详情抽屉+升版本编辑+试跑；规则随模板维护，`/rules` 重定向；无删除接口 |
 | D-053 | 内容页 `el-space` 补 width:100%、去掉 1280 上限，撑满右侧；登录表单仍保持 400px |
-| D-054 | 票种范围锁定 5 类 + unknown；管理端新建禁用，日常只升版本；新增票种需先扩 SCHEMA/模板/样本 |
+| D-054 | 票种范围锁定 5 类 + unknown；管理端新建入口已移除，日常只升版本；新增票种需先扩 SCHEMA/模板/样本 |
 
 ## 7. 下一步：S3-1 OCR Worker 串起全链路（阶段 3 开始）
 
@@ -181,11 +181,11 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 - 底座：`app/tasks/ocr_task.py::_run_pipeline` 就是占位入口（现在抛 `TaskNotReadyError`）；
   `job_service` 的幂等/重试/僵尸恢复已就绪；`ocr/templates/*.yaml` 与 S2-8 的 DB 模板都可用。
 - 注意：S2-8 只做了**模板/规则的后端**；管理端页面已在用户反馈后补齐（`/templates`，D-052），
-  `/rules` 重定向到模板页，规则在模板详情里维护。票种范围固定 5 类 + unknown（D-054），新建按钮禁用。
+  `/rules` 重定向到模板页，规则在模板详情里维护。票种范围固定 5 类 + unknown（D-054），新建入口已移除。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地 29 个 commit 需要用户执行 `git push`（AI 不推）；
+1. **push**：本地 30 个 commit 需要用户执行 `git push`（AI 不推）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；

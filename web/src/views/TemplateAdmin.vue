@@ -262,17 +262,11 @@ onMounted(() => {
       <div>
         <h2>票种模板</h2>
         <p>
-          当前 5 个票种已全部覆盖；日常调整用「编辑并升版本」。新增票种需要先扩展 SCHEMA 枚举并迁移。
+          当前 5 个票种已全部覆盖；日常调整用「编辑并升版本」。新增票种属于系统发版（扩展 SCHEMA、迁移、模板与样本），
+          不在管理端操作。
         </p>
       </div>
-      <el-tooltip
-        content="当前 5 个票种已全部 seed；新增票种需先扩展 SCHEMA 枚举、迁移与样本"
-        placement="left"
-      >
-        <span>
-          <el-button disabled>新建模板</el-button>
-        </span>
-      </el-tooltip>
+      <el-tag type="info" effect="plain">票种固定 5 类</el-tag>
     </div>
 
     <el-card shadow="never">
