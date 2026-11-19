@@ -1,33 +1,44 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-19（S2 收口 + UI 整理 + 管理端模板页）
+> 最后更新：2026-11-19 晚（S2 收口 + UI 整理 + 管理端模板页 + 票种范围锁定）
 
 ## 1. 一句话现状
 
-**阶段 2（基础框架）全部完成**（S0 + S1 + S2-1 ~ S2-12），自动化验收全绿；
+**阶段 2（基础框架）全部完成**（S0 + S1 + S2-1 ~ S2-12），前端主流程与第一版 UI 已通；
 **下一步进入阶段 3：S3-1 OCR Worker 串起全链路**。
+
+当前浏览器可走通：登录（三角色）→ 按角色落地 → 上传/去重 → 票据列表/详情 → 管理端模板查看/升版本/试跑；
+但 OCR 流水线尚未接入，上传后的 job 会真实失败（S3-1 的占位行为），详情字段为空。
 
 ## 2. 仓库与环境
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`，**本地领先 origin 30 个 commit，待用户 push**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`；origin/main 已同步到 `d355aca`，**当前仅本次 HANDOFF 更新未 push**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有脚本都用 `.venv/Scripts/python.exe`**） |
-| 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**、python-multipart **0.0.34**、ARQ **0.28.0**、redis-py **5.3.1**（ARQ 要求 `redis<6`，D-045） |
+| 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**、python-multipart **0.0.34**、ARQ **0.28.0**、redis-py **5.3.1**（ARQ 要求 `redis<6`，D-045）、APScheduler **3.11.1** + tzlocal **5.4.5**（S2-12） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
 | OCR 模型 | 已缓存在 `~/.paddleocr/whl/{det,rec,cls}`（约 18MB），离线可用 |
-| Docker | `study-ocr-{postgres,redis,minio}` 三个容器 **healthy**（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0002`（16 业务表 + alembic_version）** |
+| Docker | `study-ocr-{postgres,redis,minio}` 三个容器（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0003`（16 业务表 + alembic_version）** |
 | 依赖锁 | `backend/requirements.txt`（手写锁）+ `requirements.lock.txt`（pip freeze） |
 
 > ⚠️ `gmssl` **还没装**——那是 S4 密码链路才需要的，别提前装（会打乱 numpy 版本）。
+
+### 2.1 本地开发库现状（今天交接时）
+
+- 账号：`alice`（submitter）、`bob`（reviewer）、`root`（admin）；口令是本地开发口令，未写进仓库。
+  新会话做登录冒烟时，若不知道口令，用 `scripts/create_user.py` 新建一个用户并用自己的口令；reviewer/admin 只能脚本建。
+- 数据：**5 个 seed 模板**（vat_general / vat_digital / train / flight / taxi）、**1 张测试票据**（之前本地上传的合成样本）、0 条审计行；
+  如需干净演示，先清理测试用户/票据/MinIO 对象再跑 seed（不要直接删库）。
+- 端口：后端 8000、Vite 5173、MinIO 控制台 9003；无头冒烟 Edge 用 9222（临时 profile）。
 
 ## 3. 目录与关键文件（认路用）
 
 ```
 backend/app/models/      ← S2-1：16 张表模型（一表一文件）+ base.py（命名约定/CHECK 助手）+ enums.py
 backend/app/core/database.py  ← S2-1：`postgresql://` → `postgresql+psycopg://` 方言映射 + 引擎/会话工厂
-backend/alembic/         ← S2-1/S2-2：alembic.ini / env.py / versions/{0001_init,0002_audit_action_login_logout}.py
+backend/alembic/         ← 0001_init / 0002_audit_action_login_logout / 0003_ticket_type_vat_digital.py
 backend/app/core/{security,redis}.py  ← S2-2：Argon2id + HS256 JWT；Redis 单例
 backend/app/services/{auth_service,token_store}.py  ← S2-2：注册/认证/签发/轮换/吊销；refresh 白名单
 backend/app/api/{deps.py,v1/auth.py}  ← S2-2：Bearer 解析、get_current_user、require_roles、5 条 auth 路由
@@ -40,7 +51,7 @@ backend/app/tasks/scheduler.py  ← S2-12：APScheduler + 按时段 Redis 锁（
 backend/app/services/{template_service,template_registry,template_seed}.py  ← S2-8：模板 CRUD/升版本/60s 缓存/seed
 backend/app/tasks/{worker,ocr_task,queue}.py  ← S2-7：ARQ WorkerSettings、任务函数、入队协议
 backend/app/api/v1/{invoices,files,templates}.py + schemas/{invoice,template}.py  ← 票据/上传/模板接口
-web/src/api/{http,auth,files,invoices}.ts + stores/user.ts + router + layout/MainLayout.vue  ← 会话/刷新/上传/轮询
+web/src/api/{http,auth,files,invoices,templates}.ts + stores/user.ts + router + layout/MainLayout.vue  ← 会话/刷新/上传/轮询
 web/src/views/{Login,Forbidden,Placeholder,Upload,InvoiceList,InvoiceDetail}.vue  ← 登录/403/占位/上传/列表/详情
 web/src/utils/format.ts + types/invoice.ts  ← 金额/时间/标签 + 完整票据类型
 web/src/styles/theme.css + utils/landing.ts  ← 全局视觉基线 + 登录后角色落地
@@ -60,9 +71,27 @@ backend/eval/
   results/baseline_report.md            ← 论文可直接用的 Markdown 表（已入库）
 scripts/                  ← 所有跑批脚本（make_samples / verify_samples / ocr_demo /
                               layout_eval / field_eval / ocr_baseline / preprocess_demo …）
-docs/{spec,plan}/         ← 每张卡一份 spec + plan（S1-1 ~ S1-6、S2-1 齐全）
+docs/{spec,plan}/         ← 每张卡一份 spec + plan（S1-1 ~ S1-6、S2-1 ~ S2-12 齐全；S3 起新建）
 docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必读
 ```
+
+
+### 3.1 前端已实现路由（浏览器可直接走）
+
+| 路由 | 页面 | 角色 |
+|---|---|---|
+| `/login` | 登录（分栏品牌页） | 公开 |
+| `/invoices` | 票据列表（筛选同步 URL） | submitter / reviewer |
+| `/invoices/:id` | 票据详情 + 字段编辑 | submitter / reviewer |
+| `/upload` | 上传（拖拽/多选/去重/轮询） | submitter |
+| `/templates` | 管理端模板/规则/升版本/试跑 | admin |
+| `/rules` | 重定向到 `/templates` | admin |
+| `/403` | 无权限 | 登录用户 |
+| `/debug` | 联调自检（不在菜单） | 登录用户 |
+
+前端没有 Vitest/组件单测；验证手段是 `npm run typecheck` + `npm run build` + `scripts/ui_smoke.mjs`。
+冒烟支持 `--fill/--clear/--view/--shot/--steps/--upload`；无头 Edge 必须显式 `--view`，否则默认视口只有 500px，
+登录页品牌区会被响应式规则隐藏（曾因此误判）。
 
 ## 4. 当前指标（60 张合成集，CPU）
 
@@ -83,9 +112,9 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 
 ```bash
 cd /e/BiSheXZY/study-OCR
-(cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表，head=0002
+(cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表，head=0003
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
-(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 332 passed（默认跳过集成）
+(cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 341 passed（默认跳过集成）
 (cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 146 passed（需 Docker）
 # 模板 seed（幂等；部署时调用一次）
 (cd backend && ../.venv/Scripts/python.exe ../scripts/seed_templates.py)
@@ -95,10 +124,14 @@ cd /e/BiSheXZY/study-OCR
 curl -s -F "file=@票据.jpg" localhost:8000/api/v1/invoices/upload -H "Authorization: Bearer <token>"
 # 前端（Vite 5173 + 无头 Edge 9222）：类型检查/构建 + 真实登录冒烟（需要先起后端）
 (cd web && npm run typecheck && npm run build)
+# 无头 Edge（另起一个进程；bash 路径，PowerShell 用引号包住 exe）
+"/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" --headless=new --window-size=1440,900 \
+  --remote-debugging-port=9222 --user-data-dir="C:\\Users\\HEXIAO\\AppData\\Local\\Temp\\dsh-edge" about:blank
 node scripts/ui_smoke.mjs "http://127.0.0.1:5173/login" --clear --view 1440x900 \
   --fill 'input[autocomplete="username"]' <用户名> \
   --fill 'input[autocomplete="current-password"]' <口令> \
   --click 登录 --expect 我的票据 --shot ui.png
+# 需要登录冒烟但不知道现有账号口令时：先 create_user.py 新建一个 submitter，再用它登录
 # 上传页冒烟（先登录，再直接打开 /upload；--upload 走 CDP 塞文件）
 node scripts/ui_smoke.mjs "http://127.0.0.1:5173/upload" \
   --upload 'input[type=file]' 'E:\BiSheXZY\study-OCR\samples\synth_v1\vat_digital_landscape_001.jpg' \
@@ -113,7 +146,7 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_SECOND='*/10' \
   ANCHOR_LOCK_TTL_SECONDS=5 ../.venv/Scripts/python.exe -m uvicorn app.main:app --port 8001
 .venv/Scripts/python.exe scripts/bench_list.py --rows 50000 --iterations 50  # 分页基准（临时库）
-.venv/Scripts/python.exe scripts/smoke.py                                   # 8 OK / 0 FAIL
+.venv/Scripts/python.exe scripts/smoke.py                                   # 9 OK / 0 FAIL（Vite 在跑时）
 # 建 reviewer / admin 账号（注册接口只产生 submitter）
 (cd backend && ../.venv/Scripts/python.exe ../scripts/create_user.py --username reviewer1 --role reviewer --real-name 审核员)
 .venv/Scripts/python.exe scripts/check_annotations.py --strict
@@ -185,14 +218,17 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地 30 个 commit 需要用户执行 `git push`（AI 不推）；
+1. **push**：origin/main 已同步到 `d355aca`；当前只有本次 HANDOFF 更新未 push（AI 不推）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；
 5. `intake.prepare_input` 还没接进 Worker —— **S3-1 串流水线时必须接上**（接口已定好）；
 6. 真实样本只剩 1 份（数电票 PDF，仅本地）：论文需如实写"合成集为主 + 1 份真实件定性校验"；
 7. 审计动作：`login_failed`/`logout`/`forbidden` 枚举已加（0002），但 S2-2 **未写审计行**（哈希链在 S4-7）；
-   `template_create`/`report_create`/`issue_cert` 三个值仍缺，对应任务（S2-8 / S5-1 / S4-6）开始前补。
+   `template_create` 仍缺（S2-8 已完成但未写审计），`report_create`/`issue_cert` 也未加；S4-7 前一起补。
+8. `GET /invoices/{id}/image` 未实现（依赖 S4 信封，API 标 S3-5/S5-4）：详情页目前是占位，不做明文后门。
+9. 管理端模板页已补（D-052），但**新建票种入口已按用户要求移除**（D-054）：票种固定 5 类 + unknown；
+   新增票种必须改 SCHEMA/迁移/模板/样本并发版，不能从管理端新建。
 
 ## 9. 工作方式约定（用户偏好，新会话请沿用）
 
