@@ -681,6 +681,9 @@ def preprocess(source: str | Path | bytes | np.ndarray, options: PreprocessOptio
         steps["upscale"] = False
 
     # 4) 残差小角度
+    # 说明：把阈值降到 1.0°、并让 minAreaRect 路径也去斜，实测会掉 3–5 个点的字段准确率
+    # （多一次小角度重采样把细笔画糊掉：buyer_tax_no 86.7%→83.3%、total_amount 76.7%→71.7%）。
+    # 用户抽查结论是"残留倾斜但字都看得清"，所以维持 1.5° 且只对透视路径做残差校正。
     if options.rotate and steps["rectify"] == "quad_perspective":
         step_started = time.perf_counter()
         rotated, angle = _deskew(image, options)

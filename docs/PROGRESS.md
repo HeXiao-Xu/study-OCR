@@ -6,7 +6,7 @@
 ## 当前状态
 
 - 阶段：**阶段 0（项目启动）**，M0 前段
-- 最近完成：**S1-6 端到端基线**——**S1 阶段（OCR 技术验证）全部收口**：检测 Hmean 0.948、字符准确率 0.816、字段级 0.856、整单 0.500；156 个测试
+- 最近完成：**S1 收尾补强**（排除不合规样本 D-032 / 金额税额约束反解 D-033 / 去斜取舍 D-034）：字段级 0.856 → **0.893**、整单 0.500 → **0.633**；156 个测试
 - 上一步完成：**S1-5 字段抽取与校验**（字段级 85.6%）（5 类票种判对率 **100%**、区域按内容框归一化；顺带修掉 3 个预处理几何缺陷，85 个测试）
 - 下一步：**S2-1 数据库模型与迁移**（16 张表 + Alembic；契约见 `docs/SCHEMA.md`，定稿清单 20 项已全过）
 - 已知阻塞：无
@@ -97,8 +97,8 @@
 |---|---|---|---|
 | S0-1 | 目录骨架（`backend/app/{api/v1,models,schemas,services,ocr/templates,crypto/sm,core,tasks,utils}`、`alembic/versions`、`tests`、`eval/{datasets,configs,results}`、`web/src/*`、`docs/{spec,plan}`、`deploy`、`scripts`、`samples`、`secrets`）、`.gitignore`、`.gitattributes`、`README.md` | `find . -type d` 与《完整方案》4.6 逐项对照；`git status` 干净 | ✅ 通过。`.gitignore` 已强制排除 `secrets/` 与 `samples/` 影像 |
 | S0-2 | `AGENTS.md`（含 §5 OCR 高压线、§6 密码高压线、§10 编码细则、§10.8 一致性锚点表、§11 spec→plan 协议） | 通读确认"这个项目用什么、不用什么"能一句话说清 | ✅ 通过。锚点表 S0 阶段留空，S0-5 起回填 |
-| S1-6 | `backend/eval/metrics.py`、`backend/eval/configs/baseline.yaml`、`scripts/ocr_baseline.py`、`backend/tests/test_metrics.py`、`backend/eval/results/baseline_report.md` | ① 60 张全链路基线：检测 **Hmean 0.948**（P 0.967/R 0.930）、字符准确率 **0.816**、字段级 **0.856**、整单 **0.500**；② 预处理开关对照：Hmean 0.974（关）vs 0.948（开）、字段级 0.847 vs 0.856；③ 耗时 P50：preprocess 111ms + ocr 1422ms + layout 52ms + extract 1ms = 1591ms；④ 23 条指标单测全部手算断言；⑤ `pytest` 156 passed；⑥ Markdown 报告可直接贴论文 | ✅ 通过（整单 0.500 为薄弱环节，已记遗留） |
-| S1-5 | `backend/app/ocr/{extractor.py,validators.py}`、`templates/field_rules.yaml`、`scripts/{field_demo,field_eval}.py`、`backend/tests/{test_validators,test_extractor}.py` | ① 字段级准确率 **85.6%（368/430）**：check_code 100%、invoice_code 96.7%、invoice_date 96.7%、invoice_no 95%、buyer_name 93.3%、passenger_name 90%、seller_tax_no 90%；短板 amount 60%、tax_amount 56.7%、total_amount 76.7%（已列遗留）；② 校验器 38 条单测（含"税号改一位必须报错"）；③ 抽取器 10 条单测（同优先级冲突保留候选、缺失必填、税号错折半）；④ `pytest` 133 passed | ✅ 通过 |
+| S1-6 | `backend/eval/metrics.py`、`backend/eval/configs/baseline.yaml`、`scripts/ocr_baseline.py`、`backend/tests/test_metrics.py`、`backend/eval/results/baseline_report.md` | ① 60 张全链路基线：检测 **Hmean 0.948**（P 0.967/R 0.930）、字符准确率 **0.816**、字段级 **0.893**、整单 **0.633**；② 预处理开关对照：Hmean 0.974（关）vs 0.948（开）、字段级 0.888 vs 0.893；③ 耗时 P50：preprocess 111ms + ocr 1422ms + layout 52ms + extract 1ms = 1591ms；④ 23 条指标单测全部手算断言；⑤ `pytest` 156 passed；⑥ Markdown 报告可直接贴论文 | ✅ 通过（整单 0.633，taxi 0.200 仍是最弱票种） |
+| S1-5 | `backend/app/ocr/{extractor.py,validators.py}`、`templates/field_rules.yaml`、`scripts/{field_demo,field_eval}.py`、`backend/tests/{test_validators,test_extractor}.py` | ① 字段级准确率 **89.3%（384/430）**：check_code 100%、invoice_code 96.7%、invoice_date 96.7%、invoice_no 95%、buyer_name 93.3%、seller_tax_no 90%、passenger_name 90%、**amount 86.7%、tax_amount 83.3%**（D-033 约束反解后）、seller_name 86.0%、total_amount 76.7%；② 校验器 38 条单测（含"税号改一位必须报错"）；③ 抽取器 10 条单测（同优先级冲突保留候选、缺失必填、税号错折半）；④ `pytest` 133 passed | ✅ 通过 |
 | S1-4 | `backend/app/ocr/layout.py`、`backend/app/ocr/templates/*.yaml`（5 个）、`scripts/{layout_demo,layout_eval}.py`、`backend/tests/test_layout.py` | ① 60 张票种判对率 **100%（60/60）**，unknown 0（任务卡要求 ≥95%）；② 区域划分：单张数电票 header 10 / body 31 / footer 2、行程单 header 1–3 / body 13–15 / footer 2–4；③ 13 条单测（五类票种、未知、真歧义、区域单调、归一化不变、block 聚类）；④ 顺带修 3 个预处理几何缺陷（退化/自交/单边裁切），OCR 行数恢复 20→20、39→39、41→41；⑤ `pytest` 85 passed | ✅ 通过 |
 | S1-3 | `backend/app/ocr/{types,detector,recognizer}.py`、`scripts/ocr_demo.py`、`backend/tests/test_ocr_contract.py`、`docs/{spec,plan}/s1-3-ocr-engine.md` | ① 单张 `vat_digital_landscape_001`：**41 行**、平均置信度 ≈0.99、无乱码、**两次结果完全一致**；② 批量 20 张：行数均值 14.5（8–20）、平均置信度 0.958、推理 P50 944ms / P95 1541ms；③ 困难样本 `taxi_002` + 预处理：7 行、置信度 0.92–0.99（同图 Windows OCR 只能读出 0–2 个字段）；④ 7 条契约测试全过，含"3.x dict 结构必须报错"；⑤ `pytest` 72 passed | ✅ 通过 |
 | S1-2 | `backend/app/ocr/preprocess.py`（`PreprocessOptions` 全开关 + `to_original` 3×3）、`scripts/{preprocess_demo,preprocess_eval}.py`、`backend/tests/{test_preprocess_exif,test_preprocess_geometry}.py` | ① 15 条预处理单测全过（EXIF 旋转、已知梯形还原、坐标回算、开关组合冒烟、降级不抛异常）；② 60 张数据集（**D-029 收严校验后的最新数字**）：几何校正 65%（透视 23 + 正视角满幅 16）、minAreaRect 兜底 21、失败 0；quality ok 54 / low 6；耗时 **P50 75ms / P95 197ms**（预算 300ms）；③ `preprocess_eval`：可比样本 OCR 命中率 88% → 88%（无样本变差）；④ 真实拍照样本 R-001 实测：四角点检出、quality=ok、印章 1 处、314ms；⑤ demo 输出 60 张前后对照图 | ✅ 通过（R-001 的"不躺倒不扭曲"需人工眼看对照图，见遗留 16） |
@@ -142,7 +142,8 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 10 | S1-4 只有 header/body/footer 三段，细分区（明细表/合计/印章）靠 S1-5 的关键字锚定 | 明细表区域定位不够精确 | S1-5 里用关键字 + 坐标邻近补足；必要时在模板里加 `zones` |
 | 11 | amount/tax 在旧版票竖屏截图上漏抽 10 张（合计行被拆行 + 印章遮挡） | 这两字段准确率只有 56.7%/60% | 下轮加"按列对齐"的表结构解析，或用 amount+tax 交叉校验 |
 | 12 | total_amount 错 11 张：合计行未检出时退到"金额"锚点 | 合计可能被取成明细金额 | 用 `amount + tax` 与候选交叉校验后择优 |
-| 13 | 整单正确率只有 0.500（taxi 0.20 / vat_general 0.35） | 论文里"整单全对率"这个指标偏低 | 下轮：amount/tax 的列对齐 + 二次识别（S3-3）；S6 分组报告并说明原因 |
+| 13 | 整单正确率 0.633：`taxi_ticket` 仍只有 0.200 | 论文里"整单全对率"受单一票种拖累 | 出租车票字太小（纸面约 300px 高），需 S3-3 的局部二次识别；S6 分组报告 |
+| 13b | `total_amount` 76.7%（11 张错） | 合计行未检出时退到"金额"锚点 | 下轮用 amount+tax 与候选交叉校验择优 |
 | 14 | 预处理对检测是负收益（Hmean -0.026） | 说明 S1-2 的部分步骤在"本来就没歪"的图上纯损失 | S6 做逐开关消融，按票种/扰动分组给出"什么情况下该开" |
 | 15 | 真实样本 R-001 的票种仍未确认 → 判为 unknown，只抽出 1 个字段 | 论文里"真实样本定性对照"只有 1 个数字 | 你告知票种后补 MANIFEST；必要时为新票种补模板 |
 | 16 | S1-2 的"肉眼确认不躺倒不扭曲"无法由 AI 完成 | 合成集与 R-001 的对照图需人工抽查一次 | 见 `backend/eval/results/preprocess/*_compare.jpg` 与 `layout/*_layout.jpg`（本地、不入库） |
@@ -152,6 +153,16 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 
 ### 2026-11-18
 
+- **S1 收尾补强**（按"确保阶段一完成"的审计结果处理）。
+  · **D-032 排除超市购物小票**：唯一真实样片 R-001 经确认是购物小票，无发票代码/号码、无税务监制章，
+    不是合规报销凭证 → 移出数据集、不做该版式模板与评测；只保留像素统计作成像参照。
+    系统范围明确为**五类合规票据**（数电票 / 旧版增值税电子普通发票 / 铁路电子客票 / 航空行程单 / 出租车票）。
+  · **D-033 金额/税额约束反解**：旧版票竖屏截图没有"合计"行，金额税额散在相邻行 → 用
+    "邻近两个金额之和 = 合计"反解（唯一解才采用、税额取较小者、置信度 0.6、`rule_id=paired:sum:*`、带 warning）。
+    **amount 60.0% → 86.7%、tax_amount 56.7% → 83.3%、总体 85.6% → 89.3%**。
+  · **D-034 去斜取舍**：把阈值降到 1.0° 并让兜底路径也去斜，实测字段准确率掉 3–5 点（细笔画被重采样糊掉）
+    → 回退到 1.5°，并在代码注释里写明"为什么不再收紧"。用户判据"字看得清"已满足。
+  · **整单正确率 0.500 → 0.633**（vat_general 0.35→0.75、vat_digital 0.70→0.70、taxi 仍 0.20）。
 - **S1-6 完成（S1 阶段收口）**：端到端基线脚本与指标计算。
   · 指标全部在 `backend/eval/metrics.py`（纯函数 + 23 条手算单测），脚本只调指标 → **打分与产结果分离**；
   · 三个口径问题当场修掉：① 标注在原图、OCR 在校正图 → 用 `to_original` 逆矩阵映射（否则 Hmean 0.09）；

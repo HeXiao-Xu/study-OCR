@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 import yaml
@@ -213,6 +214,49 @@ def _neighbour_value(rule: FieldRule, anchor_line: OcrLine, lines: list[OcrLine]
     return None
 
 
+_MONEY_PATTERN = re.compile(r"[¥￥]?\s*-?\d[\d,]*\.\d{2}")
+
+
+def _money(field: ExtractedField | None) -> "Decimal | None":
+    """取字段的 Decimal 金额（字段不存在或不是金额时返回 None）。"""
+    if field is None:
+        return None
+    return parse_money(field.value)
+
+
+def _infer_amount_tax(lines: list[OcrLine], total_line: OcrLine, total_value: Decimal,
+                      image_height: int) -> tuple[Decimal, Decimal] | None:
+    """在"价税合计"附近找一对金额，使其和等于合计值。
+
+    为什么需要这一步：旧版票的**竖屏截图没有"合计"这一行**（只有"价税合计（大写）"），
+    金额与税额散在相邻几行里，纯锚点取不到（实测 10 张 vat 样本全漏）。
+    这不是"猜"，是用 `amount + tax = total` 这条硬约束反解，并额外要求：
+      ① 两个值落在同一纵向窗口（±5% 图高）；
+      ② 和与合计值相差 ≤ 0.01；
+      ③ 较大的当金额、较小的当税额（税额不会大于金额）。
+    解不唯一就直接返回 None——宁可缺失，也不硬凑一个值。
+    """
+    if not lines or image_height <= 0:
+        return None
+    window = max(int(image_height * 0.05), 40)
+    candidates: list[Decimal] = []
+    for line in lines:
+        if abs(line.y_center - total_line.y_center) > window:
+            continue
+        for raw in _MONEY_PATTERN.findall(line.text):
+            amount = parse_money(raw)
+            if amount is None or abs(amount - total_value) <= Decimal("0.01"):
+                continue
+            candidates.append(amount)
+    unique = sorted(set(candidates))
+    pairs = [(a, b) for index, a in enumerate(unique) for b in unique[index + 1:]
+             if abs(a + b - total_value) <= Decimal("0.01")]
+    if len(pairs) != 1:
+        return None
+    left, right = pairs[0]
+    return max(left, right), min(left, right)
+
+
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
@@ -308,6 +352,50 @@ def extract_fields(lines: list[OcrLine], image_size: tuple[int, int],
                            for hit in top_hits],
             "note": "同优先级证据给出不同取值，未自动替换，请人工确认",
         })
+
+    # 金额/税额缺失、但合计值在：用"邻近两个金额之和等于合计"反解（仅唯一解时采用）
+    if ticket_type in {"vat_digital", "vat_general"}:
+        total_field = result.fields.get("total_amount")
+        total_value = _money(total_field)
+        if (total_value is not None and total_field is not None
+                and total_field.source_line_no is not None
+                and any(name not in result.fields for name in ("amount", "tax_amount"))):
+            total_line = next((line for line in ordered if line.line_no == total_field.source_line_no), None)
+            if total_line is not None:
+                pair = _infer_amount_tax(ordered, total_line, total_value, image_height)
+                if pair is not None:
+                    amount_value, tax_value = pair
+                    for name, value in (("amount", amount_value), ("tax_amount", tax_value)):
+                        if name in result.fields:
+                            continue
+                        result.fields[name] = ExtractedField(
+                            name=name, value=f"{value:.2f}", raw_text="（按合计关系在邻近行配对）",
+                            source_line_no=total_line.line_no, confidence=0.6,
+                            rule_id=f"paired:sum:{name}", rule_strength=0.0, bbox=None,
+                        )
+                        result.warnings.append(f"paired:{name}")
+
+    # 金额三件套互相补：只有两个抽到时，用 total = amount + tax 补第三个。
+    # 这是**显式推导**不是静默修正：rule_id=derived:*、置信度降档、并留 warning，
+    # 前端会把这类值标成"推导值"，用户可以直接改。
+    if ticket_type in {"vat_digital", "vat_general"}:
+        total = _money(result.fields.get("total_amount"))
+        amount = _money(result.fields.get("amount"))
+        tax = _money(result.fields.get("tax_amount"))
+        derived_candidates = (
+            ("amount", total - tax if (total is not None and tax is not None and amount is None) else None),
+            ("tax_amount", total - amount if (total is not None and amount is not None and tax is None) else None),
+            ("total_amount", amount + tax if (amount is not None and tax is not None and total is None) else None),
+        )
+        for name, derived in derived_candidates:
+            if derived is None:
+                continue
+            result.fields[name] = ExtractedField(
+                name=name, value=f"{derived:.2f}", raw_text="（由合计关系推导）",
+                source_line_no=None, confidence=0.55, rule_id=f"derived:{name}",
+                rule_strength=0.0, bbox=None,
+            )
+            result.warnings.append(f"derived:{name}")
 
     # 校验：失败把该字段置信度折半（任务卡要求），errors 全量返回
     validation = run_validators(result.fields, ticket_type)
