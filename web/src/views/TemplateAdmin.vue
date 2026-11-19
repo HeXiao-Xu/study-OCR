@@ -10,7 +10,6 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { ApiError } from '../api/http'
 import {
-  createTemplate,
   getTemplate,
   listTemplates,
   testTemplate,
@@ -120,18 +119,6 @@ async function openDetail(row: { id: number }): Promise<void> {
   }
 }
 
-function openCreate(): void {
-  editingId.value = null
-  editingVersion.value = 1
-  form.type_code = ''
-  form.type_name = ''
-  form.keywordsText = ''
-  form.specsText = '{\n  "total_amount": {\n    "keywords": ["价税合计"],\n    "strategy": "total_zone"\n  }\n}'
-  form.active = false
-  form.rules = []
-  dialogOpen.value = true
-}
-
 function openEdit(): void {
   if (!detail.value) return
   const template = detail.value.template
@@ -233,22 +220,15 @@ async function save(): Promise<void> {
 
   saving.value = true
   try {
-    if (editingId.value !== null) {
-      const updated = await updateTemplate(editingId.value, {
-        ...payload,
-        version: editingVersion.value,
-      })
-      ElMessage.success(`已生成 v${updated.version}`)
-      dialogOpen.value = false
-      await load()
-      await openDetail(updated)
-    } else {
-      const created = await createTemplate(payload)
-      ElMessage.success('模板已创建')
-      dialogOpen.value = false
-      await load()
-      await openDetail(created)
-    }
+    if (editingId.value === null) return
+    const updated = await updateTemplate(editingId.value, {
+      ...payload,
+      version: editingVersion.value,
+    })
+    ElMessage.success(`已生成 v${updated.version}`)
+    dialogOpen.value = false
+    await load()
+    await openDetail(updated)
   } catch (cause) {
     ElMessage.error(cause instanceof ApiError ? cause.message : '保存失败，请重试')
   } finally {
@@ -281,9 +261,18 @@ onMounted(() => {
     <div class="page-heading">
       <div>
         <h2>票种模板</h2>
-        <p>维护票种关键字、字段规格与校验规则；保存会生成新版本，旧版本保留。</p>
+        <p>
+          当前 5 个票种已全部覆盖；日常调整用「编辑并升版本」。新增票种需要先扩展 SCHEMA 枚举并迁移。
+        </p>
       </div>
-      <el-button type="primary" @click="openCreate">新建模板</el-button>
+      <el-tooltip
+        content="当前 5 个票种已全部 seed；新增票种需先扩展 SCHEMA 枚举、迁移与样本"
+        placement="left"
+      >
+        <span>
+          <el-button disabled>新建模板</el-button>
+        </span>
+      </el-tooltip>
     </div>
 
     <el-card shadow="never">
@@ -475,7 +464,7 @@ onMounted(() => {
     <!-- 新建 / 升版本 -->
     <el-dialog
       v-model="dialogOpen"
-      :title="editingId === null ? '新建模板' : `编辑模板（当前 v${editingVersion}，保存后生成 v${editingVersion + 1}）`"
+      :title="`编辑模板（当前 v${editingVersion}，保存后生成 v${editingVersion + 1}）`"
       width="860px"
       destroy-on-close
     >
@@ -554,9 +543,7 @@ onMounted(() => {
 
       <template #footer>
         <el-button :disabled="saving" @click="dialogOpen = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="save">
-          {{ editingId === null ? '创建' : '保存并升版本' }}
-        </el-button>
+        <el-button type="primary" :loading="saving" @click="save">保存并升版本</el-button>
       </template>
     </el-dialog>
   </el-space>
