@@ -1,5 +1,5 @@
 /** 票据读/写接口（S2-11；轮询在 S2-10 已加，S3-1 换用 ocr-status）。 */
-import { get, patch, unwrap } from './http'
+import { get, patch, post, unwrap } from './http'
 import type {
   InvoiceDetail,
   InvoiceFieldsUpdateData,
@@ -8,6 +8,7 @@ import type {
   InvoiceListParams,
   OcrStatus,
   OcrStatusData,
+  ReocrData,
 } from '../types/invoice'
 
 const TERMINAL_STATUSES = new Set<OcrStatus>(['succeeded', 'failed'])
@@ -38,6 +39,18 @@ export async function updateInvoiceFields(
   payload: InvoiceFieldsUpdateRequest,
 ): Promise<InvoiceFieldsUpdateData> {
   const envelope = await patch<InvoiceFieldsUpdateData>(`/invoices/${invoiceId}/fields`, payload, {
+    silent: true,
+  })
+  return unwrap(envelope)
+}
+
+/** 局部二次识别（S3-3，异步 202；结果由详情接口轮询可见）。 */
+export async function reocrFields(
+  invoiceId: number,
+  fields: string[],
+  version?: number,
+): Promise<ReocrData> {
+  const envelope = await post<ReocrData>(`/invoices/${invoiceId}/reocr`, { fields, version }, {
     silent: true,
   })
   return unwrap(envelope)

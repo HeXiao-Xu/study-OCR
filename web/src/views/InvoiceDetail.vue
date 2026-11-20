@@ -9,7 +9,7 @@ import { ElMessage } from 'element-plus'
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { getInvoiceDetail, updateInvoiceFields } from '../api/invoices'
+import { getInvoiceDetail, reocrFields, updateInvoiceFields } from '../api/invoices'
 import { ApiError } from '../api/http'
 import { useUserStore } from '../stores/user'
 import type { InvoiceDetail, InvoiceField, InvoiceStatus, InvoiceType, OcrStatus } from '../types/invoice'
@@ -33,6 +33,7 @@ const route = useRoute()
 const store = useUserStore()
 
 const detail = ref<InvoiceDetail | null>(null)
+const reocring = ref(new Set<string>())
 const loading = ref(false)
 const error = ref('')
 
@@ -100,6 +101,32 @@ function confidenceTag(row: InvoiceField): 'success' | 'warning' | 'danger' | 'i
   if (number < 0.6) return 'danger'
   if (number < 0.9) return 'warning'
   return 'success'
+}
+
+function canReread(row: InvoiceField): boolean {
+  const invoice = detail.value?.invoice
+  if (!invoice || invoice.status !== 'draft') return false
+  if (row.source === 'manual' || row.confirmed || row.source === 'ocr_retry') return false
+  return row.source_line_no !== null
+}
+
+async function rereadField(row: InvoiceField): Promise<void> {
+  const invoice = detail.value?.invoice
+  if (!invoice) return
+  reocring.value.add(row.field_name)
+  try {
+    await reocrFields(invoice.id, [row.field_name], invoice.version)
+    ElMessage.success('已提交重识别，稍后自动刷新')
+    // 单次重识别预算 1.5s；2s×5 足够，超时就交给用户手动刷新（不在这里无限轮询）
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      await load()
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof ApiError ? error.message : '重识别失败')
+  } finally {
+    reocring.value.delete(row.field_name)
+  }
 }
 
 async function load(): Promise<void> {
@@ -354,8 +381,24 @@ watch(invoiceId, () => {
                 <span v-else class="muted">—</span>
               </template>
             </el-table-column>
+            <el-table-column label="操作" width="110">
+              <template #default="{ row }">
+                <el-button
+                  v-if="canReread(row)"
+                  size="small"
+                  text
+                  type="primary"
+                  :loading="reocring.has(row.field_name)"
+                  @click="rereadField(row)"
+                >重识别</el-button>
+                <el-tag v-else-if="row.source === 'ocr_retry'" size="small" type="info" effect="plain">
+                  已重识别
+                </el-tag>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
             <template #empty>
-              <el-empty description="还没有识别字段（S3-1 流水线尚未接入）" :image-size="70" />
+              <el-empty description="还没有识别字段（OCR 流水线尚未产出）" :image-size="70" />
             </template>
           </el-table>
         </el-card>

@@ -48,6 +48,13 @@ export interface OcrStage {
   error: string | null
 }
 
+/** POST /invoices/{id}/reocr 的 202 data（API.md §2）。 */
+export interface ReocrData {
+  invoice_id: number
+  job_id: number
+  fields: string[]
+}
+
 /** GET /invoices/{id}/ocr-status 的 data（API.md §2）。 */
 export interface OcrStatusData {
   invoice_id: number
