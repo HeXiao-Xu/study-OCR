@@ -1,7 +1,8 @@
-"""ocr_jobs — 识别各阶段的作业记录（SCHEMA §3.5）。
+"""ocr_jobs — 识别运行的作业记录（SCHEMA §3.5）。
 
-同一 (invoice_id, stage) 的重试**追加新行**而不是改旧行，retry_count 记行内序号。
-ocr_jobs 是 AGENTS §10.5 "handler 不得自行 commit" 的唯一豁免：
+**一次运行只有一行**（表里没有 run_id，多行无法归组）；`stage` 记当前/最后阶段，
+逐阶段状态与耗时写 `metrics.stages`，重试复用该行（`retry_count` 记第几次尝试）。
+ocr_jobs 是 AGENTS §10.5 "handler 不得自行 commit" 的豁免之一：
 阶段进度必须进行中可见（前端轮询"识别到第几阶段"）。
 """
 from __future__ import annotations
@@ -54,6 +55,11 @@ class OcrJob(Base):
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     # 只存错误码 + 短消息，不得包含明文票据内容
     error: Mapped[str | None] = mapped_column(Text)
+    # 逐阶段状态/耗时、引擎参数、警告；不含明文（SCHEMA §3.5，S3-1/D-055）
+    metrics: Mapped[dict[str, Any] | None] = mapped_column(postgresql.JSONB)
+    # 本次尝试开始 + 终态结束（ocr-status 契约要真时间，D-056）
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

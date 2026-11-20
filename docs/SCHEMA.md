@@ -56,7 +56,7 @@
 | B 票据与识别 | `invoices` | 一张票据的业务主体与识别/确认状态 | 识别流水线、确认接口 |
 | B 票据与识别 | `invoice_fields` | 字段级抽取结果、置信度、来源与冲突 | 抽取流水线、人工确认 |
 | B 票据与识别 | `ocr_lines` | OCR 文本行 + 坐标（字段定位与高亮的数据源） | 识别流水线（ARQ） |
-| B 票据与识别 | `ocr_jobs` | 识别各阶段的作业记录与耗时 | 识别流水线（ARQ） |
+| B 票据与识别 | `ocr_jobs` | 一次识别运行的行/状态 + 逐阶段耗时（`metrics`） | 识别流水线（ARQ） |
 | C 模板与规则 | `ticket_templates` | 票种模板与字段规格（YAML 落库版本） | 种子脚本 / 管理接口 |
 | C 模板与规则 | `field_rules` | 字段校验规则库（正则 + 校验器） | 种子脚本 / 管理接口 |
 | D 报销与密码 | `report_forms` | 报销单主体 + 签名域快照 + 状态机 | 报销单接口 |
@@ -283,10 +283,13 @@ erDiagram
 | retry_count | INTEGER | 否 | `0` | 第几次尝试（上限 3，方案 6.6）✅ | `CHECK (retry_count >= 0)` ⚠ |
 | error | TEXT | 是 | — | 失败时写错误码 + 短消息（≤500 字符）✅ | — |
 | created_at | TIMESTAMPTZ | 否 | `now()` | 写入时间 ✅ | — |
+| metrics | JSONB | 是 | — | 逐阶段状态与耗时（`metrics.stages`）、引擎参数、`counts`、`warnings`；**不含票面明文**（S3-1，D-055）✅ | — |
+| started_at | TIMESTAMPTZ | 是 | — | 本次尝试开始时间（`job_service` 在 `running` 时写，重试时覆盖为新一轮开始）✅ | — |
+| finished_at | TIMESTAMPTZ | 是 | — | 进入终态（`succeeded/failed`）的时间；回 `pending` 重试时清空 ⚠ | — |
 
-**存什么**：识别流水线**每个阶段**一条作业记录：阶段、状态、引擎与版本、参数、耗时、重试次数、错误。**谁写**：ARQ 任务（每次阶段开始写 running、结束写终态）。**关键不变式**：同一 `(invoice_id, stage)` 的重试**追加新行**而不是改旧行（`retry_count` 记在行内用于展示"第几次"），因此作业历史天然完整；`error` 只存错误码与短消息，**不得包含明文票据内容**。
+**存什么**：识别流水线**一次运行**一条作业记录：当前/最后阶段、状态、引擎与版本、参数、总耗时、逐阶段耗时与状态（`metrics`）、重试次数、错误。**谁写**：ARQ 任务（开始写 running、阶段推进写 `stage`/`metrics`、结束写终态）。**关键不变式**：**一次运行只有一行**（1 个 ARQ 作业 = 1 行）——表里没有 `run_id`，多行无法归组到同一次运行；`stage` 记录当前/最后阶段，逐阶段状态与耗时写 `metrics.stages`；重试复用该行（`retry_count` 记第几次尝试）。`error` 只存错误码与短消息，**不得包含明文票据内容**。
 
-> **提交语义的例外**：AGENTS.md §10.5 规定 handler 内不得自行 commit 业务表，但 `ocr_jobs` 是明确豁免项——阶段进度必须在任务进行中可见（前端轮询"识别到第几阶段"），因此每写一次阶段状态就单独提交。这条豁免写进本文件与 `docs/DECISIONS.md`，除此之外任何表都不得中途提交。
+> **提交语义的例外**（D-055）：AGENTS.md §10.5 规定 handler 内不得自行 commit 业务表，但两处明确豁免——①`ocr_jobs` 的 `stage/metrics`；②`invoices.ocr_status='running'`。理由都是"阶段进度必须进行中可见"（前端轮询"识别到第几阶段"）。其余业务列（`ocr_lines`/`invoice_fields`/`invoices` 的其他列）只在最后一次事务提交，失败一律回滚，不允许出现"识别失败但字段半截落库"。这两条豁免写进本文件与 `docs/DECISIONS.md`，除此之外任何表都不得中途提交。
 
 ---
 
