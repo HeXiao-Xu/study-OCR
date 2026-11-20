@@ -6,6 +6,7 @@ import type {
   InvoiceFieldsUpdateRequest,
   InvoiceLinesData,
   InvoiceListData,
+  DuplicateCheckData,
   InvoiceListParams,
   InvoiceOut,
   OcrStatus,
@@ -41,6 +42,14 @@ export async function updateInvoiceFields(
   payload: InvoiceFieldsUpdateRequest,
 ): Promise<InvoiceFieldsUpdateData> {
   const envelope = await patch<InvoiceFieldsUpdateData>(`/invoices/${invoiceId}/fields`, payload, {
+    silent: true,
+  })
+  return unwrap(envelope)
+}
+
+/** 重复检测（S3-7）：strong 时 confirm 会 409；weak 只提示不阻断。 */
+export async function fetchDuplicateCheck(invoiceId: number): Promise<DuplicateCheckData> {
+  const envelope = await get<DuplicateCheckData>(`/invoices/${invoiceId}/duplicate-check`, {
     silent: true,
   })
   return unwrap(envelope)

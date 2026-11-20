@@ -11,6 +11,7 @@ import { useRoute } from 'vue-router'
 
 import {
   confirmInvoice,
+  fetchDuplicateCheck,
   fetchInvoiceImage,
   fetchInvoiceLines,
   getInvoiceDetail,
@@ -23,6 +24,7 @@ import ImageCanvas from '../components/ImageCanvas.vue'
 import { useUserStore } from '../stores/user'
 import type {
   ConfirmError,
+  DuplicateCheckData,
   InvoiceDetail,
   InvoiceField,
   InvoiceStatus,
@@ -51,6 +53,7 @@ const store = useUserStore()
 const detail = ref<InvoiceDetail | null>(null)
 const reocring = ref(new Set<string>())
 const confirmErrors = ref<ConfirmError[]>([])
+const duplicates = ref<DuplicateCheckData | null>(null)
 const confirming = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -168,6 +171,11 @@ async function loadImage(): Promise<void> {
   } catch {
     // 行框失败只降级为"只画字段框"，不阻塞字段核对
     lineBoxes.value = []
+  }
+  try {
+    duplicates.value = await fetchDuplicateCheck(invoiceId.value)
+  } catch {
+    duplicates.value = null          // 重复检测失败不阻塞核对
   }
 }
 
@@ -404,7 +412,7 @@ onBeforeUnmount(revokeImage)
                 编辑字段
               </el-button>
               <el-button
-                v-if="canEdit && !editMode && store.role === 'submitter'"
+                v-if="canEdit && !editMode && store.role === 'submitter' && duplicates?.level !== 'strong'"
                 type="success"
                 :loading="confirming"
                 @click="confirmAll"
@@ -469,6 +477,25 @@ onBeforeUnmount(revokeImage)
         :title="`最近识别任务 #${detail.latest_job.job_id} · ${OCR_STATUS_LABEL[detail.latest_job.status]}`"
         :description="detail.latest_job.error ?? `阶段：${detail.latest_job.stage}；重试 ${detail.latest_job.retry_count} 次`"
       />
+
+      <el-alert
+        v-if="duplicates && duplicates.level !== 'none'"
+        :type="duplicates.level === 'strong' ? 'error' : 'warning'"
+        :closable="false"
+        show-icon
+        :title="duplicates.level === 'strong'
+          ? '疑似重复票据（同票号/同影像）'
+          : '弱重复提示（同金额/日期/销方，仅提示不阻断）'"
+        class="duplicate-alert"
+      >
+        <ul class="duplicate-list">
+          <li v-for="item in duplicates.matches" :key="`${item.kind}-${item.invoice_id}`">
+            票据 #{{ item.invoice_id }}（{{ item.status }}）· 票号 {{ item.invoice_no ?? '—' }} ·
+            日期 {{ item.invoice_date ?? '—' }} · 金额 {{ formatMoney(item.total_amount) }}
+            <router-link :to="`/invoices/${item.invoice_id}`">查看</router-link>
+          </li>
+        </ul>
+      </el-alert>
 
       <div class="detail-grid">
         <el-card shadow="never" class="preview-card">
@@ -600,6 +627,14 @@ onBeforeUnmount(revokeImage)
 }
 .confirm-errors {
   margin-bottom: 12px;
+}
+.duplicate-alert {
+  margin-bottom: 12px;
+}
+.duplicate-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  line-height: 1.6;
 }
 .confirm-error-list {
   margin: 6px 0 0;

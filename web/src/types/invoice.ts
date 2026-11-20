@@ -48,6 +48,24 @@ export interface OcrStage {
   error: string | null
 }
 
+/** 重复检测（S3-7）：strong 会在 confirm 时 409，weak 只提示。 */
+export interface DuplicateMatch {
+  invoice_id: number
+  kind: 'invoice_no' | 'image' | 'weak'
+  invoice_code: string | null
+  invoice_no: string | null
+  invoice_date: string | null
+  total_amount: string | null
+  status: string
+  created_at: string
+}
+
+export interface DuplicateCheckData {
+  invoice_id: number
+  level: 'strong' | 'weak' | 'none'
+  matches: DuplicateMatch[]
+}
+
 /** 整单确认 422/42201 的逐字段错误（S3-6）。 */
 export interface ConfirmError {
   field_name: string
