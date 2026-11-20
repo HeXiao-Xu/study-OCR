@@ -5,16 +5,24 @@
  * 影像经 `GET /invoices/{id}/image` 带 Bearer 下载成 blob（明文仅本地调试；密文/生产返回 409，
  * 页面显示"待 S4"而不是空白）。字段框/行框都是**原图**坐标，换算只在 `ImageCanvas` + `utils/bbox.ts`。
  */
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { fetchInvoiceImage, fetchInvoiceLines, getInvoiceDetail, reocrFields, updateInvoiceFields } from '../api/invoices'
+import {
+  confirmInvoice,
+  fetchInvoiceImage,
+  fetchInvoiceLines,
+  getInvoiceDetail,
+  reocrFields,
+  updateInvoiceFields,
+} from '../api/invoices'
 import { ApiError } from '../api/http'
 import FieldTable from '../components/FieldTable.vue'
 import ImageCanvas from '../components/ImageCanvas.vue'
 import { useUserStore } from '../stores/user'
 import type {
+  ConfirmError,
   InvoiceDetail,
   InvoiceField,
   InvoiceStatus,
@@ -42,6 +50,8 @@ const store = useUserStore()
 
 const detail = ref<InvoiceDetail | null>(null)
 const reocring = ref(new Set<string>())
+const confirmErrors = ref<ConfirmError[]>([])
+const confirming = ref(false)
 const loading = ref(false)
 const error = ref('')
 
@@ -181,6 +191,7 @@ async function load(): Promise<void> {
   error.value = ''
   try {
     detail.value = await getInvoiceDetail(invoiceId.value)
+    confirmErrors.value = []
     if (editMode.value) startEdit()
     await loadImage()
   } catch (cause) {
@@ -227,6 +238,40 @@ async function rereadField(field: InvoiceField): Promise<void> {
     ElMessage.error(cause instanceof ApiError ? cause.message : '重识别失败')
   } finally {
     reocring.value.delete(field.field_name)
+  }
+}
+
+async function confirmAll(): Promise<void> {
+  const invoice = detail.value?.invoice
+  if (!invoice || confirming.value) return
+  try {
+    await ElMessageBox.confirm(
+      '确认后票据进入「已确认」，之后修改字段需要重新走草稿流程。是否继续？',
+      '确认整单',
+      { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  confirmErrors.value = []
+  confirming.value = true
+  try {
+    await confirmInvoice(invoice.id, invoice.version)
+    ElMessage.success('已确认整单')
+    await load()
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.code === 42201) {
+      const payload = cause.payload?.data as { fields?: ConfirmError[] } | null | undefined
+      confirmErrors.value = payload?.fields ?? []
+      ElMessage.error('整单校验未通过，请按提示处理')
+    } else if (cause instanceof ApiError && cause.code === 40900) {
+      ElMessage.error('版本冲突：票据已被修改，已为你刷新')
+      await load()
+    } else {
+      ElMessage.error(cause instanceof ApiError ? cause.message : '确认失败，请重试')
+    }
+  } finally {
+    confirming.value = false
   }
 }
 
@@ -335,6 +380,14 @@ onBeforeUnmount(revokeImage)
               <el-button v-if="canEdit && !editMode" type="primary" @click="startEdit">
                 编辑字段
               </el-button>
+              <el-button
+                v-if="canEdit && !editMode && store.role === 'submitter'"
+                type="success"
+                :loading="confirming"
+                @click="confirmAll"
+              >
+                确认整单
+              </el-button>
               <template v-if="editMode">
                 <el-button type="primary" :loading="saving" @click="save">保存修改</el-button>
                 <el-button :disabled="saving" @click="cancelEdit">取消</el-button>
@@ -437,6 +490,20 @@ onBeforeUnmount(revokeImage)
               <span class="card-sub">低于 90% 黄底、低于 60% 或冲突红底；冲突不自动覆盖</span>
             </div>
           </template>
+          <el-alert
+            v-if="confirmErrors.length"
+            type="error"
+            :closable="false"
+            show-icon
+            title="整单校验未通过"
+            class="confirm-errors"
+          >
+            <ul class="confirm-error-list">
+              <li v-for="item in confirmErrors" :key="item.field_name">
+                <strong>{{ fieldLabel(item.field_name) }}</strong>：{{ item.error }}
+              </li>
+            </ul>
+          </el-alert>
           <FieldTable
             ref="tableRef"
             :fields="sortedFields"
@@ -505,6 +572,14 @@ onBeforeUnmount(revokeImage)
 }
 .file-meta {
   margin-top: 12px;
+}
+.confirm-errors {
+  margin-bottom: 12px;
+}
+.confirm-error-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  line-height: 1.6;
 }
 @media (max-width: 1100px) {
   .detail-grid {

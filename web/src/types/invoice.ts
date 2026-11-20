@@ -48,6 +48,12 @@ export interface OcrStage {
   error: string | null
 }
 
+/** 整单确认 422/42201 的逐字段错误（S3-6）。 */
+export interface ConfirmError {
+  field_name: string
+  error: string
+}
+
 /** GET /invoices/{id}/lines 的行框（S3-5）：bbox 是原图坐标，不含文本。 */
 export interface OcrLineBox {
   line_no: number

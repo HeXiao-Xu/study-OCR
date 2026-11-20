@@ -7,6 +7,7 @@ import type {
   InvoiceLinesData,
   InvoiceListData,
   InvoiceListParams,
+  InvoiceOut,
   OcrStatus,
   OcrStatusData,
   ReocrData,
@@ -40,6 +41,14 @@ export async function updateInvoiceFields(
   payload: InvoiceFieldsUpdateRequest,
 ): Promise<InvoiceFieldsUpdateData> {
   const envelope = await patch<InvoiceFieldsUpdateData>(`/invoices/${invoiceId}/fields`, payload, {
+    silent: true,
+  })
+  return unwrap(envelope)
+}
+
+/** 整单确认（S3-6）：服务端重跑校验；失败 422/42201 时 payload.data.fields 给逐字段原因。 */
+export async function confirmInvoice(invoiceId: number, version?: number): Promise<InvoiceOut> {
+  const envelope = await post<InvoiceOut>(`/invoices/${invoiceId}/confirm`, { version }, {
     silent: true,
   })
   return unwrap(envelope)
