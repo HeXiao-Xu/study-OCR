@@ -193,6 +193,18 @@ function invoiceNumber(row: InvoiceOut): string {
 
 const hasFilters = computed(() => Object.keys(cleanQuery(route.query)).length > 0)
 
+const pageTitle = computed(() => {
+  if (route.query.review_status === 'pending') return '待复核'
+  if (route.query.review_status === 'reviewed') return '已复核'
+  return store.role === 'reviewer' ? '票据查询' : '我的票据'
+})
+
+const pageHint = computed(() =>
+  route.query.review_status === 'pending'
+    ? '提交人已整单确认、等待审核人复核的票据；复核通过后状态变为「已复核」。'
+    : '筛选条件会同步到地址栏，刷新或后退不会丢。',
+)
+
 watch(
   () => route.query,
   () => {
@@ -207,8 +219,8 @@ watch(
   <el-space direction="vertical" fill size="large" class="list-page">
     <div class="page-heading">
       <div>
-        <h2>{{ store.role === 'reviewer' ? '票据查询' : '我的票据' }}</h2>
-        <p>筛选条件会同步到地址栏，刷新或后退不会丢。</p>
+        <h2>{{ pageTitle }}</h2>
+        <p>{{ pageHint }}</p>
       </div>
       <span class="heading-total">共 {{ total }} 张</span>
     </div>

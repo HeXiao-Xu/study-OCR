@@ -26,7 +26,7 @@ const MENU: MenuItem[] = [
   { path: '/invoices', label: '我的票据', roles: ['submitter'] },
   { path: '/upload', label: '上传票据', roles: ['submitter'] },
   { path: '/invoices', label: '票据查询', roles: ['reviewer'] },
-  { path: '/review', label: '待核对', roles: ['reviewer'] },
+  { path: '/review', label: '待复核', roles: ['reviewer'] },
   { path: '/finance/pending', label: '待审核', roles: ['reviewer'] },
   { path: '/templates', label: '票种模板', roles: ['admin'] },
   { path: '/certs', label: '证书管理', roles: ['admin'] },

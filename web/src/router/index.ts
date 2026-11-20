@@ -71,9 +71,9 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '上传票据', roles: ['submitter'] },
       },
       {
-        // S3-2：reviewer 队列就是"待确认"筛选后的列表，不再单独做一套页面
+        // S3-9 起 reviewer 队列 = "提交人已确认、等待二审"的票据（review_status=pending）
         path: 'review',
-        redirect: '/invoices?extract_status=need_confirm',
+        redirect: '/invoices?review_status=pending',
       },
       {
         path: 'finance/pending',

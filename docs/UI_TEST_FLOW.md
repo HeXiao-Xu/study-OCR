@@ -17,7 +17,7 @@
 | # | 操作 | 预期 |
 |---|---|---|
 | A1 | `test_sub` 登录 | 落到 `/invoices`，标题"我的票据"，只见自己的 5 张票（111/112/113/114/117） |
-| A2 | `test_rev` 登录 | 落到 `/review`（`extract_status=need_confirm` 的列表），能看到全部提交人的待核对票 |
+| A2 | `test_rev` 登录 | 落到 `/review` → `/invoices?review_status=pending`，标题 **"待复核"**，只显示**提交人已整单确认、尚未复核**的票（当前 112）；草稿 `need_confirm`（111/114）不在这个队列，可用"票据查询"筛选查看 |
 | A3 | `test_admin` 登录 | 落到 `/templates`，侧栏只有模板/证书/审计（后两个是占位页） |
 | A4 | 错误口令登录 | 统一"用户名或密码错误"，不泄露账号是否存在 |
 | A5 | 已登录 `test_sub` 直接访问 `/templates` | 跳到 `/403`（角色无权限） |
@@ -31,7 +31,7 @@
 | B3 | 抽取状态筛选 `need_confirm` | 4 行都在（都待确认） |
 | B4 | 搜索票号 `05975405` | 命中 111 与 114 |
 | B5 | 刷新页面 | 筛选条件保留（`route.query` 是唯一状态源） |
-| B6 | `test_rev` 打开"待核对" | 能看到 `test_sub` 的票（reviewer 读全量），列表与筛选一致 |
+| B6 | `test_rev` 打开"待复核" | 标题待复核、只列 `confirmed` 且 `reviewed_at` 为空的票（112）；复核后从该队列消失、出现在 `review_status=reviewed` 筛选里 |
 
 ## 3. 上传（`test_sub`）
 
