@@ -37,12 +37,7 @@ from app.models.invoices import Invoice
 from app.models.ocr_jobs import OcrJob
 from app.models.ocr_lines import OcrLine as OcrLineRow
 from app.ocr.detector import OcrOptions, get_engine
-from app.ocr.extractor import (
-    FieldRule as ExtractorRule,
-    extract_fields,
-    load_field_rules,
-    rules_from_specs,
-)
+from app.ocr.extractor import FieldRule as ExtractorRule, extract_fields
 from app.ocr.intake import PreparedPage, prepare_pages
 from app.ocr.refine import bbox_to_original
 from app.ocr.layout import (
@@ -55,7 +50,7 @@ from app.ocr.layout import (
 )
 from app.ocr.types import ExtractedField, ExtractionResult, OcrLine
 from app.ocr.validators import parse_date, parse_money, run_validators
-from app.services import template_registry
+from app.services.rule_source import resolve_rules
 from app.services.confidence import (
     FieldConfidence,
     FieldScore,
@@ -358,12 +353,12 @@ def _classify(pages: list[RecognizedPage], templates: dict[str, Any]) -> Classif
 def _resolve_rules(
     db: Session, deps: PipelineDeps, ticket_type: str
 ) -> tuple[list[ExtractorRule], str, int | None]:
-    """抽取规格以 DB active 模板为准（S2-8 既定方向）；库缺失该票种才回退 YAML。"""
-    registry = deps.registry or template_registry.registry
-    snapshot = registry.active_templates(db).get(ticket_type)
-    if snapshot is not None and snapshot.field_specs_json:
-        return rules_from_specs(snapshot.field_specs_json), "db", snapshot.id
-    return load_field_rules(), "yaml", None
+    """抽取规格以 DB active 模板为准（S2-8 既定方向）；库缺失该票种才回退 YAML。
+
+    实际解析在 `services/rule_source.py`（S3-6 起与整单确认共用同一实现）。
+    """
+    resolved = resolve_rules(db, ticket_type, registry=deps.registry)
+    return resolved.rules, resolved.source, resolved.template_id
 
 
 def _attach_layout(
