@@ -10,14 +10,15 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict
 from typing import Annotated, Literal
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_task_queue
 from app.core.config import Settings, get_settings
 from app.core.database import get_db
-from app.core.exceptions import ServiceUnavailableError, ok
+from app.core.exceptions import ServiceUnavailableError, ValidationFailedError, ok
 from app.models.users import User
 from app.schemas.common import Envelope, PageResult
 from app.schemas.invoice import (
@@ -26,6 +27,9 @@ from app.schemas.invoice import (
     InvoiceFieldsUpdateRequest,
     InvoiceListQuery,
     InvoiceOut,
+    BatchRetryData,
+    BatchSummaryData,
+    BatchUploadData,
     ConfirmRequest,
     DuplicateCheckData,
     InvoiceFieldsData,
@@ -35,6 +39,7 @@ from app.schemas.invoice import (
     ReocrRequest,
 )
 from app.services import (
+    batch_service,
     duplicate,
     image_service,
     invoice_service,
@@ -56,6 +61,83 @@ def list_invoices(
     db: Session = Depends(get_db),
 ) -> dict:
     return ok(invoice_service.list_invoices(db, user, query))
+
+
+@router.post(
+    "/batch",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=Envelope[BatchUploadData],
+    summary="批量上传（1–30 文件；全部异步识别）",
+)
+async def upload_batch(
+    files: list[UploadFile] = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    storage: StorageService = Depends(get_storage),
+    queue: OcrTaskQueue = Depends(get_task_queue),
+) -> dict:
+    created = await asyncio.to_thread(
+        batch_service.create_batch, db, user, files, settings=settings, storage=storage
+    )
+    await batch_service.dispatch_pending(db, user.id, queue=queue, settings=settings)
+    return ok(
+        {
+            "batch_id": str(created.batch_id),
+            "created": created.created,
+            "duplicates": created.duplicates,
+            "rejected": created.rejected,
+            "items": [asdict(item) for item in created.items],
+        },
+        "accepted",
+    )
+
+
+@router.get(
+    "/batch/{batch_id}",
+    response_model=Envelope[BatchSummaryData],
+    summary="批量上传汇总与逐项进度",
+)
+async def get_batch(
+    batch_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    queue: OcrTaskQueue = Depends(get_task_queue),
+) -> dict:
+    parsed = _parse_batch_id(batch_id)
+    summary = await asyncio.to_thread(batch_service.batch_summary, db, user, parsed)
+    await batch_service.dispatch_pending(db, user.id, queue=queue, settings=settings)
+    return ok(summary.model_dump(mode="json"))
+
+
+@router.post(
+    "/batch/{batch_id}/items/{invoice_id}/retry",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=Envelope[BatchRetryData],
+    summary="失败批次项重试（原文件重投，不建新单）",
+)
+async def retry_batch_item(
+    batch_id: str,
+    invoice_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    queue: OcrTaskQueue = Depends(get_task_queue),
+) -> dict:
+    parsed = _parse_batch_id(batch_id)
+    new_invoice_id, new_job_id = await asyncio.to_thread(
+        batch_service.retry_item, db, user, parsed, invoice_id
+    )
+    await batch_service.dispatch_pending(db, user.id, queue=queue, settings=settings)
+    return ok({"invoice_id": new_invoice_id, "job_id": new_job_id}, "accepted")
+
+
+def _parse_batch_id(batch_id: str) -> UUID:
+    try:
+        return UUID(batch_id)
+    except ValueError as exc:
+        raise ValidationFailedError("batch_id 不是合法 UUID") from exc
 
 
 @router.get("/{invoice_id}", response_model=Envelope[InvoiceDetailData], summary="票据详情")

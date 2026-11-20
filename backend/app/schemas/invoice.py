@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
@@ -189,6 +190,44 @@ class InvoiceLinesData(BaseModel):
     invoice_id: int
     page_no: int
     lines: list[OcrLineBoxOut] = Field(default_factory=list)
+
+
+class BatchUploadItemOut(BaseModel):
+    filename: str
+    status: Literal["created", "duplicate", "rejected"]
+    invoice_id: int | None = None
+    job_id: int | None = None
+    error: str | None = None
+
+
+class BatchUploadData(BaseModel):
+    batch_id: UUID
+    created: int
+    duplicates: int
+    rejected: int
+    items: list[BatchUploadItemOut] = Field(default_factory=list)
+
+
+class BatchInvoiceItemOut(BaseModel):
+    invoice_id: int
+    filename: str
+    ocr_status: str
+    extract_status: str
+    progress: int
+    error: str | None = None
+
+
+class BatchSummaryData(BaseModel):
+    batch_id: UUID
+    total: int
+    counts: dict[str, int]
+    items: list[BatchInvoiceItemOut] = Field(default_factory=list)
+    created_at: datetime
+
+
+class BatchRetryData(BaseModel):
+    invoice_id: int
+    job_id: int
 
 
 class DuplicateMatchOut(BaseModel):

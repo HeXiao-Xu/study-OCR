@@ -110,6 +110,30 @@
 - 错误：`409/40901` 重复影像（`data.invoice_id` 为既有票据，客户端直接跳详情）；`413/41300` 超大小上限；`422/42200` 类型/魔数不符、PDF 页数超限、空文件；`500/50000` 存储或队列不可用
 - 备注：**响应不得出现 MinIO 对象名或明文路径**；明文只在内存中存在一次，信封加密后才落盘（收方为财务服务器证书）；入库失败必须补偿删除已写对象；重复命中不再写对象存储、不再投任务
 
+### POST /api/v1/invoices/batch
+- 权限：`submitter`（本人）；`reviewer` → 403；`admin` → 404 ｜ 类型：同步建单、**异步识别** ｜ 幂等：否 ｜ 实现：S3-8 ✅
+- 入参（multipart）：`files`（1–30 个，单文件上限同上传接口）
+- 出参：**202**，`data` = `{batch_id, created, duplicates, rejected, items: [{filename, status, invoice_id, job_id, error}]}`，
+  `status ∈ created|duplicate|rejected`
+- 错误：`409/40901` 仅当整批只有去重项？——**不整批失败**，去重/非法文件按项返回；`422/42200` 文件数越界；
+  `503/50300` 队列不可用（已建单保留，可重试）
+- 备注：接口**不做同步识别**（避免 Nginx 60s）；单用户"已入队"识别任务 ≤ `OCR_MAX_ACTIVE_PER_USER`（默认 3），
+  其余服务端排队（`ocr_jobs.dispatched=false`），由 worker 结束钩子/轮询补位；去重项只在本次响应出现
+
+### GET /api/v1/invoices/batch/{batch_id}
+- 权限：本人，或 `reviewer`；`admin` → 404 ｜ 类型：同步（轮询）｜ 幂等：是 ｜ 实现：S3-8 ✅
+- 入参：无
+- 出参：**200**，`data` = `{batch_id, total, counts: {pending, running, succeeded, failed}, items: [{invoice_id, filename, ocr_status, extract_status, progress, error}], created_at}`
+- 错误：`404/40400`（批次不存在/无权）；`422/42200` `batch_id` 非法 UUID
+- 备注：`progress` 与 `GET /invoices/{id}/ocr-status` 同一算法；轮询会顺带补位排队作业；建议 2–3s 一次，全部终态即停
+
+### POST /api/v1/invoices/batch/{batch_id}/items/{invoice_id}/retry
+- 权限：本人（`reviewer`/`admin` → 404）｜ 类型：同步建作业、异步识别 ｜ 幂等：否 ｜ 实现：S3-8 ✅
+- 入参：无
+- 出参：**202**，`data` = `{invoice_id, job_id}`
+- 错误：`404/40400`（票据不属于该批/无权）；`409/40900` 该票据已有进行中的识别任务
+- 备注：**用原 `invoice_files` 重投，不新建 invoice/file**（任务卡硬要求）；旧 job 保留可追溯
+
 ### GET /api/v1/invoices
 - 权限：`submitter`（仅本人）；`reviewer` 可列全部；`admin` → 404 ｜ 类型：同步（分页）｜ 幂等：是 ｜ 实现：S2-5
 - 入参（query）：
