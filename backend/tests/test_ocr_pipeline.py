@@ -100,22 +100,30 @@ def test_line_rows_use_four_point_box_and_page_no() -> None:
     assert rows[0]["block_id"] == "b2-1"
 
 
-def test_field_rows_flags_conflict_and_need_review() -> None:
+def test_field_rows_uses_resolved_confidence_for_need_review() -> None:
+    from app.services.confidence import FieldConfidence
+
     merged = {
         "total_amount": MergedField(
             _field("total_amount", "100.00", confidence=0.70, candidates=["100.00", "200.00"]), 1),
-        "buyer_name": MergedField(_field("buyer_name", "张三", confidence=0.95), 1),
+        "buyer_name": MergedField(_field("buyer_name", "张三", confidence=0.97), 1),
     }
 
-    rows = field_rows(merged, invoice_id=5, rule_ids={"total_amount": 11},
-                      failed_fields={"buyer_name"})
+    rows = field_rows(
+        merged, invoice_id=5, rule_ids={"total_amount": 11},
+        confidences={
+            "total_amount": FieldConfidence("total_amount", 0.70, "review"),
+            "buyer_name": FieldConfidence("buyer_name", 0.97, "auto"),
+        },
+    )
     by_name = {row["field_name"]: row for row in rows}
 
     assert by_name["total_amount"]["conflict"] is True
     assert by_name["total_amount"]["conflict_value"] == "200.00"
-    assert by_name["total_amount"]["need_review"] is True       # confidence < 0.85
+    assert by_name["total_amount"]["need_review"] is True       # level=review
+    assert by_name["total_amount"]["confidence"] == Decimal("0.700")
     assert by_name["total_amount"]["rule_id"] == 11
-    assert by_name["buyer_name"]["need_review"] is True         # 校验失败同样要人工看
+    assert by_name["buyer_name"]["need_review"] is False        # level=auto
     assert by_name["buyer_name"]["source"] == "ocr"
     assert by_name["buyer_name"]["source_page_no"] == 1
     assert by_name["buyer_name"]["bbox_json"] == [1, 2, 3, 4]
@@ -525,6 +533,78 @@ def test_run_pipeline_duplicate_invoice_no_is_warning(session_factory, owner) ->
         assert invoice.ocr_status == "succeeded"     # 但作业/状态不能跟着失败
         fields = db.scalars(select(InvoiceField).where(InvoiceField.invoice_id == invoice_id)).all()
         assert any(row.field_name == "invoice_no" for row in fields)   # 字段照样留给人工看
+
+
+def _vat_digital_lines_full() -> list[OcrLineModel]:
+    return [
+        _line("电子发票（普通发票） 全电发票 数电票", 0, y=10),
+        _line("发票号码：12345678", 1, y=120),
+        _line("开票日期：2026-03-01", 2, y=160),
+        _line("合计  ¥100.00  ¥13.00", 3, y=380),
+        _line("价税合计（小写）￥113.00", 4, y=420),
+    ]
+
+
+@pytest.mark.integration
+def test_run_pipeline_writes_review_levels_and_overall(session_factory, owner) -> None:
+    """齐全样本：日日期/合计可免人工，8 位发票号对数电票不合规 → 整单待确认。"""
+    invoice_id, job_id = _create_invoice(session_factory, owner.id)
+    outcome, _ = _execute(session_factory, invoice_id,
+                          _deps(FakeEngine({0: _vat_digital_lines_full()})))
+
+    assert outcome == "succeeded", _job_error(session_factory, job_id)
+    with session_factory() as db:
+        invoice = db.get(Invoice, invoice_id)
+        job = db.get(OcrJob, job_id)
+        rows = {row.field_name: row for row in db.scalars(
+            select(InvoiceField).where(InvoiceField.invoice_id == invoice_id))}
+        assert invoice.extract_status == "need_confirm"   # 有 review/manual 字段
+        assert invoice.overall_confidence is not None
+        assert job.metrics["counts"]["review_levels"]["auto"] >= 1
+        assert job.metrics["counts"]["needs_review"] >= 1
+        assert rows["total_amount"].need_review is False  # 价税合计 100+13=113，免人工
+        assert rows["invoice_date"].need_review is False
+
+
+@pytest.mark.integration
+def test_run_pipeline_conflict_forces_review(session_factory, owner) -> None:
+    # 两条相同锚点、不同金额 → candidates>1：冲突必须人工，即使分数很高
+    lines = [
+        _line("增值税电子普通发票", 0, y=10),
+        _line("价税合计（小写）￥100.00", 1, y=300),
+        _line("价税合计（小写）￥200.00", 2, y=340),
+    ]
+    invoice_id, job_id = _create_invoice(session_factory, owner.id)
+    outcome, _ = _execute(session_factory, invoice_id, _deps(FakeEngine({0: lines})))
+
+    assert outcome == "succeeded", _job_error(session_factory, job_id)
+    with session_factory() as db:
+        row = db.scalar(select(InvoiceField).where(
+            InvoiceField.invoice_id == invoice_id,
+            InvoiceField.field_name == "total_amount",
+        ))
+        assert row.conflict is True
+        assert row.need_review is True
+
+
+@pytest.mark.integration
+def test_run_pipeline_extract_status_matches_needs(session_factory, owner) -> None:
+    """不写死"一定是 raw/need_confirm"，断言状态与字段实际需要一致（阈值调整后仍成立）。"""
+    invoice_id, job_id = _create_invoice(session_factory, owner.id)
+    outcome, _ = _execute(session_factory, invoice_id,
+                          _deps(FakeEngine({0: _vat_digital_lines_full()})))
+
+    assert outcome == "succeeded", _job_error(session_factory, job_id)
+    with session_factory() as db:
+        invoice = db.get(Invoice, invoice_id)
+        job = db.get(OcrJob, job_id)
+        rows = db.scalars(
+            select(InvoiceField).where(InvoiceField.invoice_id == invoice_id)).all()
+        needs = any(row.need_review for row in rows) or bool(
+            job.metrics["counts"]["missing_required"])
+        assert invoice.extract_status == ("need_confirm" if needs else "raw")
+        assert float(invoice.overall_confidence) == pytest.approx(
+            job.metrics["counts"]["overall_confidence"], abs=1e-3)
 
 
 @pytest.mark.integration

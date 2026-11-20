@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import ValidationFailedError
-from app.models.enums import FieldSource, InvoiceStatus, OcrStage, OcrStatus
+from app.models.enums import ExtractStatus, FieldSource, InvoiceStatus, OcrStage, OcrStatus
 from app.models.field_rules import FieldRule
 from app.models.invoice_fields import InvoiceField
 from app.models.invoice_files import InvoiceFile
@@ -55,6 +55,13 @@ from app.ocr.layout import (
 from app.ocr.types import ExtractedField, ExtractionResult, OcrLine
 from app.ocr.validators import parse_date, parse_money, run_validators
 from app.services import template_registry
+from app.services.confidence import (
+    FieldConfidence,
+    FieldScore,
+    InvoiceConfidence,
+    aggregate_invoice,
+    resolve_field,
+)
 from app.services.job_service import AbortAttempt
 from app.services.storage import StorageService, get_storage
 
@@ -79,8 +86,6 @@ PIPELINE_STAGES: tuple[str, ...] = (
     OcrStage.EXTRACT.value,
 )
 TEMP_PREFIX = "ocr-pipeline-"
-# SCHEMA §3.3 既定阈值（方案 3.4 规则 1）；S3-2 会把聚合公式与阈值搬进配置
-NEED_REVIEW_THRESHOLD = 0.85
 # warnings 只是给人看的定位线索，不能无限增长（JSONB 也会一直变大）
 _WARNING_LIMIT = 20
 _MONEY_COLUMNS = ("amount", "tax_amount", "total_amount")
@@ -196,12 +201,15 @@ def field_rows(
     *,
     invoice_id: int,
     rule_ids: dict[str, int],
-    failed_fields: set[str],
+    confidences: dict[str, FieldConfidence],
 ) -> list[dict[str, Any]]:
-    """`invoice_fields` 行：冲突两个值都留，低置信/校验失败标 need_review。"""
+    """`invoice_fields` 行：冲突两个值都留；`need_review` 由 `confidence.resolve_field` 判（S3-2）。"""
     rows: list[dict[str, Any]] = []
     for name, item in merged.items():
         extracted = item.field
+        resolved = confidences.get(name)
+        score = resolved.score if resolved is not None else round(float(extracted.confidence), 3)
+        level = resolved.level if resolved is not None else "review"
         has_conflict = len(extracted.candidates) > 1
         rows.append(
             {
@@ -210,15 +218,13 @@ def field_rows(
                 "field_value": extracted.value,
                 "normalized_value": extracted.value,
                 "raw_text": extracted.raw_text,
-                "confidence": Decimal(str(round(float(extracted.confidence), 3))),
+                "confidence": Decimal(str(score)),
                 "bbox_json": list(extracted.bbox) if extracted.bbox is not None else None,
                 "source": FieldSource.OCR.value,
                 "source_page_no": item.page_no,
                 "source_line_no": extracted.source_line_no,
                 "rule_id": rule_ids.get(name),
-                "need_review": (
-                    float(extracted.confidence) < NEED_REVIEW_THRESHOLD or name in failed_fields
-                ),
+                "need_review": level != "auto",
                 "conflict": has_conflict,
                 "conflict_value": extracted.candidates[1] if has_conflict else None,
             }
@@ -245,7 +251,15 @@ def _new_metrics(*, attempt: int) -> dict[str, Any]:
             "persist": 0,
             "total": 0,
         },
-        "counts": {"lines": 0, "fields": 0, "missing_required": [], "conflicts": 0},
+        "counts": {
+        "lines": 0,
+        "fields": 0,
+        "missing_required": [],
+        "conflicts": 0,
+        "needs_review": 0,
+        "review_levels": {"auto": 0, "review": 0, "manual": 0},
+        "overall_confidence": 0.0,
+    },
         "engine": {},
         "rules_source": "",
         "template_id": None,
@@ -396,7 +410,9 @@ def _persist(
     job: OcrJob,
     pages: list[RecognizedPage],
     merged: dict[str, MergedField],
-    failed_fields: set[str],
+    confidences: dict[str, FieldConfidence],
+    invoice_confidence: InvoiceConfidence,
+    missing_required: list[str],
     classification: Classification,
     template_id: int | None,
     metrics: dict[str, Any],
@@ -431,7 +447,7 @@ def _persist(
             merged,
             invoice_id=invoice.id,
             rule_ids=_rule_ids(db, template_id, merged.keys()),
-            failed_fields=failed_fields,
+            confidences=confidences,
         )
         if row["field_name"] not in preserved
     ]
@@ -439,8 +455,14 @@ def _persist(
         db.execute(insert(InvoiceField), field_values)
 
     quality_flag = pages[0].prepared.quality_flag if pages else None
+    has_conflict = any(len(item.field.candidates) > 1 for item in merged.values())
+    need_confirm = bool(invoice_confidence.needs_review) or bool(missing_required) or has_conflict
     final = {
         "ocr_status": OcrStatus.SUCCEEDED.value,
+        "overall_confidence": invoice_confidence.overall,
+        "extract_status": (
+            ExtractStatus.NEED_CONFIRM.value if need_confirm else ExtractStatus.RAW.value
+        ),
         **({"quality_flag": quality_flag} if quality_flag in ("ok", "low") else {}),
     }
     values = invoice_values(merged, ticket_type=classification.ticket_type, template_id=template_id)
@@ -599,10 +621,27 @@ def run_pipeline(db: Session, job: OcrJob, *, deps: PipelineDeps | None = None) 
             {name: item.field for name, item in merged.items()}, classification.ticket_type
         ).failed_fields()
         metrics["counts"]["fields"] = len(merged)
-        metrics["counts"]["missing_required"] = sorted(
+        missing_required = sorted(
             {name for _, result in results for name in result.missing_required}
         )
+        metrics["counts"]["missing_required"] = missing_required
         metrics["counts"]["conflicts"] = sum(len(result.conflicts) for _, result in results)
+
+        # 置信度统一由 confidence.resolve_field 判档（S3-2）：冲突必须人看、校验失败必须人工
+        resolved_fields = [
+            resolve_field(FieldScore(
+                field_name=name,
+                score=float(item.field.confidence),
+                conflict=len(item.field.candidates) > 1,
+                validator_failed=name in failed_fields,
+            ))
+            for name, item in merged.items()
+        ]
+        confidences = {item.field_name: item for item in resolved_fields}
+        invoice_confidence = aggregate_invoice(resolved_fields)
+        metrics["counts"]["needs_review"] = len(invoice_confidence.needs_review)
+        metrics["counts"]["review_levels"] = invoice_confidence.counts
+        metrics["counts"]["overall_confidence"] = invoice_confidence.overall
 
         stage = OcrStage.EXTRACT.value
         persist_started = clock()
@@ -612,7 +651,9 @@ def run_pipeline(db: Session, job: OcrJob, *, deps: PipelineDeps | None = None) 
             job=job,
             pages=pages,
             merged=merged,
-            failed_fields=failed_fields,
+            confidences=confidences,
+            invoice_confidence=invoice_confidence,
+            missing_required=metrics["counts"]["missing_required"],
             classification=classification,
             template_id=template_id,
             metrics=metrics,
