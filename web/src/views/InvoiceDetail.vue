@@ -11,6 +11,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import {
   confirmInvoice,
+  deleteInvoice,
   fetchDuplicateCheck,
   fetchInvoiceImage,
   fetchInvoiceLines,
@@ -104,6 +105,16 @@ const reviewLabel = computed(() => {
   const invoice = detail.value?.invoice
   if (!invoice || invoice.status !== 'confirmed') return ''
   return invoice.reviewed_at ? '已复核' : '待复核'
+})
+
+const canDelete = computed(() => {
+  const invoice = detail.value?.invoice
+  return Boolean(
+    invoice &&
+      store.role === 'submitter' &&
+      invoice.uploader_id === store.user?.id &&
+      ['draft', 'confirmed'].includes(invoice.status),
+  )
 })
 
 const canReview = computed(() => {
@@ -286,6 +297,27 @@ async function confirmAll(): Promise<void> {
   }
 }
 
+async function removeInvoice(): Promise<void> {
+  const invoice = detail.value?.invoice
+  if (!invoice) return
+  try {
+    await ElMessageBox.confirm(
+      '删除后票据作废（void），列表不再显示；影像保留用于审计，同一张影像不能再次上传。是否继续？',
+      '删除票据',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteInvoice(invoice.id)
+    ElMessage.success('已删除')
+    void router.replace('/invoices')
+  } catch (cause) {
+    ElMessage.error(cause instanceof ApiError ? cause.message : '删除失败，请重试')
+  }
+}
+
 async function reviewAll(): Promise<void> {
   const invoice = detail.value?.invoice
   if (!invoice || confirming.value) return
@@ -436,6 +468,14 @@ onBeforeUnmount(revokeImage)
                 @click="confirmAll"
               >
                 确认整单
+              </el-button>
+              <el-button
+                v-if="canDelete && !editMode"
+                type="danger"
+                plain
+                @click="removeInvoice"
+              >
+                删除票据
               </el-button>
               <el-button
                 v-if="canReview && !editMode"

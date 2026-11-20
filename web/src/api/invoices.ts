@@ -1,5 +1,5 @@
 /** 票据读/写接口（S2-11；轮询在 S2-10 已加，S3-1 换用 ocr-status）。 */
-import { get, getBlob, patch, post, unwrap } from './http'
+import { del, get, getBlob, patch, post, unwrap } from './http'
 import type {
   InvoiceDetail,
   InvoiceFieldsUpdateData,
@@ -46,6 +46,11 @@ export async function updateInvoiceFields(
     silent: true,
   })
   return unwrap(envelope)
+}
+
+/** 软删票据（S2-5）：status=void，幂等；只有本人可删，已进报销单/已归档 409。 */
+export async function deleteInvoice(invoiceId: number): Promise<void> {
+  await del(`/invoices/${invoiceId}`, { silent: true })
 }
 
 /** 审核人二审（S3-9）：复核后锁定修改；失败 422/42201 时 payload.data.fields 给逐字段原因。 */
