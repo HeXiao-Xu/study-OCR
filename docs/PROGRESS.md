@@ -6,17 +6,17 @@
 
 ## 当前状态
 
-- 阶段：**阶段 4 进行中**（S4-1 已完成，密码链路起点打通）；下一张卡 **S4-2 SM2 签名与验签**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1**（共 35 张卡，全部 ✅ 通过）
-- 最近完成：**S4-1 SM3 摘要与 canonical JSON 规范化**（54 条测试；全量 480 条单元全绿；`gmssl==3.2.2` 落地）
+- 阶段：**阶段 4 进行中**（S4-1 / S4-2 已完成，签名链路打通）；下一张卡 **S4-3 SM4-CBC + HMAC-SM3 对称层**
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-2**（共 36 张卡，全部 ✅ 通过）
+- 最近完成：**S4-2 SM2 签名与验签**（GB/T 32918.5 公开向量逐位对账；全量 531 条单元全绿）
 - 附加改动（2026-11-20）：D-069 真实横版票抽取修复、D-070 确认流程简化（去重识别/逐字段操作）、D-071 删除改硬删（仅 draft，可重传）；业务状态统一显示为 待确认/待复核/已复核（前端派生）
-- 下一步：**S4-2 SM2 签名与验签（防双重哈希）★关键**
+- 下一步：**S4-3 SM4-CBC + HMAC-SM3 的 Encrypt-then-MAC 对称层 ★关键**
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
   - `gmssl==3.2.2`（+ `pycryptodomex==3.24.2`）已装并锁版本；装入后 numpy 1.26.4 / paddle 2.6.2 未变
-  - 本地领先 origin **69 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **71 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -65,7 +65,7 @@
 
 ## 阶段 4：密码模块（M3）
 [x] S4-1 SM3 摘要与 canonical JSON 规范化 ★关键
-[ ] S4-2 SM2 签名与验签（防双重哈希） ★关键
+[x] S4-2 SM2 签名与验签（防双重哈希） ★关键
 [ ] S4-3 SM4-CBC + HMAC-SM3 的 Encrypt-then-MAC 对称层 ★关键
 [ ] S4-4 数字信封（SM2 包裹会话密钥） ★关键
 [ ] S4-5 密钥生成与私钥口令保护 ★关键
@@ -102,6 +102,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S4-2 | `backend/app/crypto/sm/sm2.py`（新：`sign_bytes` / `verify_bytes` / `DEFAULT_USER_ID` / `SM2_N`；只走 `sign_with_sm3`，K 用 `secrets` + 拒绝采样；DER 签名；公钥归一化 + 曲线校验 + 覆盖 gmssl `lstrip("04")` 缺陷；验签 r,s 范围校验 + 畸形返回 False）、`backend/app/crypto/signature.py`（新：`SignatureRecord`（frozen/extra=forbid）、`VerifyResult`、`sign_canonical` / `verify_record` / `verify_canonical`）、`backend/tests/test_crypto/{test_sm2,test_signature,_keys}.py`（51 条）、`docs/{spec,plan}/s4-2-sm2-signature.md` | ① **GB/T 32918.5 附录 A.1 公开向量**逐位对上：`M="message digest"`、`k=59276E27…` → `r=F5A03B06…20B3`、`s=B1B6AA29…C1AA`，验签 True；② ZA/摘要与标准一致（`ZA=B2E14C5C…`、`e=F0B43E94…`，实测）；③ 1 bit 改消息 / 改签名 / 错误公钥 → False；④ 同明文两次签名不同（`secrets`），固定 K 两次相同；⑤ **双重哈希陷阱**：把 `sm3_digest(payload)` 当消息再签 → 对摘要 True、对原 payload False；⑥ **gmssl 缺陷回归**：x 以 `04` 开头的公钥（`d=7F3A…6146`）签名/验签正确（未修 bug 时 gmssl 把 128 hex 剥成 126 并抛 `TypeError`，已实测）；⑦ **可塑性**：`s+n` 的 DER 变体 → False（gmssl 本身会验过）；⑧ 畸形签名 6 种 → False 不抛；非法私钥/公钥/K/非曲线点 → `ValueError`；⑨ 记录三类失败：载荷改 `digest_mismatch`、载荷+digest 同改 `bad_signature`、签名改/错公钥 `bad_signature`；模型 frozen/extra=forbid/naive 时间拒绝；⑩ `pytest tests/test_crypto` **105 passed**（S4-1 54 + 本卡 51），全量 **531 passed**（480 + 51），`alembic check` 零差异（本卡无迁移）；⑪ 独立实现对照：Node `createHash('sm3')` 与 `sm3_hex(canonical_json(...))` 同值 `d646a76e…` | ✅ 通过（D-075：签名策略裁决 + gmssl 七条缺陷处理；`hmac_sm3` 仍留 S4-3） |
 | S4-1 | `backend/app/crypto/canonical.py`（新：`canonical_json` 校验遍历 + 标准库转义、`canonical_sha256`、`CanonicalJSONError`；拒 float/Decimal/非 str 键/超 2^53 整数/循环/代理项）、`backend/app/crypto/sm/sm3.py`（新：`sm3_digest` 32B、`sm3_hex` 仅日志；gmssl 唯一入口 + `list()` 副本挡原地修改）、`backend/tests/test_crypto/{__init__,test_canonical,test_sm3}.py`（54 条）、`scripts/{canonical_fixture.json,canonical_cross_check.py,canonical_cross_check.mjs}`、`backend/requirements{,.lock}.txt`（`gmssl==3.2.2` + `pycryptodomex==3.24.2`）、`docs/{spec,plan}/s4-1-canonical-sm3.md` | ① SM3 国标向量全过：`abc`→`66c7f0f4…`、`b"abcd"*16`→`debe9ff9…`、空串→`1ab21d83…`；② 键序不同 → 同字节同摘要（`{"b":1,"a":2}` 与 `{"a":2,"b":1}` 均 `b'{"a":2,"b":1}'`）；③ 中文不转义（`{"name":"发票"}` → 原样 UTF-8，无 `\u`）；负数/嵌套 list/null 精确字节；④ `100`(int)/`"100"`/`"100.00"` 三种字节三种摘要，`float 100.0` 与 `Decimal("100.00")` 被拒（`CanonicalJSONError`）；⑤ 非 str 键、`2^53`、`bytes/tuple/set/自定义对象`、循环引用、孤立代理项全部被拒；⑥ `bytearray` 入参调用后未被修改（gmssl 原地改入参已被封装挡住）；`str` 入参 `TypeError`；⑦ **跨语言**：`canonical_cross_check.py` 与 `.mjs` 三字段逐字相等（`canonical_utf8_b64` / `sm3=ae5c73b0…` / `sha256=d733f2fa…`）；用 JS 默认 UTF-16 排序算出的 SM3 是 `1504e4f3…`（证明 fixture 能抓住该坑，D-074 #11）；⑧ `pytest tests/test_crypto` **54 passed**，全量单测 **480 passed**（基线 426 + 54），`alembic check` 零差异（本卡无迁移）；⑨ 装 gmssl 后 numpy 1.26.4 / paddle 2.6.2 / paddleocr 2.7.3 未变 | ✅ 通过（D-073 依赖落地、D-074 canonical 口径；`hmac_sm3` 留 S4-3） |
 | S3-9（补充卡） | `alembic/versions/0007_invoice_review.py`（`reviewed_by` FK users、`reviewed_at` + 索引）、`models/invoices.py`、`schemas/invoice.py`（`InvoiceOut` 两字段、`review_status` 过滤）、`services/invoice_service.py`（`update_fields` 删除金额角色限制 + 复核锁定、`review_invoice`、列表过滤）、`api/v1/invoices.py`（`POST /{id}/review`）、`web/src/{types,invoices api,InvoiceDetail,InvoiceList}`、`backend/tests/test_review.py`（新）+ 改 `test_invoices`、`docs/{spec,plan}/s3-9-two-level-review.md` | ① 提交人改金额：不勾选 **422/42202**、勾选 **200**（原 403 删除）；② 提交人确认 113 → v4；审核人 review → **200**，`reviewed_by=15`、`reviewed_at` 落库、v5；③ 列表 `review_status=pending` 空、`reviewed=[113]`；④ 复核后提交人改字段 → **409/40900**；重复复核 → **200 且 v 不变**（幂等）；⑤ 迁移 0007 upgrade/downgrade/upgrade，`alembic check` 零差异；⑥ 单元 422 / 集成 245 passed，`typecheck`/`build` 通过；⑦ UI 断言 reviewer 详情“已复核”通过，截图 `backend/eval/results/s39-reviewed.png` | ✅ 通过（D-068 取代 D-017 金额限制；复核即锁定，无反复核） |
 | S3-8 | `alembic/versions/0006_batch_upload.py`（`invoices.batch_id` + 索引、`ocr_jobs.dispatched`）、`models/{invoices,ocr_jobs}.py`、`core/config.py` + `.env.example`（`OCR_MAX_ACTIVE_PER_USER=3`）、`services/batch_service.py`（新：`create_batch`/`dispatch_pending`/`dispatch_for_job`/`batch_summary`/`retry_item`）、`tasks/worker.py`（`after_job_end` 补位，ARQ 0.28 只传 ctx → `Job.info()` 回查参数）、`api/v1/invoices.py` + `schemas/invoice.py`（3 个 batch 接口）、`web/src/{api/files.ts,api/invoices.ts,types/invoice.ts,views/Upload.vue}`（批量模式）、`backend/tests/test_batch.py`、`docs/{spec,plan}/s3-8-batch.md` | ① 迁移 0006 可 upgrade/downgrade/upgrade，`alembic check` 零差异；② 真实 30 文件：POST **202 / created=30 / 1.17s**，轮询 **48.6s** 全部 `succeeded`，逐项 `progress` 全 100；③ 并发：批内 5 文件只有 **3** 个 `dispatched=true`（其余 `false` 排队），GET 轮询/`after_job_end` 补位后依次入队；④ 去重/非法按项返回（`duplicates/rejected`），不拖垮整批；⑤ 重试：**202 + 新 job**，`invoices` 数不变（30→30，job 81 有 2 条），重试后识别成功；⑥ 权限/404/422/409 全覆盖；⑦ 单元 422 / 集成 237 passed，`typecheck`/`build` 通过；⑧ 冒烟 30 票/对象/账号已清理 | ✅ 通过（唯一新增迁移 0006；前端批量 UI 仅 typecheck/build，未做 30 文件浏览器点击自动化） |
@@ -237,10 +238,27 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 71 | `canonical_json` 拒绝 `|int| > 2^53-1` | 业务载荷若把 BIGINT id 当裸整数会抛 `CanonicalJSONError` | S5 组装签名载荷时 id/金额一律用 `str`；若确需大整数，先改 D-074 与 Node 参考实现（BigInt） |
 | 72 | 跨语言校验靠命令行脚本，不在 pytest 里 | `pytest` 不依赖 Node 运行时（测试套件禁止隐式外部依赖） | 若 CI 有 Node，可加一条 `@pytest.mark.skipif(shutil.which("node") is None)` 的对照用例 |
 | 73 | `sm3_hash` 返回 hex 再 `bytes.fromhex`，多一次解码（≈几 µs） | 不影响签名链路预算（2MB 影像的瓶颈在 SM4，不在摘要） | S6-3 性能实验里如实记录单次 SM3 耗时；如成为瓶颈再评估直接取内部 state |
+| 74 | 签名固定使用国标默认 ID `1234567812345678`（ZA 全用户相同） | 身份区分靠 `cert_id`（S4-6）与记录里的公钥，不靠 ZA | 若要求"按用户 ID 绑定"，签名/验签必须同期改造并记决策（D-075 已写明） |
+| 75 | `sm2.sign_bytes` 暴露 `k_hex`（只为国标向量/确定性测试） | 生产误传会复用 K → 私钥可恢复（SM2 与 ECDSA 同理） | S5 只调 `sign_canonical`（无 k 参数）；上线前可加"业务层禁止直接 import sm2"的检查 |
+| 76 | `VerifyResult` 目前不含 `cert_invalid` | 证书链/吊销校验属 S4-6 | S4-6 完成后 `verify_record` 接入证书校验并补该取值 |
+| 77 | SM2 性能未测（gmssl 纯 Python 点运算，无常数时间保证） | 论文性能与侧信道分析靠 S6-3 / S6-4 | S6-3 补 sign/verify p50/p95；S6-4 如实写"无常数时间实现" |
 
 ## 变更日志
 
 ### 2026-11-20
+
+- **S4-2 完成**：SM2 签名与验签（签名链路打通）。
+  · `crypto/sm/sm2.py`：唯一入口 `sign_bytes` / `verify_bytes`，**只走 `sign_with_sm3`**
+    （`e = SM3(ZA‖M)`，国标 ZA 绑定），不签外部摘要；
+  · 随机源：`secrets.token_hex(32)` + 拒绝采样进 `[1, n-1]`，**绝不用 `func.random_hex`**；
+  · 签名值 DER(SEQUENCE{r,s}) hex，记录里存 base64（对齐 SCHEMA "约 70–72 字节"）；
+  · 处理 gmssl 七条坑：`mode` 默认 0、`lstrip("04")` 按字符集剥离（x 以 04 开头时 128→126 实测）、
+    `sign()` 不重试、verify 不查 r/s 范围（`s+n` 可塑）、畸形签名抛异常、固定默认 ID；
+  · `crypto/signature.py`：`SignatureRecord`（frozen/extra=forbid，`signed_at` 必须带时区）+
+    `VerifyResult`（ok/digest_mismatch/bad_signature）+ sign/verify 两个链路函数；
+  · 实测：GB/T 32918.5 A.1 公开向量 `r=F5A03B06…`、`s=B1B6AA29…` 逐位一致；
+    双重哈希陷阱用例（摘要当消息 → 原消息验不过）固化为测试；
+  · 无接口/无迁移/无表变更；`pytest tests/test_crypto` 105 passed、全量 531 passed（D-075）。
 
 - **S4-1 完成**：SM3 摘要与 canonical JSON 规范化（密码链路起点）。
   · `crypto/canonical.py`：键按 Unicode 码点升序、`(",", ":")` 无空格、`ensure_ascii=False` + UTF-8；

@@ -1515,3 +1515,47 @@
   超 2^53 的裸整数也必须转字符串。这是**故意的失败**：早炸好过静默分叉。
 - **验证**：`backend/tests/test_crypto/` 54 条；`scripts/canonical_cross_check.{py,mjs}` 三字段逐字相等
   （`canonical_utf8_b64` / `sm3` / `sha256`）；SM3 国标向量 `abc`/512bit/空串全过。
+
+---
+
+## D-075 SM2 签名策略裁决：只走国标 SM2-SM3（ZA 绑定），不签裸摘要；DER 签名；gmssl 七条坑逐条封堵
+
+- **日期**：2026-11-20（S4-2，用户授权按 spec 自行拍板）
+- **背景（文档冲突）**：任务卡 S4-2 提示词要求"对外只暴露 `sign_bytes(digest32) -> hex`，
+  函数内不再做任何哈希"；AGENTS §6 的硬约束是"签名验签**统一用** `sign_with_sm3` /
+  `verify_with_sm3`；禁止与 `sign(data, K)` 混用"。两者不可同时满足：前者等于把 32B 摘要
+  当 `e` 直接签，**丢掉了国标 ZA（ID‖曲线参数‖公钥）绑定**。
+- **裁决**：**遵守 AGENTS §6 = 走标准 SM2-SM3**（`e = SM3(ZA‖M)`，ID 用国标默认
+  `1234567812345678`）。`sign_bytes(data)` 的入参语义改为**待签字节**
+  （= `canonical_json` 的输出），不是摘要；封装层不做任何哈希，SM3 只由 gmssl 内部按国标调用一次。
+  理由：① ZA 绑定是 GB/T 32918.2 的硬要求，裸签名不是国标 SM2；② 标准路线能用
+  **GB/T 32918.5 附录 A.1 公开向量**逐位对账，裸签名只能自签自验（循环论证）；
+  ③ AGENTS §1 明确"与任务卡冲突时以 AGENTS 硬约束为准"。
+- **配套决策**：
+  1. **签名编码 DER**：`SEQUENCE{r INTEGER, s INTEGER}` 的 hex（70–72 字节），记录里存 base64
+     ——对齐 SCHEMA `signatures.signature_b64`（"SM2 签名约 70–72 字节"）；不用裸 `r‖s`；
+  2. **随机源**：K 一律 `secrets.token_hex(32)` + 拒绝采样进 `[1, n-1]`；
+     gmssl 默认走 `func.random_hex`（基于 `random`，K 可预测）→ **永远显式传 K**；
+  3. **记录**：`SignatureRecord`（frozen、`extra=forbid`）含 `algo="SM2-SM3"`、
+     `digest_algo="SM3"`、`digest_hex=SM3(canonical)`（SCHEMA：只作展示/快对，**不是验签依据**）、
+     `signature_b64`、`canonical_payload_base64`（签名当时的原文字节）、`payload_version`、
+     `cert_id`（S4-6 前可空）、`signed_at`（必须带时区）；
+  4. **验签归类**：`ok` / `digest_mismatch` / `bad_signature`（对齐 SCHEMA `verify_result`；
+     `cert_invalid` 留 S4-6）；
+  5. **gmssl==3.2.2 七条行为逐条封堵**（都有回归测试）：
+     `mode` 默认 0 → 显式 `mode=1`；
+     `public_key.lstrip("04")` **按字符集剥离**（x 以 `04` 开头时 128 hex → 126，实测；
+     未修时 verify 抛 `TypeError`）→ 归一化后**强制覆盖** `sm2.public_key`；
+     `sign()` 遇 `r=0/r+k=n/s=0` 返回 `None` 且不重试 → 封装层换 K 重试（≤8 次；固定 K 时直接报错，
+     避免"确定性用例假绿"）；
+     `verify()` 不校验 `r,s ∈ [1,n-1]`（`s+n` 的变体也能验过）→ 验签前做范围校验；
+     `verify()` 对畸形签名抛异常、`t=0` 返回 int `0` → 统一 `bool`，畸形返回 `False`；
+     `_sm3_z` 固定默认 ID → 导出 `DEFAULT_USER_ID` 常量，换 ID 必须签名/验签同期改。
+- **代价**：`sign_bytes` 的调用约定变了（传 canonical 字节而不是摘要），任务卡的 API 语义
+  需在 S5 组装时按本卡执行；所有用户共用同一个默认 ID，身份区分靠证书（S4-6）；K 入参暴露给测试，
+  生产误用会毁私钥（S5 只调 `sign_canonical`，无 k 参数）。
+- **验证**：**GB/T 32918.5 A.1** 向量 `M="message digest"`、`k=59276E27…` →
+  `r=F5A03B0648D2C4630EEAC513E1BB81A15944DA3827D5B74143AC7EACEEE720B3`、
+  `s=B1B6AA29DF212FD8763182BC0D421CA1BB9038FD1F7F42D4840B69C485BBC1AA`（逐位对上）；
+  双重哈希陷阱、`s+n` 可塑性、`04` 开头公钥、畸形输入全部有用例；
+  `pytest tests/test_crypto` 105 passed、全量 531 passed、`alembic check` 零差异。
