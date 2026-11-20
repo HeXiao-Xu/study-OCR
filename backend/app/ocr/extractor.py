@@ -178,9 +178,16 @@ def _tail_after_anchor(text: str, anchor: str) -> str:
     return compact[index + len(anchor):]
 
 
-def _extract_value(rule: FieldRule, text: str, anchor: str) -> str | None:
+def _extract_matched(rule: FieldRule, text: str, anchor: str) -> tuple[str, str] | None:
+    """返回 (票面原文, 归一值)；归一不出来返回 None。
+
+    为什么要同时给两个：`invoice_fields.field_value` 契约要求"票面原文形态"，而抽取与校验都吃归一值。
+    以前只返回归一值，原文在函数内部就丢了（S3-4/D-062）。
+    """
     if rule.whole_line_anchors and anchor in rule.whole_line_anchors:
-        return _normalize(rule.value_type, _compact(text))
+        raw = _clean_text(_compact(text))
+        normalized = _normalize(rule.value_type, raw)
+        return (raw, normalized) if normalized else None
     tail = _clean_text(_tail_after_anchor(text, anchor))
     if not tail:
         return None
@@ -193,10 +200,19 @@ def _extract_value(rule: FieldRule, text: str, anchor: str) -> str | None:
             return None
         # 一行多个数值时按 value_index 取（合计行常是"金额 税额"两列）
         if rule.value_index and len(matches) > rule.value_index:
-            tail = matches[rule.value_index]
+            raw = matches[rule.value_index]
         else:
-            tail = matches[0]
-    return _normalize(rule.value_type, tail)
+            raw = matches[0]
+        normalized = _normalize(rule.value_type, raw)
+        return (raw, normalized) if normalized else None
+    normalized = _normalize(rule.value_type, tail)
+    return (tail, normalized) if normalized else None
+
+
+def _extract_value(rule: FieldRule, text: str, anchor: str) -> str | None:
+    """兼容包装：只要归一值。"""
+    matched = _extract_matched(rule, text, anchor)
+    return matched[1] if matched is not None else None
 
 
 def _in_zone(rule: FieldRule, line: OcrLine, image_height: int) -> bool:
@@ -207,7 +223,7 @@ def _in_zone(rule: FieldRule, line: OcrLine, image_height: int) -> bool:
 
 
 def _neighbour_value(rule: FieldRule, anchor_line: OcrLine, lines: list[OcrLine],
-                     image_height: int) -> tuple[str, int] | None:
+                     image_height: int) -> tuple[str, str, int] | None:
     """锚点同行取不到值时，在允许的方向/距离内找邻近行。"""
     if rule.direction == "right":
         candidates = [line for line in lines
@@ -226,7 +242,7 @@ def _neighbour_value(rule: FieldRule, anchor_line: OcrLine, lines: list[OcrLine]
         candidates = sorted(right, key=lambda line: line.x_left) + \
                      sorted(below, key=lambda line: line.y_center)
 
-    collected: list[tuple[str, int]] = []
+    collected: list[tuple[str, str, int]] = []
     for line in candidates:
         if not _in_zone(rule, line, image_height):
             continue
@@ -248,21 +264,22 @@ def _neighbour_value(rule: FieldRule, anchor_line: OcrLine, lines: list[OcrLine]
             if not matches:
                 continue
             if rule.value_index and len(matches) > rule.value_index:
-                raw_value = matches[rule.value_index]
-                value = _normalize(rule.value_type, raw_value)
-                if value:
-                    return value, line.line_no
+                raw = matches[rule.value_index]
+                normalized = _normalize(rule.value_type, raw)
+                if normalized:
+                    return raw, normalized, line.line_no
             # value_index 指向的行内没有第 N 个值 → 先把本行的值收起来，继续往下找
             for raw in matches:
                 normalized = _normalize(rule.value_type, raw)
                 if normalized:
-                    collected.append((normalized, line.line_no))
+                    collected.append((raw, normalized, line.line_no))
                 if len(collected) > rule.value_index:
                     return collected[rule.value_index]
         else:
-            value = _normalize(rule.value_type, line.text)
-            if value:
-                return value, line.line_no
+            raw = _clean_text(line.text)
+            normalized = _normalize(rule.value_type, raw)
+            if normalized:
+                return raw, normalized, line.line_no
     return None
 
 
@@ -340,22 +357,25 @@ def extract_fields(lines: list[OcrLine], image_size: tuple[int, int],
             selected = anchor_lines[:1] if rule.occurrence in {"first", "last"} else anchor_lines[:3]
             for anchor_line in selected:
                 base_strength = _ANCHOR_STRENGTH.get(anchor_rank, 0.8)
-                value = _extract_value(rule, anchor_line.text, anchor)
+                matched = _extract_matched(rule, anchor_line.text, anchor)
                 source_line = anchor_line
                 strength = base_strength
                 used_neighbour = False
-                if value is None:
+                if matched is None:
                     neighbour = _neighbour_value(rule, anchor_line, ordered, image_height)
                     if neighbour is None:
                         continue
-                    value, source_line_no = neighbour
+                    raw_value, value, source_line_no = neighbour
                     source_line = next((line for line in ordered if line.line_no == source_line_no), anchor_line)
                     strength = base_strength * _FUZZY_PENALTY
                     used_neighbour = True
+                else:
+                    raw_value, value = matched
                 agreement = _FUZZY_PENALTY if used_neighbour else 1.0
                 hits.append(ExtractedField(
                     name=rule.name,
                     value=value,
+                    raw_value=raw_value,
                     raw_text=source_line.text,
                     source_line_no=source_line.line_no,
                     confidence=compute_field_confidence(

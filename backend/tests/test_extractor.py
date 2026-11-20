@@ -204,3 +204,79 @@ def test_rules_from_specs_ignores_non_dict_specs() -> None:
 
     assert rules_from_specs({"broken": "not-a-dict"}) == []
     assert rules_from_specs({}) == []
+
+# --------------------------------------------------------------------------- #
+# S3-4：保留票面原文（raw_value）与归一值分开
+# --------------------------------------------------------------------------- #
+def test_money_field_keeps_raw_value_and_normalized_value() -> None:
+    result = extract_fields(_digital_lines(), (1200, 800), "vat_digital")
+    field = result.fields["total_amount"]
+    assert field.value == "195.89"          # 归一值
+    assert field.raw_value == "¥195.89"     # 票面原文（带货币符号）
+    assert field.raw_value != field.value
+
+
+def test_date_field_raw_value_keeps_document_form() -> None:
+    result = extract_fields(_digital_lines(), (1200, 800), "vat_digital")
+    field = result.fields["invoice_date"]
+    assert field.value == "2025-11-04"
+    # raw 是规则正则命中的原文片段（regex 不含尾缀"日"，故到这里为止；值仍是完整 ISO 日期）
+    assert field.raw_value == "2025年11月04"
+
+
+def test_labeled_name_field_raw_value_is_the_value_part() -> None:
+    result = extract_fields(_digital_lines(), (1200, 800), "vat_digital")
+    field = result.fields["buyer_name"]
+    assert field.value.startswith("武汉金穗")
+    assert field.raw_value == "武汉金穗商贸有限公司"
+
+
+def test_whole_line_name_field_keeps_raw_value() -> None:
+    lines = [_line("武汉市出租汽车有限公司", 300, 0)]
+    result = extract_fields(lines, (1200, 800), "taxi_ticket")
+    field = result.fields["seller_name"]
+    assert field.value == "武汉市出租汽车有限公司"
+    assert field.raw_value == "武汉市出租汽车有限公司"
+
+
+def test_derived_field_has_no_raw_value() -> None:
+    from dataclasses import replace
+
+    lines = [
+        _line("电子发票（普通发票）", 50, 0),
+        _line("发票号码：12345678", 90, 1),
+        _line("开票日期：2025年11月04日", 120, 2),
+        _line("金额  ¥184.80", 480, 3),
+        _line("税额  ¥11.09", 520, 4),
+    ]
+    rules = [
+        replace(rule, anchors=["不存在的锚点"]) if rule.name == "total_amount" else rule
+        for rule in load_field_rules()
+        if rule.name in {"amount", "tax_amount", "total_amount"}
+    ]
+
+    result = extract_fields(lines, (1200, 800), "vat_digital", rules=rules)
+
+    derived = result.fields["total_amount"]
+    assert derived.rule_id == "derived:total_amount"
+    assert derived.raw_value is None
+    assert derived.value == "195.89"
+
+
+def test_neighbour_value_returns_raw_and_normalized() -> None:
+    """跨行取值（同行右侧）也要带原文，不能只回归一值。"""
+    from app.ocr.extractor import _neighbour_value
+
+    lines = [
+        _line("开票日期", 300, 0),
+        _line("2025年11月04日", 300, 1, x=200.0),
+    ]
+    rules = {rule.name: rule for rule in load_field_rules()}
+
+    matched = _neighbour_value(rules["invoice_date"], lines[0], lines, 800)
+
+    assert matched is not None
+    raw, value, line_no = matched
+    assert value == "2025-11-04"
+    assert raw == "2025年11月04"
+    assert line_no == 1
