@@ -85,6 +85,8 @@ fields:
     regex: '[¥￥]?\s*-?\d[\d,]*\.\d{2}'
     max_distance: 360
     zone: [0.60, 1.0]
+    # "价税合计（大写)" 含"合计"，横版票会落在 zone 内被误当金额（S3-9 实测踩到）
+    exclude: ["价税合计", "大写", "小写"]
     value_index: 0        # 合计行形如"合计 ¥184.80 ¥11.09"：第 0 个是金额
     tickets: [vat_digital, vat_general]   # 其他票种没有"金额/税额"拆分（行程单只有合计）
     required: false
@@ -96,6 +98,7 @@ fields:
     regex: '[¥￥]?\s*-?\d[\d,]*\.\d{2}'
     max_distance: 360
     zone: [0.60, 1.0]
+    exclude: ["价税合计", "大写", "小写"]
     value_index: 1        # 合计行第 1 个是税额
     tickets: [vat_digital, vat_general]
     required: false

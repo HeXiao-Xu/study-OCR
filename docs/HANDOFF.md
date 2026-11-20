@@ -1,7 +1,7 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-20（S3-9 双人复核上线，提交人可改金额、审核人二审）
+> 最后更新：2026-11-20（S3-9 双人复核 + 真实 PDF 抽取修复 D-069）
 
 ## 1. 一句话现状
 
@@ -118,6 +118,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S3-7 重复检测 | 同图再传 **409/40901**；同票面重编码 B → `duplicate_of=49`、duplicate-check **strong**、confirm **409/40900**（`data.invoice_id=49`） | `tests/test_duplicate.py`（8 条）+ 冒烟脚本 |
 | S3-8 批量上传 | 30 文件 POST **1.17s** 建单；**48.6s** 全部 succeeded、progress 全 100；批内仅 3 个入队；重试后 invoice 30→30、job 2 条且重跑成功 | `tests/test_batch.py`（7 条）+ 冒烟脚本 |
 | S3-9 双人复核 | 提交人改金额（勾选）→ 整单确认 v4；审核人复核 **200**（`reviewed_by=15`、`reviewed_at` 落库、v5）；复核后改字段 **409**、重复复核 **200 且版本不变** | `tests/test_review.py`（8 条）+ 冒烟脚本 |
+| D-069 真实票修复 | 同一 PDF 重传后金额 **1057.43**、税额 **10.57**、合计 **1068.00**、税号显示 `91130730MAK5MAN60W`；重识别时影像/行框请求 1→1 | `test_extractor.py`（横版/税号用例）+ 冒烟 |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -245,6 +246,7 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-066 | 新增 `GET /duplicate-check` 覆盖 D-013；强重复 confirm 409；弱重复只提示；`duplicate_of` 由流水线写；影像重复纵深防御 |
 | D-067 | 批量：迁移 0006（`invoices.batch_id`/`ocr_jobs.dispatched`）；服务端排队 ≤3 + `after_job_end` 补位；重试只建新 job；去重项只在 POST 响应 |
 | D-068 | 双人复核（取代 D-017 金额限制）：提交人可改全部字段（金额须勾选）；审核人 `POST /review` 二审；`reviewed_at` 锁定修改；不加 status 枚举 |
+| D-069 | 横版票金额规则排除"价税合计"、税号 O→0/I→1 纠偏（`field_value` 用纠正值、`raw_text` 留原样）、重识别只刷新详情不重拉影像 |
 
 ## 7. 下一步：S4-1 SM3 摘要与 canonical JSON 规范化（★关键）
 

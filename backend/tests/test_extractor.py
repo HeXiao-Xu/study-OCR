@@ -280,3 +280,62 @@ def test_neighbour_value_returns_raw_and_normalized() -> None:
     assert value == "2025-11-04"
     assert raw == "2025年11月04"
     assert line_no == 1
+
+
+# --------------------------------------------------------------------------- #
+# S3-9 真实横版票回归：金额/税额不能被"价税合计"行抢走；税号 O→0
+# --------------------------------------------------------------------------- #
+def _line_at(text: str, y: float, line_no: int, *, x: float, height: float = 30.0) -> OcrLine:
+    return OcrLine(
+        text=text, score=0.98,
+        box=[[x, y - height / 2], [x + 520, y - height / 2],
+             [x + 520, y + height / 2], [x, y + height / 2]],
+        line_no=line_no, y_center=y, x_left=x, height=height,
+    )
+
+
+def test_landscape_table_amount_not_stolen_by_total_line() -> None:
+    """真实横版数电票（115）：金额 1057.43 / 税额 10.57 / 合计 1068.00。"""
+    lines = [
+        _line_at("金额", 540, 22, x=1411),
+        _line_at("税率/征收率", 539, 23, x=1547),
+        _line_at("税额", 540, 24, x=1915),
+        _line_at("1057.43", 576, 26, x=1395),
+        _line_at("10.57", 576, 28, x=1943),
+        _line_at("￥1057.43", 921, 29, x=1377),
+        _line_at("￥10.57", 922, 30, x=1920),
+        _line_at("合", 924, 31, x=204),
+        _line_at("计", 924, 32, x=357),
+        _line_at("壹仟零陆拾捌圆整", 982, 33, x=621),
+        _line_at("（小写）¥1068.00", 983, 34, x=1427, height=44),
+        _line_at("价税合计 （大写)", 988, 35, x=168),
+    ]
+
+    result = extract_fields(lines, (2067, 1378), "vat_digital")
+
+    assert result.fields["total_amount"].value == "1068.00"
+    assert result.fields["amount"].value == "1057.43"      # 不是被"价税合计"抢走的 1068
+    assert result.fields["tax_amount"].value == "10.57"
+    assert result.fields["tax_amount"].rule_id.startswith("paired")
+
+
+def test_tax_no_corrects_digit_letter_confusion() -> None:
+    from app.ocr.extractor import _normalize
+
+    # OCR 把 0 读成 O：O 不在 USCC 字符集内，映射回 0 是安全的
+    assert _normalize("tax_no", "9113O73OMAK5MAN6OW") == "91130730MAK5MAN60W"
+
+
+def test_code_corrects_digit_letter_confusion() -> None:
+    from app.ocr.extractor import _normalize
+
+    assert _normalize("code", "2613O0000034367O3626") == "26130000003436703626"
+
+
+def test_tax_no_field_value_uses_corrected_text() -> None:
+    """display 用纠正值，raw_text 保留机器原样（审计能看到 O）。"""
+    lines = [_line("统一社会信用代码/纳税人识别号：9113O73OMAK5MAN6OW", 300, 0)]
+    result = extract_fields(lines, (1200, 800), "vat_digital")
+    field = result.fields["seller_tax_no"]
+    assert field.value == field.raw_value == "91130730MAK5MAN60W"
+    assert "O" in field.raw_text

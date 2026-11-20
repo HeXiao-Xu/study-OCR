@@ -153,10 +153,12 @@ def _normalize(value_type: str, raw: str) -> str | None:
         parsed = parse_date(text)
         return parsed.isoformat() if parsed else None
     if value_type == "code":
-        digits = re.sub(r"\D", "", text)
+        # 纯数字编号：先把常见 OCR 形近字母纠回来，再剔非数字（否则 O 被整颗删掉会短一位）
+        digits = re.sub(r"\D", "", text.translate(_CODE_CONFUSIONS))
         return digits or None
     if value_type == "tax_no":
-        cleaned = re.sub(r"[\s\-]", "", text).upper()
+        # 统一社会信用代码不含 I/O（GB 32100），OCR 常把 0 读成 O、1 读成 I；只纠这两个安全映射
+        cleaned = re.sub(r"[\s\-]", "", text).upper().translate(_TAX_NO_CONFUSIONS)
         return cleaned or None
     if value_type == "person":
         match = re.search(r"[\u4e00-\u9fa5]{2,4}", text)
@@ -178,6 +180,12 @@ def _tail_after_anchor(text: str, anchor: str) -> str:
     return compact[index + len(anchor):]
 
 
+def _display_raw(value_type: str, raw: str, normalized: str) -> str:
+    """`field_value` 存"票面原文"；但 code/tax_no 的 raw 可能带着 OCR 形近字（O/0），
+    纠正后的值才是票面真实内容，raw_text 仍保留机器原样供审计。"""
+    return normalized if value_type in {"code", "tax_no"} else raw
+
+
 def _extract_matched(rule: FieldRule, text: str, anchor: str) -> tuple[str, str] | None:
     """返回 (票面原文, 归一值)；归一不出来返回 None。
 
@@ -187,7 +195,7 @@ def _extract_matched(rule: FieldRule, text: str, anchor: str) -> tuple[str, str]
     if rule.whole_line_anchors and anchor in rule.whole_line_anchors:
         raw = _clean_text(_compact(text))
         normalized = _normalize(rule.value_type, raw)
-        return (raw, normalized) if normalized else None
+        return (_display_raw(rule.value_type, raw, normalized), normalized) if normalized else None
     tail = _clean_text(_tail_after_anchor(text, anchor))
     if not tail:
         return None
@@ -204,9 +212,9 @@ def _extract_matched(rule: FieldRule, text: str, anchor: str) -> tuple[str, str]
         else:
             raw = matches[0]
         normalized = _normalize(rule.value_type, raw)
-        return (raw, normalized) if normalized else None
+        return (_display_raw(rule.value_type, raw, normalized), normalized) if normalized else None
     normalized = _normalize(rule.value_type, tail)
-    return (tail, normalized) if normalized else None
+    return (_display_raw(rule.value_type, tail, normalized), normalized) if normalized else None
 
 
 def _extract_value(rule: FieldRule, text: str, anchor: str) -> str | None:
@@ -267,21 +275,29 @@ def _neighbour_value(rule: FieldRule, anchor_line: OcrLine, lines: list[OcrLine]
                 raw = matches[rule.value_index]
                 normalized = _normalize(rule.value_type, raw)
                 if normalized:
-                    return raw, normalized, line.line_no
+                    return _display_raw(rule.value_type, raw, normalized), normalized, line.line_no
             # value_index 指向的行内没有第 N 个值 → 先把本行的值收起来，继续往下找
             for raw in matches:
                 normalized = _normalize(rule.value_type, raw)
                 if normalized:
-                    collected.append((raw, normalized, line.line_no))
+                    collected.append(
+                        (_display_raw(rule.value_type, raw, normalized), normalized, line.line_no)
+                    )
                 if len(collected) > rule.value_index:
                     return collected[rule.value_index]
         else:
             raw = _clean_text(line.text)
             normalized = _normalize(rule.value_type, raw)
             if normalized:
-                return raw, normalized, line.line_no
+                return _display_raw(rule.value_type, raw, normalized), normalized, line.line_no
     return None
 
+
+# OCR 形近字纠偏：只用于"本应是数字"的字段，避免把合法字母改坏
+_TAX_NO_CONFUSIONS = str.maketrans({"O": "0", "I": "1"})
+_CODE_CONFUSIONS = str.maketrans(
+    {"O": "0", "o": "0", "I": "1", "i": "1", "l": "1", "S": "5", "s": "5", "B": "8", "Z": "2", "z": "2"}
+)
 
 _MONEY_PATTERN = re.compile(r"[¥￥]?\s*-?\d[\d,]*\.\d{2}")
 

@@ -157,6 +157,7 @@ defineExpose({ scrollToField, amountEditable })
           size="small"
           text
           type="primary"
+          title="重识别只更新置信度与原文，不会自动改字段值"
           :loading="reocring.has(row.field_name)"
           @click.stop="emit('reread', row)"
         >重识别</el-button>

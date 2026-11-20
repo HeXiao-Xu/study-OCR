@@ -249,16 +249,28 @@ function cancelEdit(): void {
   amountConfirm.value = false
 }
 
+async function refreshDetailOnly(): Promise<void> {
+  // 只重拉 JSON：不动影像/行框/重复检测，避免"重识别一次整页闪五次"
+  detail.value = await getInvoiceDetail(invoiceId.value)
+}
+
 async function rereadField(field: InvoiceField): Promise<void> {
   const invoice = detail.value?.invoice
   if (!invoice) return
   reocring.value.add(field.field_name)
   try {
     await reocrFields(invoice.id, [field.field_name], invoice.version)
-    ElMessage.success('已提交重识别，稍后自动刷新')
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 2000))
-      await load()
+    const oldConfidence = field.confidence
+    ElMessage.info('已提交重识别（只更新置信度与原文，字段值仍需人工确认）')
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      await refreshDetailOnly()
+      const latest = detail.value?.fields.find(
+        (item) => item.field_name === field.field_name,
+      )
+      if (latest && (latest.source === 'ocr_retry' || latest.confidence !== oldConfidence)) {
+        break
+      }
     }
   } catch (cause) {
     ElMessage.error(cause instanceof ApiError ? cause.message : '重识别失败')
