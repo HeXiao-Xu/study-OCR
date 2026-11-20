@@ -1,4 +1,4 @@
-"""票据接口（API.md §2）：列表 / 详情 / 软删 / 字段修改。
+"""票据接口（API.md §2）：列表 / 详情 / 软删 / 字段修改 / 识别进度 / 局部重识别。
 
 注意：
 - 建票走 `POST /invoices/upload`（S2-6），本模块没有 `POST /invoices`；
@@ -7,14 +7,15 @@
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_task_queue
 from app.core.database import get_db
-from app.core.exceptions import ok
+from app.core.exceptions import ServiceUnavailableError, ok
 from app.models.users import User
 from app.schemas.common import Envelope, PageResult
 from app.schemas.invoice import (
@@ -24,8 +25,11 @@ from app.schemas.invoice import (
     InvoiceListQuery,
     InvoiceOut,
     OcrStatusData,
+    ReocrData,
+    ReocrRequest,
 )
-from app.services import invoice_service, ocr_status_service
+from app.services import invoice_service, job_service, ocr_status_service, reocr_service
+from app.tasks.queue import OcrTaskQueue
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
@@ -59,6 +63,31 @@ def get_invoice_ocr_status(
     db: Session = Depends(get_db),
 ) -> dict:
     return ok(ocr_status_service.get_ocr_status(db, user, invoice_id))
+
+
+@router.post(
+    "/{invoice_id}/reocr",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=Envelope[ReocrData],
+    summary="局部二次识别（按字段裁剪放大重识别，异步）",
+)
+async def reocr_invoice(
+    invoice_id: int,
+    payload: ReocrRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    queue: OcrTaskQueue = Depends(get_task_queue),
+) -> dict:
+    data = await asyncio.to_thread(
+        reocr_service.submit_reocr, db, user, invoice_id, payload
+    )
+    try:
+        await queue.enqueue_reocr(data.job_id)
+    except Exception:
+        # 已经落库了：入队失败必须把作业置 failed，绝不返回"假成功"（AGENTS §10.5）
+        await asyncio.to_thread(job_service.mark_enqueue_failed, data.job_id, db=db)
+        raise ServiceUnavailableError("任务队列不可用") from None
+    return ok(data, "accepted")
 
 
 @router.patch(

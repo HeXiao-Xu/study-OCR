@@ -176,6 +176,25 @@ class UploadData(BaseModel):
     dedup: UploadDedup
 
 
+class ReocrRequest(BaseModel):
+    """局部二次识别入参（API.md §2）：1–6 个字段。"""
+
+    fields: list[str] = Field(min_length=1, max_length=6)
+    version: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _reject_duplicate_fields(self) -> "ReocrRequest":
+        if len(self.fields) != len(set(self.fields)):
+            raise ValueError("fields 里不能有重复的 field_name")
+        return self
+
+
+class ReocrData(BaseModel):
+    invoice_id: int
+    job_id: int
+    fields: list[str]
+
+
 class OcrStageOut(BaseModel):
     """一个识别阶段（API.md §2 `stages` 元素）：`detect` 与 `recognize` 合并计时，故可为 null。"""
 
