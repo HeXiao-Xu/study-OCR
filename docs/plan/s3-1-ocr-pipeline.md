@@ -1,7 +1,7 @@
 ﻿# S3-1 OCR 流水线实现计划（plan）
 
 > 对应 spec：[`docs/spec/s3-1-ocr-pipeline.md`](../spec/s3-1-ocr-pipeline.md)（已确认）｜
-> 契约：`docs/API.md` §2、`docs/SCHEMA.md` §3.1–3.5 ｜ 状态：**待执行**
+> 契约：`docs/API.md` §2、`docs/SCHEMA.md` §3.1–3.5 ｜ 状态：**已实现（2026-11-20）**，Task 1–9 全部执行并验证（详见 `docs/PROGRESS.md` S3-1 行）
 > 执行方式：按 Task 1→9 顺序，每个 Task 自带验证命令；每个 Task 结束时跑对应测试，不绿不进入下一 Task。
 
 **目标**：上传后的 ARQ 作业真正跑通 下载→渲染/预处理→检测识别→票种→抽取→校验→落库，
