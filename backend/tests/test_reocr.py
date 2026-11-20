@@ -25,6 +25,7 @@ from app.models.invoice_fields import InvoiceField
 from app.models.invoice_files import InvoiceFile
 from app.models.invoices import Invoice
 from app.models.ocr_jobs import OcrJob
+from app.models.ocr_lines import OcrLine
 from app.models.users import User
 from app.services import invoice_service
 from tests.db_helpers import alembic_config, temporary_database
@@ -133,6 +134,9 @@ def _make_invoice_with_fields(session_factory, uploader_id: int, **fields) -> in
                             field_value="100.00", normalized_value="100.00",
                             raw_text="¥100.00", source="ocr", confidence=Decimal("0.700"),
                             bbox_json=[10, 20, 300, 60], source_page_no=1, source_line_no=3))
+        db.add(OcrLine(invoice_id=invoice.id, page_no=1, line_no=3, text="¥100.00",
+                       score=Decimal("0.700"),
+                       box_json=[[10, 20], [300, 20], [300, 60], [10, 60]]))
         db.commit()
         return invoice.id
 
@@ -260,3 +264,151 @@ def test_reocr_request_validation(client, session_factory, actors, body: dict) -
                            headers=_auth(actors["alice"]))
 
     assert response.status_code == 422
+
+# --------------------------------------------------------------------------- #
+# worker：run_reocr 写回 / 预算 / 整单重算 / 任务与队列注册
+# --------------------------------------------------------------------------- #
+class _FakeEngine:
+    def __init__(self, text: str, score: float) -> None:
+        self.text, self.score = text, score
+
+    def recognize_line(self, crop):
+        return self.text, self.score
+
+
+class _FakeStorage:
+    def get_bytes(self, key, *, max_bytes):
+        return b"fake-image"
+
+
+def _deps(text: str, score: float, *, clock=None):
+    import time as _time
+
+    import numpy as np
+
+    from app.ocr.intake import PreparedPage
+    from app.services.reocr_service import ReocrDeps
+
+    page = PreparedPage(page_no=1, image=np.zeros((600, 1000, 3), dtype=np.uint8),
+                        kind="pdf", quality_flag=None)
+    return ReocrDeps(
+        engine=_FakeEngine(text, score),
+        storage=_FakeStorage(),
+        prepare_pages=lambda *args, **kwargs: [page],
+        clock=clock or _time.monotonic,
+    )
+
+
+def _submit(session_factory, invoice_id: int, user_id: int) -> int:
+    from app.schemas.invoice import ReocrRequest
+    from app.services.reocr_service import submit_reocr
+
+    with session_factory() as db:
+        user = db.get(User, user_id)
+        return submit_reocr(db, user, invoice_id, ReocrRequest(fields=["total_amount"])).job_id
+
+
+def _run(session_factory, job_id: int, deps) -> None:
+    from app.models.enums import OcrStatus
+    from app.services.reocr_service import run_reocr
+
+    with session_factory() as db:
+        job = db.get(OcrJob, job_id)
+        job.status = OcrStatus.RUNNING.value
+        job.retry_count = 1
+        db.commit()
+        db.refresh(job)
+        run_reocr(db, job, deps=deps)
+        job.status = OcrStatus.SUCCEEDED.value     # 模拟 job_service 写终态
+        db.commit()
+
+
+def test_run_reocr_updates_raw_text_and_confidence_only(session_factory, actors) -> None:
+    invoice_id = _make_invoice_with_fields(session_factory, actors["alice"].id)
+    job_id = _submit(session_factory, invoice_id, actors["alice"].id)
+
+    _run(session_factory, job_id, _deps("¥100.00", 0.96))
+
+    with session_factory() as db:
+        row = db.scalar(select(InvoiceField).where(InvoiceField.invoice_id == invoice_id))
+        job = db.get(OcrJob, job_id)
+        assert str(row.confidence) == "0.960"
+        assert row.raw_text == "¥100.00"
+        assert row.field_value == "100.00"                 # 值不变（D-060）
+        assert row.normalized_value == "100.00"
+        assert row.source == "ocr_retry"
+        assert row.need_review is False                     # 0.96 ≥ 0.90
+        assert job.metrics["applied"] == 1
+        assert job.metrics["fields"][0]["new_score"] == 0.96
+
+
+def test_run_reocr_skips_when_not_improved(session_factory, actors) -> None:
+    invoice_id = _make_invoice_with_fields(session_factory, actors["alice"].id)
+    job_id = _submit(session_factory, invoice_id, actors["alice"].id)
+
+    _run(session_factory, job_id, _deps("¥100.00", 0.50))
+
+    with session_factory() as db:
+        row = db.scalar(select(InvoiceField).where(InvoiceField.invoice_id == invoice_id))
+        assert str(row.confidence) == "0.700"
+        assert row.source == "ocr"
+        assert db.get(OcrJob, job_id).metrics["skipped"] == 1
+
+
+def test_run_reocr_skips_empty_text_and_budget(session_factory, actors) -> None:
+    invoice_id = _make_invoice_with_fields(session_factory, actors["alice"].id)
+    job_id = _submit(session_factory, invoice_id, actors["alice"].id)
+
+    _run(session_factory, job_id, _deps("", 0.0))
+
+    with session_factory() as db:
+        assert db.get(OcrJob, job_id).metrics["fields"][0]["reason"] == "no_text"
+
+    job_id2 = _submit(session_factory, invoice_id, actors["alice"].id)
+    ticks = iter([0.0, 10.0, 10.0])     # started=0，第一次字段检查已超 1.5s 预算
+    _run(session_factory, job_id2, _deps("¥100.00", 0.99, clock=lambda: next(ticks, 10.0)))
+
+    with session_factory() as db:
+        assert db.get(OcrJob, job_id2).metrics["fields"][0]["reason"] == "budget"
+
+
+def test_run_reocr_recomputes_invoice_overall(session_factory, actors) -> None:
+    invoice_id = _make_invoice_with_fields(session_factory, actors["alice"].id)
+    job_id = _submit(session_factory, invoice_id, actors["alice"].id)
+
+    _run(session_factory, job_id, _deps("¥100.00", 0.96))
+
+    with session_factory() as db:
+        invoice = db.get(Invoice, invoice_id)
+        assert str(invoice.overall_confidence) == "0.960"
+        assert invoice.extract_status == "raw"          # 全部 auto
+
+
+def test_reocr_task_registered() -> None:
+    from app.tasks.worker import WorkerSettings
+
+    names = [getattr(f, "name", None) or f.__name__ for f in WorkerSettings.functions]
+    assert "reocr_task" in names
+
+
+async def test_queue_enqueues_reocr_task(monkeypatch) -> None:
+    from app.tasks import queue as queue_module
+
+    calls: list[tuple[str, int]] = []
+
+    class _Pool:
+        async def enqueue_job(self, name, job_id):
+            calls.append((name, job_id))
+
+        async def close(self) -> None:
+            return None
+
+    async def _fake_pool(redis_settings):
+        return _Pool()
+
+    monkeypatch.setattr(queue_module, "create_pool", _fake_pool)
+    from arq.connections import RedisSettings
+
+    await queue_module.ArqOcrTaskQueue(RedisSettings()).enqueue_reocr(42)
+
+    assert calls == [("reocr_task", 42)]

@@ -14,7 +14,7 @@ from arq.connections import RedisSettings
 
 from app.core.config import get_settings
 from app.services import job_service
-from app.tasks.ocr_task import anchor_audit_task, ocr_task
+from app.tasks.ocr_task import anchor_audit_task, ocr_task, reocr_task
 
 logger = logging.getLogger("app.tasks.worker")
 
@@ -24,7 +24,7 @@ def _redis_settings() -> RedisSettings:
 
 
 class WorkerSettings:
-    functions = [ocr_task, anchor_audit_task]
+    functions = [ocr_task, reocr_task, anchor_audit_task]
     redis_settings = _redis_settings()
 
     max_tries = job_service.MAX_TRIES

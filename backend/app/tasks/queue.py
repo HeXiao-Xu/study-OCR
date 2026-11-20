@@ -19,23 +19,28 @@ logger = logging.getLogger("app.tasks.queue")
 class OcrTaskQueue(Protocol):
     async def enqueue_ocr(self, job_id: int) -> None: ...
 
+    async def enqueue_reocr(self, job_id: int) -> None: ...
+
 
 class ArqOcrTaskQueue:
     def __init__(self, redis_settings: RedisSettings) -> None:
         self._redis_settings = redis_settings
 
     async def enqueue_ocr(self, job_id: int) -> None:
+        await self._enqueue("ocr_task", job_id, event="job_enqueued")
+
+    async def enqueue_reocr(self, job_id: int) -> None:
+        await self._enqueue("reocr_task", job_id, event="reocr_enqueued")
+
+    async def _enqueue(self, function: str, job_id: int, *, event: str) -> None:
         try:
             pool = await create_pool(self._redis_settings)
         except Exception as exc:  # noqa: BLE001 - 连接失败统一转 503
             logger.error("任务队列连接失败", extra={"event": "queue_unavailable"})
             raise ServiceUnavailableError("任务队列不可用") from exc
         try:
-            await pool.enqueue_job("ocr_task", job_id)
-            logger.info(
-                "作业已入队",
-                extra={"event": "job_enqueued", "error_code": "JOB_ENQUEUED"},
-            )
+            await pool.enqueue_job(function, job_id)
+            logger.info(event, extra={"event": event, "error_code": "JOB_ENQUEUED"})
         except Exception as exc:  # noqa: BLE001
             logger.error("任务入队失败", extra={"event": "queue_enqueue_failed"})
             raise ServiceUnavailableError("任务队列不可用") from exc

@@ -30,6 +30,27 @@ async def ocr_task(ctx: dict, job_id: int) -> dict:
     return {"job_id": job_id, "attempt": attempt, "outcome": outcome}
 
 
+async def reocr_task(ctx: dict, job_id: int) -> dict:
+    """S3-3：局部二次识别作业（与 ocr_task 同构，只是 handler 不同）。"""
+    attempt = int(ctx.get("job_try", 1) or 1)
+    try:
+        outcome = await asyncio.to_thread(
+            job_service.execute_job_attempt,
+            job_id,
+            attempt=attempt,
+            handler=_run_reocr,
+        )
+    except job_service.RetryLater as exc:
+        raise Retry(defer=exc.delay) from None
+    return {"job_id": job_id, "attempt": attempt, "outcome": outcome}
+
+
+def _run_reocr(db, job) -> None:
+    from app.services.reocr_service import run_reocr
+
+    run_reocr(db, job)
+
+
 def _run_pipeline(db, job) -> None:
     """S3-1：下载 → 渲染/预处理 → 检测识别 → 票种 → 抽取 → 校验 → 落库。
 
