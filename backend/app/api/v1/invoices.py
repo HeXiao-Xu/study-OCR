@@ -25,6 +25,7 @@ from app.schemas.invoice import (
     InvoiceFieldsUpdateRequest,
     InvoiceListQuery,
     InvoiceOut,
+    ConfirmRequest,
     InvoiceFieldsData,
     InvoiceLinesData,
     OcrStatusData,
@@ -174,6 +175,24 @@ def update_invoice_fields(
     db: Session = Depends(get_db),
 ) -> dict:
     return ok(invoice_service.update_fields(db, user, invoice_id, payload))
+
+
+@router.post(
+    "/{invoice_id}/confirm",
+    response_model=Envelope[InvoiceOut],
+    summary="整单确认（服务端重跑校验；失败 422 逐字段）",
+)
+def confirm_invoice(
+    invoice_id: int,
+    payload: ConfirmRequest | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return ok(
+        invoice_service.confirm_invoice(
+            db, user, invoice_id, version=payload.version if payload else None
+        )
+    )
 
 
 @router.delete(

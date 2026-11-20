@@ -214,7 +214,7 @@
   逐字段 old/new 明细写 `ocr_jobs.metrics.fields[]`；识别为空（非文本区域）记 `skipped:no_text`，不使整单失败
 
 ### POST /api/v1/invoices/{id}/confirm
-- 权限：本人 ｜ 类型：同步 ｜ 幂等：是（已 `confirmed` 重复调用返回当前状态）｜ 实现：S3-6
+- 权限：本人（`reviewer` → 403，`admin` → 404）｜ 类型：同步 ｜ 幂等：是（已 `confirmed` 重复调用返回当前状态）｜ 实现：S3-6 ✅
 - 入参：无（可选 `version`，见备注）
 
 | 字段 | 类型 | 必填 | 约束 |
@@ -223,7 +223,10 @@
 
 - 出参：**200**，`data` = InvoiceOut（`status=confirmed`、`extract_status=confirmed`）
 - 错误：`404/40400`；`409/40900` 状态不允许；`422/42201` 整单校验未通过，`data.fields = [{field_name, error}]` 逐字段列出
-- 备注：**整单确认闸门**——服务端重跑 validators（必填齐备 + 无未决冲突 + 低置信项均已确认），**不信前端传来的"已校验"标记**；通过后写审计
+- 备注：**整单确认闸门**——服务端重跑 validators（必填齐备 + 无未决冲突 + 低置信项均已确认），**不信前端传来的"已校验"标记**；
+  闸门顺序固定：必填缺失 → 未决冲突 → 低置信未确认（`need_review=true 且 confirmed=false`）→ validators 错误，
+  同一字段只留第一条；`data.fields` 逐条给出 `{field_name, error}`；通过后 `status` 与 `extract_status`
+  同事务置 `confirmed`、`version += 1`；`confirm_field` 审计行待 S4-7 哈希链一起写（S3-6/D-065）
 
 ### DELETE /api/v1/invoices/{id}
 - 权限：本人 ｜ 类型：同步（软删）｜ 幂等：是（已 `void` 返回 204）｜ 实现：S2-5

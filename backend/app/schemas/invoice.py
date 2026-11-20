@@ -191,6 +191,12 @@ class InvoiceLinesData(BaseModel):
     lines: list[OcrLineBoxOut] = Field(default_factory=list)
 
 
+class ConfirmRequest(BaseModel):
+    """整单确认入参（API.md §2）：可选乐观锁版本。"""
+
+    version: int | None = Field(default=None, ge=0)
+
+
 class InvoiceFieldsData(BaseModel):
     """字段级识别结果（API.md §2 `GET /invoices/{id}/fields`，S3-4）。"""
 

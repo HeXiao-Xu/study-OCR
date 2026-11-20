@@ -50,7 +50,10 @@ from app.schemas.invoice import (
     InvoiceOut,
     LatestJobOut,
 )
+from app.ocr.extractor import FieldRule
+from app.ocr.validators import run_validators
 from app.services.confidence import level_for
+from app.services.rule_source import resolve_rules
 from app.services.pagination import paginate
 from app.services.repository import filter_visible, get_visible_or_404
 from app.utils.text import escape_like
@@ -388,6 +391,87 @@ def update_fields(
         needs_confirm=needs_confirm,
         conflicts=[],
     )
+
+
+def collect_confirm_errors(
+    rows: dict[str, InvoiceField], rules: list[FieldRule], ticket_type: str
+) -> list[dict]:
+    """整单确认闸门（纯函数）：必填 → 冲突 → 低置信未确认 → 校验器，同字段只留第一条。
+
+    为什么顺序固定：返回给用户的是"先解决什么"，先补必填再消冲突，最后才是细粒度校验。
+    """
+    errors: dict[str, str] = {}
+
+    def add(name: str, message: str) -> None:
+        errors.setdefault(name, message)
+
+    for rule in rules:
+        if not rule.required or not rule.applies_to(ticket_type):
+            continue
+        row = rows.get(rule.name)
+        if row is None or not (row.normalized_value or row.field_value):
+            add(rule.name, "必填字段缺失")
+
+    for name in sorted(rows):
+        row = rows[name]
+        if row.conflict:
+            add(name, "存在未决冲突，请先选择候选")
+        elif row.need_review and not row.confirmed:
+            add(name, "低置信字段尚未人工确认")
+
+    values = {
+        name: (row.normalized_value or row.field_value) for name, row in rows.items()
+    }
+    for issue in run_validators(values, ticket_type).errors:
+        add(issue.field, issue.message)
+
+    return [{"field_name": name, "error": message} for name, message in errors.items()]
+
+
+def confirm_invoice(
+    db: Session, user: User, invoice_id: int, *, version: int | None = None
+) -> InvoiceOut:
+    """整单确认：服务端重跑校验，通过后 status/extract_status 同事务置 confirmed。"""
+    invoice = get_visible_or_404(db, Invoice, invoice_id, user)
+    if invoice.uploader_id != user.id:
+        raise RoleForbiddenError("只有票据本人可以确认整单")
+    file = db.get(InvoiceFile, invoice.file_id)
+    if file is None:
+        raise NotFoundError("票据文件不存在")
+
+    if (
+        invoice.status == InvoiceStatus.CONFIRMED.value
+        and invoice.extract_status == ExtractStatus.CONFIRMED.value
+    ):
+        # 契约要求幂等：已确认再调返回当前状态，不重复 +1
+        return _invoice_out(invoice, file)
+
+    if invoice.status != InvoiceStatus.DRAFT.value:
+        raise ConflictError(f"当前状态（{invoice.status}）不允许确认")
+    if version is not None and version != invoice.version:
+        raise ConflictError(f"版本冲突：当前 version={invoice.version}")
+
+    rows = {
+        row.field_name: row
+        for row in db.scalars(
+            select(InvoiceField).where(InvoiceField.invoice_id == invoice.id)
+        ).all()
+    }
+    resolved = resolve_rules(db, invoice.invoice_type)
+    errors = collect_confirm_errors(rows, resolved.rules, invoice.invoice_type)
+    if errors:
+        raise UnresolvedConflictError("整单校验未通过", detail={"fields": errors})
+
+    invoice.status = InvoiceStatus.CONFIRMED.value
+    invoice.extract_status = ExtractStatus.CONFIRMED.value
+    invoice.version += 1
+    db.commit()
+    db.refresh(invoice)
+    logger.info(
+        "整单确认",
+        extra={"event": "invoice_confirmed", "invoice_id": invoice.id, "user_id": user.id},
+    )
+    return _invoice_out(invoice, file)
 
 
 # --------------------------------------------------------------------------- #
