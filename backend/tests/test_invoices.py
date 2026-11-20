@@ -459,9 +459,20 @@ def test_submitter_updates_non_amount_field(client, session_factory, actors) -> 
     assert (field["source"], field["confirmed"], field["need_review"]) == ("manual", True, False)
 
 
-def test_submitter_cannot_touch_amount_fields(client, session_factory, actors) -> None:
+def test_submitter_amount_update_requires_confirm_flag(client, session_factory, actors) -> None:
+    """S3-9/D-068：提交人也能改金额，但必须显式勾选（不再 403）。"""
     invoice_id = _make_invoice(session_factory, actors["alice"].id)
-    response = _patch(
+    missing = _patch(
+        client,
+        invoice_id,
+        actors["alice"],
+        version=0,
+        fields=[{"field_name": "total_amount", "value": "100.00"}],
+    )
+    assert missing.status_code == 422
+    assert missing.json()["code"] == 42202
+
+    ok_response = _patch(
         client,
         invoice_id,
         actors["alice"],
@@ -469,8 +480,8 @@ def test_submitter_cannot_touch_amount_fields(client, session_factory, actors) -
         fields=[{"field_name": "total_amount", "value": "100.00"}],
         confirm_amount=True,
     )
-    assert response.status_code == 403
-    assert response.json()["code"] == 40301
+    assert ok_response.status_code == 200, ok_response.text
+    assert ok_response.json()["data"]["version"] == 1
 
 
 def test_reviewer_amount_update_requires_confirm_flag(client, session_factory, actors) -> None:

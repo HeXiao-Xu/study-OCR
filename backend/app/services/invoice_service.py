@@ -282,10 +282,19 @@ def update_fields(
 ) -> InvoiceFieldsUpdateData:
     invoice = get_visible_or_404(db, Invoice, invoice_id, user)
 
-    if invoice.status != InvoiceStatus.DRAFT.value or invoice.extract_status not in (
-        ExtractStatus.RAW.value,
-        ExtractStatus.NEED_CONFIRM.value,
-    ):
+    if invoice.reviewed_at is not None:
+        raise ConflictError("该票据已复核，不可修改")
+    editable = (
+        invoice.status == InvoiceStatus.DRAFT.value
+        and invoice.extract_status in (ExtractStatus.RAW.value, ExtractStatus.NEED_CONFIRM.value)
+    )
+    # 二审前审核人可继续修正：confirmed 且未复核（D-068）
+    reviewer_fixing = (
+        invoice.status == InvoiceStatus.CONFIRMED.value
+        and invoice.reviewed_at is None
+        and user.role == UserRole.REVIEWER.value
+    )
+    if not (editable or reviewer_fixing):
         raise ConflictError(
             f"当前状态（{invoice.status}/{invoice.extract_status}）不允许修改字段"
         )
@@ -297,11 +306,9 @@ def update_fields(
     if unknown:
         raise ValidationFailedError(f"字段名非法：{', '.join(unknown)}")
 
-    if any(name in AMOUNT_FIELDS for name in names):
-        if user.role == UserRole.SUBMITTER.value:
-            raise RoleForbiddenError("提交人不能修改金额字段（D-017）")
-        if not payload.confirm_amount:
-            raise FieldConfirmationRequiredError()
+    # D-068：任何角色改金额都要显式勾选（提交人也一样），二审是额外一道复核
+    if any(name in AMOUNT_FIELDS for name in names) and not payload.confirm_amount:
+        raise FieldConfirmationRequiredError()
 
     # 先全部规范化，任何一项非法就整体失败，不落半套修改
     normalized: dict[str, tuple[str, object]] = {
@@ -484,6 +491,48 @@ def confirm_invoice(
     return _invoice_out(invoice, file)
 
 
+def review_invoice(
+    db: Session, user: User, invoice_id: int, *, version: int | None = None
+) -> InvoiceOut:
+    """审核人二审（S3-9/D-068）：只认库内值，复核后锁定修改。"""
+    invoice = get_visible_or_404(db, Invoice, invoice_id, user)
+    if user.role != UserRole.REVIEWER.value:
+        raise RoleForbiddenError("只有审核人可以复核票据")
+    file = db.get(InvoiceFile, invoice.file_id)
+    if file is None:
+        raise NotFoundError("票据文件不存在")
+
+    if invoice.reviewed_at is not None:
+        return _invoice_out(invoice, file)          # 幂等：复核不再改版本
+    if invoice.status != InvoiceStatus.CONFIRMED.value:
+        raise ConflictError("票据尚未整单确认，不能复核")
+    if version is not None and version != invoice.version:
+        raise ConflictError(f"版本冲突：当前 version={invoice.version}")
+
+    rows = {
+        row.field_name: row
+        for row in db.scalars(
+            select(InvoiceField).where(InvoiceField.invoice_id == invoice.id)
+        ).all()
+    }
+    resolved = resolve_rules(db, invoice.invoice_type)
+    errors = collect_confirm_errors(rows, resolved.rules, invoice.invoice_type)
+    if errors:
+        raise UnresolvedConflictError("复核前校验未通过", detail={"fields": errors})
+
+    invoice.reviewed_by = user.id
+    invoice.reviewed_at = datetime.now(timezone.utc)
+    invoice.extract_status = ExtractStatus.CONFIRMED.value
+    invoice.version += 1
+    db.commit()
+    db.refresh(invoice)
+    logger.info(
+        "票据复核",
+        extra={"event": "invoice_reviewed", "invoice_id": invoice.id, "user_id": user.id},
+    )
+    return _invoice_out(invoice, file)
+
+
 # --------------------------------------------------------------------------- #
 # 内部助手
 # --------------------------------------------------------------------------- #
@@ -496,6 +545,12 @@ def _apply_filters(stmt, query: InvoiceListQuery):
 
     if query.extract_status is not None:
         stmt = stmt.where(Invoice.extract_status == query.extract_status)
+    if query.review_status == "pending":
+        stmt = stmt.where(
+            Invoice.status == InvoiceStatus.CONFIRMED.value, Invoice.reviewed_at.is_(None)
+        )
+    elif query.review_status == "reviewed":
+        stmt = stmt.where(Invoice.reviewed_at.is_not(None))
     if query.invoice_type is not None:
         stmt = stmt.where(Invoice.invoice_type == query.invoice_type)
     if query.q:

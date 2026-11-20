@@ -262,6 +262,24 @@ def update_invoice_fields(
     return ok(invoice_service.update_fields(db, user, invoice_id, payload))
 
 
+@router.post(
+    "/{invoice_id}/review",
+    response_model=Envelope[InvoiceOut],
+    summary="复核（审核人二审；复核后锁定修改）",
+)
+def review_invoice(
+    invoice_id: int,
+    payload: ConfirmRequest | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return ok(
+        invoice_service.review_invoice(
+            db, user, invoice_id, version=payload.version if payload else None
+        )
+    )
+
+
 @router.get(
     "/{invoice_id}/duplicate-check",
     response_model=Envelope[DuplicateCheckData],

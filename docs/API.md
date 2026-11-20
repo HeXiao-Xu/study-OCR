@@ -145,6 +145,7 @@
 | invoice_type | string | 否 | 模板 `type_code` |
 | q | string | 否 | 发票号/销售方名称子串，`%`/`_` 已转义 |
 | date_from / date_to | string | 否 | ISO-8601 日期，闭区间 |
+| review_status | string | 否 | `pending`（已确认未复核）｜`reviewed`（已复核）；S3-9 |
 | page / page_size | int | 否 | 默认 1 / 20，上限 100 |
 | sort_by | string | 否 | `created_at`｜`invoice_date`｜`total_amount`（白名单） |
 | order | string | 否 | `asc`｜`desc`，默认 `desc` |
@@ -204,7 +205,7 @@
   在确认接口（S3-6）返回，避免两处规则各算一套
 
 ### PATCH /api/v1/invoices/{id}/fields
-- 权限：本人（`submitter`，仅非金额字段）；`reviewer`（全部字段，含金额）；`admin` → 404 ｜ 类型：同步 ｜ 幂等：否 ｜ 实现：S3-6
+- 权限：本人（`submitter`，**全部字段**）；`reviewer`（全部字段；二审前也可改）；`admin` → 404 ｜ 类型：同步 ｜ 幂等：否 ｜ 实现：S2-5 / S3-9
 - 入参（JSON）：
 
 | 字段 | 类型 | 必填 | 约束 |
@@ -217,8 +218,12 @@
 | confirm_amount | bool | 条件必填 | 修改**金额类字段**（`amount` / `tax_amount` / `total_amount`）时必须传 `true`，否则 `422/42202` |
 
 - 出参：**200**，`data` = `{invoice_id, version, status, updated: [{field_name, before, after}], needs_confirm, conflicts}`
-- 错误：`404/40400`；`409/40900` 版本冲突 / 状态不允许（仅 `status=draft` 且 `extract_status ∈ {raw, need_confirm}` 可改）；`422/42200` 字段名非法、值格式非法；`422/42201` 修改后仍存在未决冲突
-- 备注：每次修改写 `audit_logs`（`action=confirm_field`，`detail_json` 含 before/after，**已脱敏**）；`source` 由服务端置 `manual`；已 `confirmed`/`in_report` 的票据拒绝修改。**权限矩阵已定稿（D-017）**：`submitter` 只能改非金额字段；`amount` / `tax_amount` / `total_amount` 仅 `reviewer` 可改且必须带 `confirm_amount=true`；`admin` 一律 404（系统管理员不碰业务数据，职责分离）
+- 错误：`404/40400`；`409/40900` 版本冲突 / 状态不允许 / **已复核锁定**；`422/42200` 字段名非法、值格式非法；`422/42201` 修改后仍存在未决冲突
+- 备注：`source` 由服务端置 `manual`；**权限矩阵（S3-9/D-068，取代 D-017 的金额限制）**：
+  `submitter` 可改**全部字段**（含金额）；`reviewer` 可改全部字段，且**二审前（status=confirmed 未复核）仍可改**；
+  **任何人改金额都必须带 `confirm_amount=true`**（否则 `422/42202`）；`admin` 一律 404；
+  `status=draft` 且 `extract_status ∈ {raw, need_confirm}` 可改；`reviewed_at` 非空 → `409`"已复核，不可修改"。
+  审计行（`action=confirm_field`）仍留 S4-7 哈希链一起写（D-065）
 
 ### POST /api/v1/invoices/{id}/reocr
 - 权限：本人（`reviewer` 触发权限与 S3-6 一起定）｜ 类型：异步（202）｜ 幂等：否（有进行中作业时 409）｜ 实现：S3-3 ✅
@@ -268,6 +273,20 @@
   闸门顺序固定：必填缺失 → 未决冲突 → 低置信未确认（`need_review=true 且 confirmed=false`）→ validators 错误，
   同一字段只留第一条；`data.fields` 逐条给出 `{field_name, error}`；通过后 `status` 与 `extract_status`
   同事务置 `confirmed`、`version += 1`；`confirm_field` 审计行待 S4-7 哈希链一起写（S3-6/D-065）
+
+### POST /api/v1/invoices/{id}/review
+- 权限：`reviewer`（submitter → 403；admin/他人 → 404）｜ 类型：同步 ｜ 幂等：是（已复核返回当前状态）｜ 实现：S3-9 ✅
+- 入参：无（可选 `version`，见备注）
+
+| 字段 | 类型 | 必填 | 约束 |
+|---|---|---|---|
+| version | int | 否 | 传入则做乐观锁校验 |
+
+- 出参：**200**，`data` = InvoiceOut（`reviewed_by`、`reviewed_at` 非空；`version+1`）
+- 错误：`404/40400`；`409/40900` 票据未整单确认 / 版本冲突；`422/42201` 复核前校验未通过，`data.fields = [{field_name, error}]`
+- 备注：**二审闸门**——服务端重跑 `collect_confirm_errors`（必填/未决冲突/低置信未确认/validators），
+  只认库内当前值；通过后 `reviewed_by/reviewed_at`、`extract_status=confirmed` 同事务落库；
+  `reviewed_at` 非空即**锁定修改**（PATCH 一律 409）；审计行待 S4-7；"待复核" = `status='confirmed' AND reviewed_at IS NULL`
 
 ### DELETE /api/v1/invoices/{id}
 - 权限：本人 ｜ 类型：同步（软删）｜ 幂等：是（已 `void` 返回 204）｜ 实现：S2-5
