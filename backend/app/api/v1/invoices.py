@@ -26,6 +26,7 @@ from app.schemas.invoice import (
     InvoiceListQuery,
     InvoiceOut,
     InvoiceFieldsData,
+    InvoiceLinesData,
     OcrStatusData,
     ReocrData,
     ReocrRequest,
@@ -34,6 +35,7 @@ from app.services import (
     image_service,
     invoice_service,
     job_service,
+    line_service,
     ocr_status_service,
     reocr_service,
 )
@@ -59,6 +61,26 @@ def get_invoice(
     db: Session = Depends(get_db),
 ) -> dict:
     return ok(invoice_service.get_invoice_detail(db, user, invoice_id))
+
+
+@router.get(
+    "/{invoice_id}/lines",
+    response_model=Envelope[InvoiceLinesData],
+    summary="行框（原图坐标，不含文本）",
+)
+def get_invoice_lines(
+    invoice_id: int,
+    page: int = Query(1, ge=1),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    storage: StorageService = Depends(get_storage),
+) -> dict:
+    return ok(
+        line_service.get_invoice_lines(
+            db, user, invoice_id, page=page, settings=settings, storage=storage
+        )
+    )
 
 
 @router.get(

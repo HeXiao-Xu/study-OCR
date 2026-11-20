@@ -233,11 +233,30 @@
 - 备注：不物理删除记录与 MinIO 对象（审计与追溯需要）；`(invoice_code, invoice_no) WHERE status <> 'void'` 唯一索引允许同号重传
 
 ### GET /api/v1/invoices/{id}/image
-- 权限：本人，或 `reviewer`；`admin` → 404 ｜ 类型：下载（二进制流）｜ 幂等：是 ｜ 实现：S3-5 / S5-4
+- 权限：本人，或 `reviewer`；`admin` → 404 ｜ 类型：下载（二进制流）｜ 幂等：是 ｜ 实现：S3-5 ✅（S4 接入后在此解密）
 - 入参：`page`（int，PDF 页码，默认 1）；`variant`（`original`｜`preprocessed`，默认 `original`）
 - 出参：**200**，图片/PDF 页字节；响应头 `Content-Type`、`ETag=<sha256>`、`Cache-Control: private, no-store`、`X-Content-Type-Options: nosniff`
 - 错误：`404/40400`；`409/40900` 信封缺失或已损坏；`409/50030` MAC 校验失败；`409/50031` 解密失败（均**不返回任何明文片段**）
-- 备注：服务端在内存中解信封，响应结束立即释放；**绝不返回 `storage_key`、MinIO 路径或公开签名 URL**
+- 备注：服务端在内存中解信封，响应结束立即释放；**绝不返回 `storage_key`、MinIO 路径或公开签名 URL**。
+  **当前实现（S3-5/D-063）**：明文仅当 `STORAGE_ALLOW_PLAINTEXT=true` 且 `invoice_files.is_cipher=false`（本地调试）；
+  密文/生产一律 `409/40900`"加密影像解密尚未接入（S4）"，不做明文回退。照片返回原字节；
+  PDF 按 `page` 以 **250 DPI** 渲染 PNG（与 S3-1 识别时一致，否则框会按比例全偏）；
+  `ETag` = 响应字节 SHA-256；前端带 Bearer 取 blob 再 `objectURL`，不用 `<img src>` 直链。
+
+### GET /api/v1/invoices/{id}/lines
+- 权限：本人，或 `reviewer`；`admin` → 404 ｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S3-5 ✅
+- 入参：`page`（int，默认 1）
+- 出参：**200**，`data` = `{invoice_id, page_no, lines: [{line_no, bbox: [x1,y1,x2,y2], score, field_name}]}`
+
+```json
+{"invoice_id": 101, "page_no": 1,
+ "lines": [{"line_no": 3, "bbox": [423, 357, 900, 395], "score": 0.973, "field_name": "total_amount"}]}
+```
+
+- 错误：`404/40400`；`422/42200` `page` 越界；`409/40900` 加密影像未接入（同 image 接口）
+- 备注：`bbox` 是**原图**外接框（服务端已从 `ocr_lines` 校正图四点映射）；`field_name` 为命中该行的字段，
+  未命中为 `null`；**不返回行文本**（票面原文只经字段 `raw_text`/`field_value` 暴露，缩小明文面）；
+  畸形 `box_json` 的行直接跳过，不返回 `[0,0,0,0]` 假框
 
 ## 3. 票种模板与规则（S2-8）
 

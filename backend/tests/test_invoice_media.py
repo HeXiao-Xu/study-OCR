@@ -206,3 +206,78 @@ def test_image_endpoint_page_out_of_range_422(session_factory, actors) -> None:
                               headers=_auth(actors["alice"]))
 
     assert response.status_code == 422
+
+# --------------------------------------------------------------------------- #
+# S3-5 行框接口
+# --------------------------------------------------------------------------- #
+class _Prepared:
+    class _Preprocess:
+        import numpy as _np
+        to_original = _np.array([[0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]])
+
+    preprocess = _Preprocess()
+
+
+def _add_line(session_factory, invoice_id: int, *, field_name: str | None = None) -> None:
+    from decimal import Decimal
+
+    from app.models.invoice_fields import InvoiceField
+    from app.models.ocr_lines import OcrLine
+
+    with session_factory() as db:
+        db.add(OcrLine(invoice_id=invoice_id, page_no=1, line_no=0,
+                       text="价税合计 ￥1,234.56", score=Decimal("0.950"),
+                       box_json=[[100, 300], [900, 300], [900, 400], [100, 400]]))
+        if field_name:
+            db.add(InvoiceField(invoice_id=invoice_id, field_name=field_name,
+                                field_value="￥1,234.56", normalized_value="1234.56",
+                                raw_text="价税合计 ￥1,234.56", source="ocr",
+                                confidence=Decimal("0.700"), bbox_json=[50, 150, 450, 200],
+                                source_page_no=1, source_line_no=0))
+        db.commit()
+
+
+def test_lines_endpoint_returns_original_bbox_without_text(
+    session_factory, actors, monkeypatch
+) -> None:
+    from app.services import line_service
+
+    monkeypatch.setattr(line_service, "prepare_input", lambda data: _Prepared())
+    payload = _jpeg()
+    invoice_id = _make_invoice(session_factory, actors["alice"].id)
+    _add_line(session_factory, invoice_id, field_name="total_amount")
+
+    with _client(session_factory, payload) as client:
+        response = client.get(f"{BASE}/{invoice_id}/lines", headers=_auth(actors["alice"]))
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["page_no"] == 1
+    assert data["lines"][0]["bbox"] == [50, 150, 450, 200]     # 0.5× 映射
+    assert data["lines"][0]["field_name"] == "total_amount"
+    assert "text" not in data["lines"][0]
+
+
+def test_lines_endpoint_permissions_and_errors(session_factory, actors) -> None:
+    invoice_id = _make_invoice(session_factory, actors["alice"].id)
+    _add_line(session_factory, invoice_id)
+
+    with _client(session_factory, _jpeg()) as client:
+        assert client.get(f"{BASE}/{invoice_id}/lines",
+                          headers=_auth(actors["rita"])).status_code == 200
+        assert client.get(f"{BASE}/{invoice_id}/lines",
+                          headers=_auth(actors["bob"])).status_code == 404
+        assert client.get(f"{BASE}/{invoice_id}/lines",
+                          headers=_auth(actors["ada"])).status_code == 404
+        assert client.get(f"{BASE}/{invoice_id}/lines?page=2",
+                          headers=_auth(actors["alice"])).status_code == 422
+
+
+def test_lines_endpoint_cipher_returns_409(session_factory, actors) -> None:
+    invoice_id = _make_invoice(session_factory, actors["alice"].id, is_cipher=True)
+    _add_line(session_factory, invoice_id)
+
+    with _client(session_factory, _jpeg()) as client:
+        response = client.get(f"{BASE}/{invoice_id}/lines", headers=_auth(actors["alice"]))
+
+    assert response.status_code == 409

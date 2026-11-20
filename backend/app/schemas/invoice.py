@@ -176,6 +176,21 @@ class UploadData(BaseModel):
     dedup: UploadDedup
 
 
+class OcrLineBoxOut(BaseModel):
+    """行框（S3-5）：`bbox` 是**原图**外接框；不返回行文本，减少票面明文暴露面。"""
+
+    line_no: int
+    bbox: list[int] = Field(default_factory=list)
+    score: float | None = None
+    field_name: str | None = None
+
+
+class InvoiceLinesData(BaseModel):
+    invoice_id: int
+    page_no: int
+    lines: list[OcrLineBoxOut] = Field(default_factory=list)
+
+
 class InvoiceFieldsData(BaseModel):
     """字段级识别结果（API.md §2 `GET /invoices/{id}/fields`，S3-4）。"""
 
