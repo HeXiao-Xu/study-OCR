@@ -1121,3 +1121,48 @@
 - **验证**：`tests/test_ocr_pipeline.py`（cipher/对象缺失/契约错误/deadline/superseded/临时目录）；
   `tests/test_jobs.py::test_execute_job_attempt_superseded_does_not_commit`；
   真实验收 20 张 20/20 成功、P95 1.68s（见 PROGRESS S3-1）。
+
+---
+
+## D-058 置信度公式与三档阈值（0.90 / 0.60，校验封顶 0.45）
+
+- **日期**：2026-11-20（S3-2，用户确认）
+- **背景**：SCHEMA §3.3 原写 `need_review = confidence < 0.85`（方案 3.4 的早期值），
+  S3-2 任务卡要求"≥0.9 自动确认、0.6–0.9 待核对、<0.6 必须人工，validators 失败直接 <0.5"。
+  同时抽取器里置信度一直是 `值行 score × 锚点强度 × 邻近折扣` 的内联算术，没有单一实现。
+- **决策**：
+  1. **公式**（`services/confidence.py`，唯一实现）：
+     `ocr_base = 0.35×锚点行score + 0.65×值行score`，再 `× agreement × rule_factor`；
+     `agreement` 同行 = 1.0、跨行邻近 = 0.85（沿用 S1-5 `_FUZZY_PENALTY`）；`rule_factor` = 锚点优先级强度
+     1.0/0.92/0.84（沿用 S1-5 `_ANCHOR_STRENGTH`）。保留 SCHEMA 原来的"乘法式"骨架，只把 base 从"单行 score"
+     扩成"锚点+值行加权"——这样既满足任务卡"锚点与值行都要看"，也不推翻 S1 已验证的证据结构。
+  2. **三档**：`auto ≥0.90` 免人工 / `review 0.60–0.90` 待核对 / `manual <0.60` 必须人工；
+     `need_review = level != auto`；**未决冲突强制至多 `review`**（候选必须由人挑）。
+  3. **校验封顶**：`validators` 判错的字段 `min(score, 0.45)`（原实现是"折半"，会出现 0.49 > 0.45 这类
+     "看起来只是稍微不可信"的假象；直接压进必须人工区更符合语义）。
+  4. **整单分**：`invoices.overall_confidence` = 已抽到字段置信度的算术平均（无字段 0），**只用于展示/排序**，
+     不参与单字段判定（任务卡坑②：整单均分会漏掉个别错字段）。
+  5. 权重/阈值全部进 `Settings`（`CONFIDENCE_*`），校验"权重和为 1、0 ≤ cap < manual < auto ≤ 1"。
+- **代价**：40 张合成集上 review 占 52%（110/213）、40/40 张票据都进待核对队列——合成集里"故意拍坏"的
+  样本本来就多，且阈值是任务卡给的初值，**未用真实分布校准**（遗留 #53，S6 回填）。
+- **验证**：`tests/test_confidence.py` 15 条；`scripts/confidence_eval.py --samples 40`：
+  阈值扫描字段 2/2/23/90/112/152、整单 25/25/33/40/40/40（单调不减）；不变量全过。
+
+---
+
+## D-059 队列口径：用 `extract_status=need_confirm`，不新增 `needs_review` 状态/`low_confidence` 作业态
+
+- **日期**：2026-11-20（S3-2，用户确认）
+- **背景**：任务卡写 `GET /invoices?status=needs_review`，并要求"整单 needs_review 时 `ocr_jobs` 置 `low_confidence`"。
+- **决策**：
+  1. `invoices.status` 是 **5 值业务状态**（draft/confirmed/in_report/archived/void），
+     "待确认"落在 `extract_status=need_confirm`（API.md §2 既有的筛选参数），**不新增状态值**；
+  2. `ocr_jobs.status` 只有 4 值（D-045 已拒绝过 `low_confidence`），作业态不表达字段质量；
+     字段级信息在 `invoice_fields`，整单信息在 `invoices.overall_confidence + extract_status`；
+  3. **"自动通过"不等于 `extract_status=confirmed`**：`confirmed` 是人工确认语义（S3-6），
+     全部字段 `auto` 时保持 `raw`，避免把"机器没疑点"冒充"人已确认"；
+  4. reviewer 队列前端 = `/review` **重定向**到 `/invoices?extract_status=need_confirm`（复用筛选/分页/排序），
+     reviewer 登录落地改 `/review`；不新增队列接口。
+- **代价**：队列页就是列表页（没有"按整单置信度排序"）；要按置信度排序需扩 `sort_by` 白名单（未做，S3-5 可评估）。
+- **验证**：真实上传 2 张 → `extract_status=need_confirm`；reviewer API 查询 total=2；
+  UI 冒烟 reviewer 登录后 `/review` 显示"共 2 张"。

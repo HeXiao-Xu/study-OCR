@@ -6,10 +6,10 @@
 
 ## 当前状态
 
-- 阶段：**阶段 3（识别流水线上线，M2）进行中**（S3-1 已完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、**S3-1**（共 26 张卡，全部 ✅ 通过）
-- 最近完成：**S3-1 OCR Worker 串起全链路**（下载→渲染/预处理→识别→票种→抽取→校验→落库；20 张实测 20/20、P95 1.68s）
-- 下一步：**S3-2 字段级置信度聚合与低置信度确认队列**
+- 阶段：**阶段 3（识别流水线上线，M2）进行中**（S3-1、S3-2 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、**S3-1 ~ S3-2**（共 27 张卡，全部 ✅ 通过）
+- 最近完成：**S3-2 置信度聚合与确认队列**（0.90/0.60 三档、校验封顶 0.45；40 张实测：213 字段中 auto 101 / review 110 / manual 2）
+- 下一步：**S3-3 局部二次识别（crop 放大重识别）**
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
@@ -52,7 +52,7 @@
 
 ## 阶段 3：识别流水线上线（M2）
 [x] S3-1 OCR Worker 串起全链路 ★关键
-[ ] S3-2 字段级置信度聚合与低置信度确认队列 ★关键
+[x] S3-2 字段级置信度聚合与低置信度确认队列 ★关键
 [ ] S3-3 局部二次识别（crop 放大重识别）
 [ ] S3-4 识别结果 JSON Schema 与落库
 [ ] S3-5 票据详情页：图像与字段并排 + 框选高亮 ★关键
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S3-2 | `backend/app/services/confidence.py`（新：公式/三档/封顶/聚合 + 纯函数单测）、`backend/app/ocr/{types,extractor}.py`（证据成分 `anchor_score/value_score/agreement`，校验失败封顶 0.45）、`backend/app/services/ocr_pipeline.py`（写 `need_review/overall_confidence/extract_status` + metrics 三档分布）、`backend/app/services/invoice_service.py` + `schemas/invoice.py`（派生 `review_level`）、`backend/app/core/config.py` + `.env.example`（5 个配置）、`web/src/{router/index.ts,utils/landing.ts,views/InvoiceDetail.vue,types/invoice.ts}`、`scripts/confidence_eval.py`（新）、`docs/{spec,plan}/s3-2-confidence.md` | ① 阈值口径定为任务卡三档（0.90/0.60）+ 校验封顶 0.45，SCHEMA 同步；② 置信度验收 40 张 / 213 字段：**auto 101、review 110、manual 2**；阈值扫描（0.50→0.95）字段需人工数 **2/2/23/90/112/152**、整单需核对数 **25/25/33/40/40/40**（单调不减）；不变量全过（校验失败必 ≤0.45、auto 必 ≥0.90、review 必 <0.90 或冲突）；③ 真实链路两张（train/vat_digital）：`extract_status=need_confirm`、`overall_confidence` 0.879/0.881、字段档位逐条正确；④ reviewer 登录落 `/review` → `extract_status=need_confirm` 过滤后 **共 2 张**（UI 冒烟）；⑤ 详情字段带 `review_level`（前端不再硬编码阈值）；⑥ 单元 379 passed、集成 173 passed、`alembic check` 零差异；⑦ 冒烟数据与临时账号已清理 | ✅ 通过（队列用既有 `extract_status` 筛选，不新增状态/接口；D-058/D-059） |
 | S3-1 | `backend/app/services/ocr_pipeline.py`（新：`run_pipeline` + `PipelineDeps` 注入 + 19 条流水线测试（6 单元 + 13 集成））、`backend/app/services/ocr_status_service.py`（新）、`backend/app/tasks/{ocr_task,worker}.py`、`backend/app/ocr/{intake,extractor}.py`、`backend/app/services/{storage,job_service}.py`、`backend/app/api/v1/invoices.py`（`GET /{id}/ocr-status`）、`backend/app/schemas/invoice.py`（`OcrStageOut/OcrStatusData`）、`backend/alembic/versions/0004_ocr_jobs_metrics_and_times.py`、`backend/app/models/ocr_jobs.py`、`backend/tests/{test_ocr_pipeline,test_ocr_status,test_storage}.py` + `test_{jobs,intake,extractor,config}.py` 补例、`scripts/ocr_acceptance.py`（新）、`web/src/{api/invoices.ts,types/invoice.ts,views/Upload.vue}`、`docs/{spec,plan}/s3-1-ocr-pipeline.md` | ① 迁移 0004：`ocr_jobs` 加 `metrics/started_at/finished_at`，`alembic check` 零差异；② 流水线：下载（`storage.get_bytes`）→ 临时目录 → `intake.prepare_pages`（PDF 前 3 页）→ PaddleOCR（worker 单例）→ `classify_ticket` → DB 模板规则抽取（YAML 回退）→ `run_validators` → 落 `ocr_lines`/`invoice_fields`/`invoices` 冗余列；③ **真实验收 20 张：20/20 成功（100%）、P50 1012ms、P95 1680ms、max 4995ms、临时目录残留 0**；④ `ocr-status` 返回 4 阶段、`progress`（10/30/40/20）、真 `started_at/finished_at`、`engine_version=2.7.3`；⑤ 详情接口可见字段（如行程单 4 字段）、列表/详情与 `ocr_status=succeeded` 一致；⑥ 单元 365 passed、集成 169 passed、`typecheck`/`build` 通过、上传页冒烟"识别完成"；⑦ 失败分类：对象缺失可重试、契约错误/密文/作废票永久失败；僵尸线程 `superseded` 回滚业务写入；⑧ 测试数据、MinIO 对象与验收账号已清理 | ✅ 通过（`field_value` 暂存归一值待 S3-4；D-055/D-056/D-057） |
 | S2-12 | `backend/app/tasks/scheduler.py`、`backend/app/core/config.py`（scheduler/cron/锁配置）、`backend/app/main.py`（lifespan）、`backend/tests/{test_scheduler,test_api_docs}.py`、`requirements.txt/lock`（APScheduler 3.11.1 + tzlocal 5.4.5）、`.env.example`、`docs/{spec,plan}/s2-12-scheduler.md` | ① APScheduler 3.11.1 安装并钉住；② lifespan 启停调度器，`SCHEDULER_ENABLED=false` 完全不启动（测试默认关）；③ 锚定任务每日 02:00（Asia/Shanghai），cron/锁 key/TTL 进 Settings；④ 多副本：`SET NX EX` 抢锁，**成功后锁保留到 TTL**（时段去重），失败释放 + Lua token 校验；⑤ 双 uvicorn + 同一 Redis、`*/10`、TTL=5：4 个 tick 共执行 **4** 次、另一侧 4 次 skipped（不是 8 次）；⑥ `test_api_docs` 保证实际 OpenAPI 路由都在 API.md；⑦ `alembic check` 零差异；⑧ `pytest` 341 passed、集成 146、smoke 9 OK | ✅ 通过（anchor 任务仍为 S4-7 占位，只日志；D-050） |
 | S2-11 | `web/src/views/{InvoiceList,InvoiceDetail}.vue`、`web/src/utils/format.ts`、`web/src/api/invoices.ts`（list/update）、`web/src/types/invoice.ts`（全量类型）、`router`（/invoices 列表+详情）、`MainLayout`（reviewer 票据查询）、`backend/app/schemas/invoice.py`（补 vat_digital）+ `tests/test_invoices.py`、`scripts/ui_smoke.mjs`（`--steps`）、`docs/{spec,plan}/s2-11-invoice-ui.md` | ① `npm run typecheck` / `npm run build` 通过；② 列表筛选（状态/抽取/票种/关键字/日期/排序）+ 分页，URL query 为唯一状态源，`?status=draft&invoice_type=vat_digital` 刷新后仍命中；③ 详情字段表（置信度<85% 标红、待确认/冲突标签）；④ 草稿编辑 buyer_name → 保存 → 页面刷新可见，DB `confirmed=true/source=manual/version 0→1`；⑤ submitter 金额字段置灰、reviewer 金额需勾选确认（后端 42202 兜底）；⑥ 影像预览按 D-049 占位"待 S3-5"；⑦ reviewer 菜单"票据查询"且可看全量；⑧ `pytest` 全绿（新增 vat_digital 筛选用例）、`smoke.py` 9 OK；⑨ 测试数据/MinIO/Redis 已清理 | ✅ 通过（预览占位；后端补 vat_digital 漏项；D-049） |
@@ -194,11 +195,12 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 43 | 批量上传完不自动跳详情 | 任务卡写"上传完成跳 /invoices/{id}"；20 个文件跳走会丢进度 | 逐行给"查看详情"链接；单文件也不强制跳，S2-11 详情页可用后再评估 |
 | 44 | `GET /invoices/{id}/image` 预览接口未实现 | API 备注指向它（详情不返回影像二进制） | S2-11 已用占位卡片"待 S3-5"；S3-5/S5-4 落地后替换预览组件 |
 | 45 | 详情页影像不可见 | 预览依赖 S4 信封/解密；临时明文接口会绕过安全边界 | 等 S3-5；答辩/演示时明确说明这是加密链路的前置依赖 |
-| 46 | 字段编辑只改值，不提供冲突候选选择/批量确认 | S2-11 范围限定；校验冲突在 S3-4/S3-6 | 冲突字段保留 `conflict_value`，后端 42201 拒绝未知冲突；S3-5 做候选交互 |
+| 46 | 字段编辑只改值，不提供冲突候选选择/批量确认 | S2-11 范围限定；S3-2 已让冲突字段强制 `review_level=review`，但候选选择 UI 仍未做 | S3-5 做候选交互，S3-6 做批量确认 |
 | 47 | 字段中文标签/票种/状态文案维护在前端 | 后端没有字典接口（API.md 未定义） | 新增字段时同步 `web/src/utils/format.ts` 与后端 `INVOICE_FIELD_NAMES` |
 | 48 | `anchor_audit_task` 仍是占位（只日志） | 审计哈希链在 S4-7 | S4-7 替换实现，调度骨架不动；现在不得伪造审计行 |
 | 49 | 成功执行后锁保留到 TTL（默认 1h），失败才释放 | 防止同一 tick 多副本重复执行；TTL 必须小于调度周期 | 默认每日任务下 1h 足够；若将来改高频 cron，必须同步调小 TTL |
 | 52 | `invoice_fields.field_value` 暂存**归一值**（契约写"票面原文形态"如 `¥1,234.56`） | 抽取器 `ExtractedField` 只暴露归一值与整行 `raw_text`，不暴露原始子串 | S3-4 给 `ExtractedField` 补 `raw_value` 后一次改齐（`normalized_value` 已是归一值，不丢信息） |
+| 53 | 置信度阈值/权重初值来自任务卡（0.90/0.60、0.35/0.65），**未用真实分布校准** | 40 张合成集上 review 占 52%（110/213），队列偏长；权重调参只能靠经验 | S6 用真实票据的"低置信字段是否真错"分布回填阈值与权重（`confidence_eval.py` 可直接复用）；当前口径已记 D-058 |
 | 50 | API.md 仍保留 S3/S4/S5 未实现接口的标注 | 对账只保证"已实现 → 有文档"这一个方向 | 后续任务把对应接口实现后，更新 API.md 的实现标记与测试覆盖 |
 | 51 | 界面仍是第一版视觉，没有设计稿/完整设计系统 | 任务卡没有美化项，先保证主流程与角色落地 | S3-5 会重做详情工作区；其余页面按反馈继续打磨（颜色/密度/品牌素材） |
 | 52 | 登录页品牌区是文字 + 字母 S 占位 | 没有校徽/系统 Logo 素材 | 答辩前可替换为学校/项目 Logo；布局不需要改 |
