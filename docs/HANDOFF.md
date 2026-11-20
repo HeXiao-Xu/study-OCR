@@ -1,17 +1,18 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-20（S3-4 识别产物契约上线）
+> 最后更新：2026-11-20（S3-5 详情页影像画框上线）
 
 ## 1. 一句话现状
 
-**阶段 3 已通四张卡**：S3-1（识别全链路）+ S3-2（置信度三档与队列）+ S3-3（局部二次识别）+ S3-4（识别产物契约）；
-**下一步 S3-5 票据详情页：图像与字段并排 + 框选高亮**。
+**阶段 3 已通五张卡**：S3-1（识别全链路）+ S3-2（置信度三档与队列）+ S3-3（局部二次识别）+
+S3-4（识别产物契约）+ S3-5（详情页左图右表 + 框选高亮）；**下一步 S3-6 字段修正与确认 API**。
 
 当前浏览器可走通：登录（三角色）→ 按角色落地 → 上传（"识别中… N%"）→ 票据列表/详情
 （字段带 `review_level`；低置信字段可点"重识别"，`source=ocr_retry`）→ reviewer 的"待核对"=
 `extract_status=need_confirm` 列表 → 管理端模板查看/升版本/试跑；`GET /invoices/{id}/ocr-status` 可轮询阶段与进度；
-`GET /invoices/{id}/fields` 返回票面原文/归一值/三档，`docs/schemas/ocr_result.schema.json` 是识别产物契约。
+`GET /invoices/{id}/fields` 返回票面原文/归一值/三档，`docs/schemas/ocr_result.schema.json` 是识别产物契约；
+详情页已是左图右表：字段框/行框可 hover/点击联动，滚轮缩放、拖拽平移后框仍对齐（明文影像仅本地）。
 
 ## 2. 仓库与环境
 
@@ -112,6 +113,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S3-2 置信度分布（40 张 / 213 字段） | auto 101 / review 110 / manual 2；阈值 0.90 时 40/40 张进待核对（合成集偏难） | `scripts/confidence_eval.py`（`confidence_eval_*.json`） |
 | S3-3 局部重识别（40 张 / 112 个低置信字段） | **109 个提升（97.3%）**、平均 Δ **+0.180** | `scripts/reread_eval.py`（`reread_eval_*.json`） |
 | S3-4 识别产物契约 | `docs/schemas/ocr_result.schema.json`（5 模型）；`GET /fields` 实测原文 `￥1,796.37` / 归一 `1796.37` | `scripts/export_ocr_schema.py --check`；`tests/test_ocr_schema.py` |
+| S3-5 详情页画框 | 532px 显示 `scale=0.338854`；放大两次 `0.487898`（×1.44）；`drawMs` 0.39/0.48ms；40 行框/12 字段框 | `ui_smoke --eval` 数值断言 + `tests/test_{image_service,lines_service,invoice_media}.py` |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -140,6 +142,10 @@ curl -s -F "file=@票据.jpg" localhost:8000/api/v1/invoices/upload -H "Authoriz
 .venv/Scripts/python.exe scripts/export_ocr_schema.py --check
 # 轮询识别进度（stage/progress/起止时间）
 curl -s localhost:8000/api/v1/invoices/1/ocr-status -H "Authorization: Bearer <token>"
+# S3-5 影像/行框（明文影像仅本地；密文或 prod 返回 409）
+curl -s -o /tmp/inv.jpg -w "%{http_code} %{content_type}\n" \
+  "localhost:8000/api/v1/invoices/1/image?page=1&variant=original" -H "Authorization: Bearer <token>"
+curl -s "localhost:8000/api/v1/invoices/1/lines?page=1" -H "Authorization: Bearer <token>"
 # 前端（Vite 5173 + 无头 Edge 9222）：类型检查/构建 + 真实登录冒烟（需要先起后端）
 (cd web && npm run typecheck && npm run build)
 # 无头 Edge（另起一个进程；bash 路径，PowerShell 用引号包住 exe）
@@ -215,30 +221,35 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-060 | 重识别按契约异步 `reocr`（202）；只改 raw_text/confidence/source=ocr_retry，值不动；字段 bbox 改原图坐标 |
 | D-061 | 外扩 max(8px,10%行高)、2× 放大（长边 1024）、1.5s 预算；审计只加 `field_reread` 枚举不写行 |
 | D-062 | 识别产物契约唯一来源 `schemas/ocr.py`（types 转 re-export）；`field_value=raw_value`、`normalized_value=归一`；`GET /fields` conflicts 只回候选冲突；本卡无迁移 |
+| D-063 | `GET /image` 按契约实现；明文仅 `STORAGE_ALLOW_PLAINTEXT`（密文/prod 409 待 S4）；PDF 固定 250 DPI；前端 blob 取图 |
+| D-064 | 新增 `GET /lines`（服务端映射原图坐标、不返回文本）；canvas 字段/行框分级 + culling；缩放改 CSS 尺寸而非 transform |
 
-## 7. 下一步：S3-5 票据详情页：图像与字段并排 + 框选高亮
+## 7. 下一步：S3-6 字段修正与确认 API
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S3-5（★关键）；
-- 流程（AGENTS §11）：spec（`docs/spec/s3-5-*.md`）→ plan → 用户确认 → 写码；
-- 目标：`web/src/components/{ImageCanvas.vue,FieldTable.vue}`，升级 `InvoiceDetail.vue`：左图右表，
-  图片按容器等比缩放，canvas 叠层画 bbox；hover 字段高亮对应框、点框定位字段；低置信黄底、校验失败红底；
-  坐标按 `scaleX/scaleY` 换算，缩放/拖拽后仍对齐；
-- **落地前必须先对账（最重要）**：
-  1. **没有影像接口**：`GET /invoices/{id}/image` 在 API.md 标 S3-5/S5-4，但影像解密依赖 S4 信封；
-     当前 MinIO 是明文（`is_cipher=false`，D-044）。要么实现"仅 `STORAGE_ALLOW_PLAINTEXT=true` 可用的
-     调试影像接口（prod 503）"，要么 S3-5 只做空图占位。**这属于安全边界决策，必须先报用户拍板**；
-  2. 画框坐标是**原图**坐标系（S3-3 起 `invoice_fields.bbox_json` 已修正）；若影像接口返回的是原图，
-     直接按 `scaleX/scaleY` 换算即可；**不要**再拿 `ocr_lines.box_json`（校正图）当原图用；
-  3. 只渲染视口附近框（一张票 20–50 行，字段框 12–13 个，量不大；但行框 hover 时可能需要 `ocr_lines`，
-     接口是否暴露行级数据要先定，别一次拉全量）；
-  4. 低置信黄/红底色已有 `review_level`（S3-2），不要在前端再硬编码阈值；
-- 已就绪：`GET /invoices/{id}`（fields + review_level）、`GET /invoices/{id}/fields`、原图 bbox、
-  `docs/schemas/ocr_result.schema.json` 与 `web/src/types/ocr.ts`；
-- 验收（任务卡）：随机抽 20 个框核对位置，缩放前后都对齐；拖动与 hover 不卡顿（<16ms/帧）。
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S3-6；
+- 流程（AGENTS §11）：spec（`docs/spec/s3-6-*.md`）→ plan → 用户确认 → 写码；
+- **已提前完成、不要重复实现**：`PATCH /invoices/{id}/fields` 在 S2-5 已实现（乐观锁 `version`、
+  金额仅 reviewer + `confirm_amount`、42201 未决冲突回滚、`source=manual`、修改后 `extract_status=need_confirm`）；
+  S3-2 的 `review_level` 已用于前端着色；
+- **本卡要补**：
+  1. `POST /invoices/{id}/confirm`（API.md §2 已定义：无参或可选 `version`；200 → `InvoiceOut`
+     `status=confirmed`、`extract_status=confirmed`）：**服务端重跑 `validators`**，必填齐全且全部通过才置
+     confirmed，否则 `422` + 逐字段 `{field, error}`（用 `schemas/ocr.py::FieldError`）；
+  2. 权限矩阵：谁能 confirm（契约写"本人"；reviewer 是否复核确认？与 S3-2 遗留 #55 的 reocr 权限一起定）；
+  3. 前端详情页加"确认整单"按钮 + 422 逐字段错误展示（现在只有"编辑字段/保存"）；
+  4. `audit_logs(action=confirm_field)` 行：哈希链 S4-7 未实现，**仍不写行**（D-040/D-061 口径）；
+- **必须先对账的契约点**：
+  - `confirm` 要同时改 `status` 与 `extract_status`，`version` 乐观锁语义与 PATCH 一致（建议自增）；
+  - "校验全部通过"包含金额合计/税号/日期/大写金额规则，必须用**库内当前值**重跑，不能信前端标记；
+    `conflict=true` 的字段也要处理（未决冲突应 422，不能带病确认）；
+  - `confirm` 与 `PATCH fields` 的提交顺序：同一票据两窗口并发时，后者必须 409；
+- 已就绪：`validators.run_validators`（纯函数，返回 `ValidationIssue{field,code,message,severity}`）、
+  `schemas/ocr.py::FieldError`、`invoice_fields` 全字段、`transition` 状态机、`GET /fields`；
+- 验收（任务卡）：两窗口同时改同一字段，后者 409；缺必填字段 confirm 返回 422 并列出字段名。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：S3-1 ~ S3-4 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
+1. **push**：S3-1 ~ S3-5 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；

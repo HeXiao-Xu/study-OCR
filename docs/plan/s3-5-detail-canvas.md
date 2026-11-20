@@ -1,7 +1,7 @@
 # S3-5 详情页图像与字段并排 + 框选高亮实现计划（plan）
 
 > 对应 spec：[`docs/spec/s3-5-detail-canvas.md`](../spec/s3-5-detail-canvas.md)（已确认）｜
-> 契约：`API.md` §2 `GET /image`（已定义）＋ 本卡新增 `GET /lines` ｜ 状态：**待执行**
+> 契约：`API.md` §2 `GET /image`（已定义）＋ 本卡新增 `GET /lines` ｜ 状态：**已实现（2026-11-20）**，Task 1–6 全部执行并验证
 > 执行方式：Task 1→6 顺序；每个 Task 跑完验证命令再继续。
 
 **目标**：详情页左图右表；`<img>` + canvas 叠层画**字段框 + 行框**；hover/点击双向联动；缩放平移后框仍对齐；
