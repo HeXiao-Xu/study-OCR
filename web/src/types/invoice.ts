@@ -166,6 +166,8 @@ export interface InvoiceOut {
   overall_confidence: string | number | null
   quality_flag: string | null
   duplicate_of: number | null
+  reviewed_by: number | null
+  reviewed_at: string | null
 
   file_id: number
   filename: string
@@ -218,6 +220,7 @@ export interface InvoiceListParams {
   q?: string
   date_from?: string
   date_to?: string
+  review_status?: 'pending' | 'reviewed'
   page?: number
   page_size?: number
   sort_by?: 'created_at' | 'invoice_date' | 'total_amount'

@@ -36,6 +36,7 @@ const store = useUserStore()
 const filters = reactive({
   status: '',
   extract_status: '',
+  review_status: '',
   invoice_type: '',
   q: '',
   dateRange: [] as string[],
@@ -70,6 +71,7 @@ function syncFromQuery(): void {
   const query = route.query
   filters.status = text(query.status)
   filters.extract_status = text(query.extract_status)
+  filters.review_status = text(query.review_status)
   filters.invoice_type = text(query.invoice_type)
   filters.q = text(query.q)
   filters.dateRange =
@@ -89,6 +91,9 @@ function buildParams(): InvoiceListParams {
   }
   if (filters.status) params.status = filters.status as InvoiceStatus
   if (filters.extract_status) params.extract_status = filters.extract_status as ExtractStatus
+  if (filters.review_status) {
+    params.review_status = filters.review_status as 'pending' | 'reviewed'
+  }
   if (filters.invoice_type) params.invoice_type = filters.invoice_type as InvoiceType
   if (filters.q.trim()) params.q = filters.q.trim()
   if (filters.dateRange.length === 2) {
@@ -152,6 +157,7 @@ function applyFilters(): void {
     {
       status: filters.status,
       extract_status: filters.extract_status,
+      review_status: filters.review_status,
       invoice_type: filters.invoice_type,
       q: filters.q.trim(),
       date_from: filters.dateRange[0] ?? '',
@@ -236,6 +242,10 @@ watch(
             :label="EXTRACT_STATUS_LABEL[item]"
             :value="item"
           />
+        </el-select>
+        <el-select v-model="filters.review_status" placeholder="复核状态" clearable class="filter-item">
+          <el-option label="待复核" value="pending" />
+          <el-option label="已复核" value="reviewed" />
         </el-select>
         <el-select v-model="filters.invoice_type" placeholder="票种" clearable class="filter-item">
           <el-option

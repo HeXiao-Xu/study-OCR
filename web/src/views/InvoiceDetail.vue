@@ -16,6 +16,7 @@ import {
   fetchInvoiceLines,
   getInvoiceDetail,
   reocrFields,
+  reviewInvoice,
   updateInvoiceFields,
 } from '../api/invoices'
 import { ApiError } from '../api/http'
@@ -93,10 +94,27 @@ const invoiceId = computed(() => Number(route.params.id))
 
 const canEdit = computed(() => {
   const invoice = detail.value?.invoice
+  if (!invoice || invoice.reviewed_at) return false
+  if (invoice.status === 'draft' && ['raw', 'need_confirm'].includes(invoice.extract_status)) {
+    return true
+  }
+  // S3-9：二审前审核人仍可修正
+  return store.role === 'reviewer' && invoice.status === 'confirmed'
+})
+
+const reviewLabel = computed(() => {
+  const invoice = detail.value?.invoice
+  if (!invoice || invoice.status !== 'confirmed') return ''
+  return invoice.reviewed_at ? '已复核' : '待复核'
+})
+
+const canReview = computed(() => {
+  const invoice = detail.value?.invoice
   return Boolean(
     invoice &&
-      invoice.status === 'draft' &&
-      ['raw', 'need_confirm'].includes(invoice.extract_status),
+      store.role === 'reviewer' &&
+      invoice.status === 'confirmed' &&
+      !invoice.reviewed_at,
   )
 })
 
@@ -140,10 +158,9 @@ const hasEditableAmount = computed(() =>
   sortedFields.value.some((field) => AMOUNT_FIELDS.has(field.field_name) && fieldEditable(field)),
 )
 
-function fieldEditable(field: InvoiceField): boolean {
-  if (!canEdit.value) return false
-  if (AMOUNT_FIELDS.has(field.field_name) && store.role !== 'reviewer') return false
-  return true
+function fieldEditable(_field: InvoiceField): boolean {
+  // S3-9/D-068：提交人也能改金额（保存时须勾选“确认修改金额”）
+  return canEdit.value
 }
 
 function revokeImage(): void {
@@ -313,6 +330,40 @@ async function confirmAll(): Promise<void> {
   }
 }
 
+async function reviewAll(): Promise<void> {
+  const invoice = detail.value?.invoice
+  if (!invoice || confirming.value) return
+  try {
+    await ElMessageBox.confirm(
+      '复核后票据将锁定，字段不可再修改。确认复核通过？',
+      '复核通过',
+      { type: 'warning', confirmButtonText: '复核通过', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  confirmErrors.value = []
+  confirming.value = true
+  try {
+    await reviewInvoice(invoice.id, invoice.version)
+    ElMessage.success('已复核')
+    await load()
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.code === 42201) {
+      const payload = cause.payload?.data as { fields?: ConfirmError[] } | null | undefined
+      confirmErrors.value = payload?.fields ?? []
+      ElMessage.error('复核前校验未通过，请按提示处理')
+    } else if (cause instanceof ApiError && cause.code === 40900) {
+      ElMessage.error('版本冲突：票据已被修改，已为你刷新')
+      await load()
+    } else {
+      ElMessage.error(cause instanceof ApiError ? cause.message : '复核失败，请重试')
+    }
+  } finally {
+    confirming.value = false
+  }
+}
+
 async function save(): Promise<void> {
   if (!detail.value || saving.value) return
   const changed = sortedFields.value.filter(
@@ -324,7 +375,7 @@ async function save(): Promise<void> {
   }
 
   const amountChanged = changed.some((field) => AMOUNT_FIELDS.has(field.field_name))
-  if (amountChanged && store.role === 'reviewer' && !amountConfirm.value) {
+  if (amountChanged && !amountConfirm.value) {
     ElMessage.warning('修改金额字段必须勾选"确认修改金额"')
     return
   }
@@ -338,7 +389,7 @@ async function save(): Promise<void> {
         value: editable[field.field_name] ?? '',
         confirm: true,
       })),
-      confirm_amount: amountChanged && store.role === 'reviewer' ? true : undefined,
+      confirm_amount: amountChanged ? true : undefined,
     })
     ElMessage.success(`已保存 ${result.updated.length} 个字段`)
     editMode.value = false
@@ -413,6 +464,9 @@ onBeforeUnmount(revokeImage)
               <el-tag :type="OCR_STATUS_TAG[detail.invoice.ocr_status as OcrStatus]" effect="plain">
                 {{ OCR_STATUS_LABEL[detail.invoice.ocr_status as OcrStatus] }}
               </el-tag>
+              <el-tag v-if="reviewLabel" :type="reviewLabel === '已复核' ? 'success' : 'warning'" effect="plain">
+                {{ reviewLabel }}
+              </el-tag>
             </div>
             <div class="actions">
               <el-button @click="load">刷新</el-button>
@@ -426,6 +480,14 @@ onBeforeUnmount(revokeImage)
                 @click="confirmAll"
               >
                 确认整单
+              </el-button>
+              <el-button
+                v-if="canReview && !editMode"
+                type="success"
+                :loading="confirming"
+                @click="reviewAll"
+              >
+                复核通过
               </el-button>
               <template v-if="editMode">
                 <el-button type="primary" :loading="saving" @click="save">保存修改</el-button>
@@ -460,13 +522,16 @@ onBeforeUnmount(revokeImage)
           <el-descriptions-item label="数据版本">
             v{{ detail.invoice.version }}
           </el-descriptions-item>
+          <el-descriptions-item label="复核时间">
+            {{ detail.invoice.reviewed_at ? formatDateTime(detail.invoice.reviewed_at) : '—' }}
+          </el-descriptions-item>
           <el-descriptions-item label="质量标记">
             {{ detail.invoice.quality_flag ?? '—' }}
           </el-descriptions-item>
         </el-descriptions>
 
         <el-checkbox
-          v-if="editMode && hasEditableAmount && store.role === 'reviewer'"
+          v-if="editMode && hasEditableAmount"
           v-model="amountConfirm"
           class="amount-confirm"
         >

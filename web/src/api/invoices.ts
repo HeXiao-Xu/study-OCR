@@ -48,6 +48,14 @@ export async function updateInvoiceFields(
   return unwrap(envelope)
 }
 
+/** 审核人二审（S3-9）：复核后锁定修改；失败 422/42201 时 payload.data.fields 给逐字段原因。 */
+export async function reviewInvoice(invoiceId: number, version?: number): Promise<InvoiceOut> {
+  const envelope = await post<InvoiceOut>(`/invoices/${invoiceId}/review`, { version }, {
+    silent: true,
+  })
+  return unwrap(envelope)
+}
+
 /** 批量上传汇总（S3-8）：轮询逐项进度；调用即顺带触发服务端补位。 */
 export async function fetchBatch(batchId: string): Promise<BatchSummaryData> {
   const envelope = await get<BatchSummaryData>(`/invoices/batch/${batchId}`, { silent: true })
