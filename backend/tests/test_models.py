@@ -349,3 +349,9 @@ def test_decimal_is_used_for_money() -> None:
     # 若有人改成 Float，这里会先炸
     assert _table("report_items").c["amount"].type.asdecimal is True
     assert _table("report_forms").c["total_amount"].type.asdecimal is True
+
+def test_audit_action_check_includes_field_reread() -> None:
+    """S3-3：reocr 需要 field_reread；枚举与 CHECK 必须同源（0005 只放开 CHECK）。"""
+    from app.models.enums import AuditAction, enum_values
+
+    assert "field_reread" in enum_values(AuditAction)

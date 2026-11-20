@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     confidence_weight_anchor: float = 0.35
     confidence_weight_value: float = 0.65
 
+    # ---------- 局部重识别（S3-3）----------
+    # 外扩 = max(PAD_MIN_PX, PAD_RATIO×行高)；放大 SCALE 倍，长边上限 1024
+    reread_pad_min_px: int = 8
+    reread_pad_ratio: float = 0.10
+    reread_scale: float = 2.0
+    # 单张票据重识别的总增量预算（API.md §2：≤1.5s，超出记 skipped）
+    reread_budget_seconds: float = 1.5
+
     # ---------- 定时任务（S2-12）----------
     # 每个 API 进程都会起调度器；真正执行前抢 Redis 锁，保证多副本同一次只跑一遍。
     scheduler_enabled: bool = True
@@ -153,6 +161,34 @@ class Settings(BaseSettings):
     def _check_jwt_secret(cls, value: str) -> str:
         if len(value) < 32:
             raise ValueError("JWT_SECRET 至少 32 个字符（HS256 的安全下限）")
+        return value
+
+    @field_validator("reread_pad_min_px")
+    @classmethod
+    def _check_reread_pad(cls, value: int) -> int:
+        if not 0 <= value <= 200:
+            raise ValueError("REREAD_PAD_MIN_PX 必须在 0–200")
+        return value
+
+    @field_validator("reread_pad_ratio")
+    @classmethod
+    def _check_reread_ratio(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("REREAD_PAD_RATIO 必须在 [0,1]")
+        return value
+
+    @field_validator("reread_scale")
+    @classmethod
+    def _check_reread_scale(cls, value: float) -> float:
+        if not 1.0 <= value <= 4.0:
+            raise ValueError("REREAD_SCALE 必须在 [1,4]（再大只是烧 CPU）")
+        return value
+
+    @field_validator("reread_budget_seconds")
+    @classmethod
+    def _check_reread_budget(cls, value: float) -> float:
+        if not 0.1 <= value <= 10.0:
+            raise ValueError("REREAD_BUDGET_SECONDS 必须在 [0.1,10]")
         return value
 
     @field_validator("minio_bucket")

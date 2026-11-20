@@ -208,6 +208,8 @@ class AuditAction(StrEnum):
     LOGIN_FAILED = "login_failed"
     LOGOUT = "logout"
     FORBIDDEN = "forbidden"
+    # S3-3 补：局部二次识别（迁移 0005 只放开 CHECK；审计行仍留 S4-7，D-061）
+    FIELD_REREAD = "field_reread"
 
 
 class AuditTargetType(StrEnum):

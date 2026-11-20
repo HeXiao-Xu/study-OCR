@@ -76,6 +76,28 @@ def test_ocr_worker_max_jobs_is_capped(value: int) -> None:
         _settings(ocr_worker_max_jobs=value)
 
 
+def test_reread_settings_defaults() -> None:
+    settings = _settings()
+    assert settings.reread_pad_min_px == 8
+    assert settings.reread_pad_ratio == 0.10
+    assert settings.reread_scale == 2.0
+    assert settings.reread_budget_seconds == 1.5
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"reread_pad_min_px": -1},
+        {"reread_pad_ratio": 1.5},
+        {"reread_scale": 0.5},
+        {"reread_budget_seconds": 0.0},
+    ],
+)
+def test_reread_settings_are_validated(overrides: dict) -> None:
+    with pytest.raises(ValidationError):
+        _settings(**overrides)
+
+
 def test_confidence_settings_defaults() -> None:
     settings = _settings()
     assert (settings.confidence_auto_confirm, settings.confidence_manual_below) == (0.90, 0.60)

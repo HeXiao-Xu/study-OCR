@@ -194,17 +194,21 @@
 - 备注：每次修改写 `audit_logs`（`action=confirm_field`，`detail_json` 含 before/after，**已脱敏**）；`source` 由服务端置 `manual`；已 `confirmed`/`in_report` 的票据拒绝修改。**权限矩阵已定稿（D-017）**：`submitter` 只能改非金额字段；`amount` / `tax_amount` / `total_amount` 仅 `reviewer` 可改且必须带 `confirm_amount=true`；`admin` 一律 404（系统管理员不碰业务数据，职责分离）
 
 ### POST /api/v1/invoices/{id}/reocr
-- 权限：本人 ｜ 类型：异步（202）｜ 幂等：否 ｜ 实现：S3-3
+- 权限：本人（`reviewer` 触发权限与 S3-6 一起定）｜ 类型：异步（202）｜ 幂等：否（有进行中作业时 409）｜ 实现：S3-3 ✅
 - 入参（JSON）：
 
 | 字段 | 类型 | 必填 | 约束 |
 |---|---|---|---|
-| fields | array | 是 | 1–6 个字段名；必须是低置信且已有 bbox 的字段 |
+| fields | array | 是 | 1–6 个、去重；必须是该票据已抽到的字段，且不是 `manual`/`confirmed`/已 `ocr_retry`，有 `bbox` 与来源行 |
 | version | int | 否 | 传入则校验乐观锁 |
 
 - 出参：**202**，`data` = `{invoice_id, job_id, fields}`
-- 错误：`404/40400`；`409/40900` 状态不允许（已确认/已归档）；`422/42200` 字段无 bbox、超过 6 个、或该字段已重试过
-- 备注：做法为 bbox 外扩 8px → 放大 2 倍 → 单字段重识别，取更高分，`source=ocr_retry`；单张票据总增量耗时 ≤1.5s，超出放弃并转人工确认
+- 错误：`404/40400`；`403/40301` 非本人；`409/40900` 状态不允许（非 `draft` 或 `extract_status` 非 raw/need_confirm）、版本冲突、已有进行中的重识别；`422/42200` 字段数越界/重复、字段不存在、人工值/已重识别、无 bbox 或来源行
+- 备注：worker 按 `invoice_fields.source_page_no + source_line_no` 回查 `ocr_lines.box_json`（校正图四点）→
+  外扩 `max(8px, 10%×行高)` → clamp → `INTER_CUBIC` 放大 2×（长边 1024）→ `recognize_line`；
+  **仅当新分 > 旧 confidence 时**更新 `raw_text/confidence/source=ocr_retry`，**`field_value` 不变**（改值走人工确认）；
+  随后重算 `overall_confidence` 与 `extract_status`；单张总增量 ≤1.5s，超预算字段记 `skipped`；
+  逐字段 old/new 明细写 `ocr_jobs.metrics.fields[]`；识别为空（非文本区域）记 `skipped:no_text`，不使整单失败
 
 ### POST /api/v1/invoices/{id}/confirm
 - 权限：本人 ｜ 类型：同步 ｜ 幂等：是（已 `confirmed` 重复调用返回当前状态）｜ 实现：S3-6

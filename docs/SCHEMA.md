@@ -235,7 +235,7 @@ erDiagram
 | normalized_value | TEXT | 是 | — | 归一值，金额为两位小数字符串 `1234.56`、日期为 `YYYY-MM-DD`（方案 6.3）✅ | — |
 | raw_text | TEXT | 是 | — | 命中的原始文本行（人工核对页展示"机器看到了什么"）✅ | — |
 | confidence | NUMERIC(4,3) | 是 | — | 字段置信度 = `(0.35×锚点行score + 0.65×值行score) × agreement × rule_factor`（权重/阈值见 `services/confidence.py`）；`validators` 判错封顶 **0.45**（S3-2/D-058）✅ | `CHECK BETWEEN 0 AND 1` ✅ |
-| bbox_json | JSONB | 是 | — | 位置框 **`[x1,y1,x2,y2]`（原图坐标系，两点外接框）**——前端画框只认这一种格式（AGENTS.md §5）；由 `ocr_lines.box_json` 的四点坐标取外接矩形得到 ✅ | — |
+| bbox_json | JSONB | 是 | — | 位置框 **`[x1,y1,x2,y2]`（原图坐标系，两点外接框）**——前端画框只认这一种格式（AGENTS.md §5）；由 `ocr_lines.box_json` 的四点坐标取外接矩形、再经 `to_original` 映射回原图（S3-3/D-060；`ocr_lines` 保持校正图坐标）✅ | — |
 | source | TEXT | 否 | `'ocr'` ⚠ | 枚举见 §9.8（5 值，含二次识别的 `ocr_retry`）✅ | idx ⚠ |
 | source_page_no | INTEGER | 否 | `1` | 命中行所在页码（回查 `ocr_lines` 的唯一键是 `(invoice_id, page_no, line_no)`，缺页码会歧义）⚠ 见「定稿清单」第 3 项 | — |
 | source_line_no | INTEGER | 是 | — | 页内行号，回查 `ocr_lines` 用 ✅ | — |
@@ -448,7 +448,7 @@ erDiagram
 | trace_id | TEXT | 否 | — | 链路追踪 id（请求级，区分同一次操作的多个动作）✅ | idx ⚠ |
 | actor_id | BIGINT | 是 | — | 操作人，FK→`users.id`；系统任务/匿名失败请求为 NULL ✅ | idx ⚠ |
 | actor_role | TEXT | 是 | — | 操作时角色快照（`submitter`/`reviewer`/`admin`/`system`）⚠，见 §9.19 | CHECK ⚠ |
-| action | TEXT | 否 | — | `upload`/`confirm_field`/`sign`/`seal`/`submit`/`verify`/`decrypt`/`review`/`revoke_cert` ✅，见 §9.19 | idx(action) ⚠ |
+| action | TEXT | 否 | — | `upload`/`confirm_field`/`sign`/`seal`/`submit`/`verify`/`decrypt`/`review`/`revoke_cert`/`login_failed`/`logout`/`forbidden`/`field_reread` ✅，见 §9.19b | idx(action) ⚠ |
 | target_type | TEXT | 是 | — | 目标类型（`invoice`/`form`/`certificate`/`key`…）⚠ TODO 值集待定 | — |
 | target_id | BIGINT | 是 | — | 目标 id（**多态，不建外键**：目标可能已作废或跨表）✅ | 组合 idx(target_type, target_id) ⚠ |
 | detail_json | JSONB | 是 | — | 动作细节（改前/改后值、验签失败原因等）；**必须脱敏**，禁止写入明文金额以外的敏感内容与任何密钥材料 ✅ | — |
@@ -606,7 +606,7 @@ CREATE INDEX ix_invoices_draft ON invoices (uploader_id) WHERE status = 'draft';
 | 9.17 | `envelopes.key_algo`；`envelopes.cipher_algo` | `SM2` / `RSA-OAEP`；`SM4-CBC-HMAC-SM3` / `AES-256-GCM` | 方案 5.2 + 6.5.3 ✅ |
 | 9.18 | `review_logs.decision` | `approve` / `reject` | 方案 5.2 ✅ |
 | 9.19 | `audit_logs.actor_role` | `submitter` / `reviewer` / `admin` / `system` | 方案 5.2 三角色 ✅ + `system` ⚠（定时锚定任务） |
-| 9.19b | `audit_logs.action` | `upload` / `confirm_field` / `sign` / `seal` / `submit` / `verify` / `decrypt` / `review` / `revoke_cert` / **`login_failed`** / **`logout`** / **`forbidden`** | 方案 5.2 ✅ + 后 3 值由 S2-2 拍板补（D-040；API.md 的登录失败/登出/越权审计需要它们） |
+| 9.19b | `audit_logs.action` | `upload` / `confirm_field` / `sign` / `seal` / `submit` / `verify` / `decrypt` / `review` / `revoke_cert` / `login_failed` / `logout` / `forbidden` / **`field_reread`** | 方案 5.2 ✅ + 前 3 值由 S2-2 拍板补（D-040）+ `field_reread` 由 S3-3 补（D-061；迁移 0005 只放开 CHECK，审计行仍留 S4-7） |
 | 9.19c | `audit_logs.target_type` | `invoice` / `invoice_field` / `form` / `report_item` / `signature` / `envelope` / `certificate` / `key` / `user` / `template` / `eval_run` ✅ 定稿 | 方案只给"多态引用"语义；值集需覆盖全部受审计对象，否则新动作会写出脏值 |
 
 > **常量落点**：以上枚举在代码侧只允许定义为 `backend/app/models/enums.py` 的 `StrEnum`，CHECK 文本由同一份常量生成，禁止在迁移里手抄字符串（AGENTS.md §4.2）。
