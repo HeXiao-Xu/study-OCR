@@ -59,6 +59,23 @@ def test_settings_parses_minimal_valid_env() -> None:
     assert settings.is_prod is False
 
 
+# --------------------------------------------------------------------------- #
+# S3-1：OCR 流水线配置
+# --------------------------------------------------------------------------- #
+def test_ocr_pipeline_settings_defaults() -> None:
+    settings = _settings()
+    assert settings.ocr_pipeline_deadline_seconds == 165
+    assert settings.ocr_pdf_max_pages == 3
+    assert settings.ocr_worker_max_jobs == 1
+
+
+@pytest.mark.parametrize("value", [0, 3, 10])
+def test_ocr_worker_max_jobs_is_capped(value: int) -> None:
+    # PaddleOCR 模型非线程安全（AGENTS §5）：只允许 1 或 2
+    with pytest.raises(ValidationError):
+        _settings(ocr_worker_max_jobs=value)
+
+
 @pytest.mark.parametrize("missing", ["database_url", "redis_url", "minio_bucket", "jwt_secret"])
 def test_settings_missing_required_field_raises(missing: str) -> None:
     data = {key: value for key, value in _BASE.items() if key != missing}

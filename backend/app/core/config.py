@@ -85,6 +85,13 @@ class Settings(BaseSettings):
     ocr_model_root: str = ""                  # 空 = ~/.paddleocr；离线机器指向预置目录
     ocr_show_log: bool = False
 
+    # ---------- OCR 流水线（S3-1）----------
+    # 协作式 deadline 必须小于 ARQ 的 job_timeout=180，留出写失败状态的余量
+    ocr_pipeline_deadline_seconds: int = 165
+    ocr_pdf_max_pages: int = 3                 # 任务卡"限前 3 页"
+    # PaddleOCR 模型非线程安全（AGENTS §5）；1 是默认，2 只用于 IO/推理重叠对照
+    ocr_worker_max_jobs: int = 1
+
     # ---------- 定时任务（S2-12）----------
     # 每个 API 进程都会起调度器；真正执行前抢 Redis 锁，保证多副本同一次只跑一遍。
     scheduler_enabled: bool = True
@@ -143,6 +150,14 @@ class Settings(BaseSettings):
     def _check_bucket(cls, value: str) -> str:
         if not value or "/" in value:
             raise ValueError("MINIO_BUCKET 不能为空且不能含 '/'")
+        return value
+
+    @field_validator("ocr_worker_max_jobs")
+    @classmethod
+    def _check_worker_jobs(cls, value: int) -> int:
+        # 模型非线程安全 + CPU 推理吃满核心：只允许 1 或 2（AGENTS §5）
+        if not 1 <= value <= 2:
+            raise ValueError("OCR_WORKER_MAX_JOBS 只能是 1 或 2（模型非线程安全）")
         return value
 
     @model_validator(mode="after")

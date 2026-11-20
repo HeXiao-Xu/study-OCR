@@ -29,6 +29,8 @@ class WorkerSettings:
 
     max_tries = job_service.MAX_TRIES
     job_timeout = 180  # 单任务硬超时（AGENTS §10.5）
+    # PaddleOCR 模型非线程安全 + CPU 推理吃满核心：默认并发 1（可配 1–2，S3-1/D-057）
+    max_jobs = get_settings().ocr_worker_max_jobs
     retry_jobs = True
     keep_result = 3600
     health_check_interval = 30
