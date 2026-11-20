@@ -49,13 +49,20 @@ class WorkerSettings:
             )
 
     @staticmethod
-    async def after_job_end(ctx: dict, job) -> None:
-        """一个识别任务结束后，为该用户补位下一个排队作业（单用户并发 ≤N，S3-8）。"""
-        if not job.args:
-            return
+    async def after_job_end(ctx: dict) -> None:
+        """一个识别任务结束后，为该用户补位下一个排队作业（单用户并发 ≤N，S3-8）。
+
+        ARQ 0.28 的钩子只传 `ctx`（`ctx["job_id"]` 是 ARQ 作业键），要拿函数参数里的
+        数据库 job_id 必须回查一次 `Job.info()`；查不到就跳过，绝不因补位失败拖垮 worker。
+        """
+        from arq.jobs import Job
+
         try:
+            info = await Job(ctx["job_id"], ctx["redis"]).info()
+            if info is None or not info.args:
+                return
             moved = await batch_service.dispatch_for_job(
-                int(job.args[0]), queue=ctx["queue"], settings=get_settings()
+                int(info.args[0]), queue=ctx["queue"], settings=get_settings()
             )
         except Exception:  # noqa: BLE001 - 补位失败不能影响 worker 主循环
             logger.warning("批量补位失败", extra={"event": "batch_dispatch_failed"})
