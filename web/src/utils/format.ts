@@ -60,6 +60,7 @@ export const FIELD_LABELS: Record<string, string> = {
   amount: '金额',
   tax_amount: '税额',
   total_amount: '价税合计',
+  total_amount_upper: '大写金额',
   check_code: '校验码',
   passenger_name: '乘车人',
 }

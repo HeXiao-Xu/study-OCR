@@ -1,18 +1,27 @@
 <script setup lang="ts">
 /**
- * 票据详情（S2-11）：字段核对 + 草稿态行内编辑。
+ * 票据详情（S3-5）：左图右表 + 框选高亮。
  *
- * 影像预览按 D-049 采用占位：`GET /invoices/{id}/image` 依赖 S4 的信封/解密（S3-5/S5-4 才实现），
- * 现在临时加明文接口会绕过加密边界，所以这里只展示文件元数据并明确标注"待 S3-5"。
+ * 影像经 `GET /invoices/{id}/image` 带 Bearer 下载成 blob（明文仅本地调试；密文/生产返回 409，
+ * 页面显示"待 S4"而不是空白）。字段框/行框都是**原图**坐标，换算只在 `ImageCanvas` + `utils/bbox.ts`。
  */
 import { ElMessage } from 'element-plus'
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { getInvoiceDetail, reocrFields, updateInvoiceFields } from '../api/invoices'
+import { fetchInvoiceImage, fetchInvoiceLines, getInvoiceDetail, reocrFields, updateInvoiceFields } from '../api/invoices'
 import { ApiError } from '../api/http'
+import FieldTable from '../components/FieldTable.vue'
+import ImageCanvas from '../components/ImageCanvas.vue'
 import { useUserStore } from '../stores/user'
-import type { InvoiceDetail, InvoiceField, InvoiceStatus, InvoiceType, OcrStatus } from '../types/invoice'
+import type {
+  InvoiceDetail,
+  InvoiceField,
+  InvoiceStatus,
+  InvoiceType,
+  OcrLineBox,
+  OcrStatus,
+} from '../types/invoice'
 import {
   AMOUNT_FIELDS,
   EXTRACT_STATUS_LABEL,
@@ -21,7 +30,6 @@ import {
   INVOICE_TYPE_LABEL,
   OCR_STATUS_LABEL,
   OCR_STATUS_TAG,
-  confidenceNumber,
   fieldLabel,
   formatDateTime,
   formatMoney,
@@ -42,6 +50,15 @@ const editable = reactive<Record<string, string>>({})
 const amountConfirm = ref(false)
 const saving = ref(false)
 
+const imageUrl = ref('')
+const imageError = ref('')
+const page = ref(1)
+const lineBoxes = ref<OcrLineBox[]>([])
+const activeField = ref<string | null>(null)
+const hoveredField = ref<string | null>(null)
+const canvasRef = ref<InstanceType<typeof ImageCanvas> | null>(null)
+const tableRef = ref<InstanceType<typeof FieldTable> | null>(null)
+
 const FIELD_ORDER = [
   'invoice_code',
   'invoice_no',
@@ -53,6 +70,7 @@ const FIELD_ORDER = [
   'amount',
   'tax_amount',
   'total_amount',
+  'total_amount_upper',
   'check_code',
   'passenger_name',
 ]
@@ -68,6 +86,8 @@ const canEdit = computed(() => {
   )
 })
 
+const rereadAllowed = computed(() => detail.value?.invoice.status === 'draft')
+
 const sortedFields = computed<InvoiceField[]>(() => {
   const fields = detail.value?.fields ?? []
   return [...fields].sort((a, b) => {
@@ -76,6 +96,31 @@ const sortedFields = computed<InvoiceField[]>(() => {
     return (left === -1 ? 999 : left) - (right === -1 ? 999 : right) || a.id - b.id
   })
 })
+
+const editableNames = computed(
+  () => new Set(sortedFields.value.filter((field) => fieldEditable(field)).map((field) => field.field_name)),
+)
+
+const canvasLines = computed(() =>
+  lineBoxes.value.map((line) => ({
+    lineNo: line.line_no,
+    bbox: line.bbox,
+    score: line.score,
+    fieldName: line.field_name,
+  })),
+)
+
+const fieldBoxes = computed(() =>
+  sortedFields.value
+    .filter((field) => Array.isArray(field.bbox) && field.bbox.length === 4)
+    .map((field) => ({
+      fieldName: field.field_name,
+      label: fieldLabel(field.field_name),
+      bbox: field.bbox as number[],
+      level: field.review_level ?? null,
+      conflict: field.conflict,
+    })),
+)
 
 const hasEditableAmount = computed(() =>
   sortedFields.value.some((field) => AMOUNT_FIELDS.has(field.field_name) && fieldEditable(field)),
@@ -87,46 +132,44 @@ function fieldEditable(field: InvoiceField): boolean {
   return true
 }
 
-function displayValue(field: InvoiceField): string {
-  return field.field_value ?? field.normalized_value ?? ''
-}
-
-function confidenceTag(row: InvoiceField): 'success' | 'warning' | 'danger' | 'info' {
-  // 优先用后端派生的 review_level：阈值只在 confidence.py 一处，前端不重复抄
-  if (row.review_level === 'manual') return 'danger'
-  if (row.review_level === 'review') return 'warning'
-  if (row.review_level === 'auto') return 'success'
-  const number = confidenceNumber(row.confidence)
-  if (number === null) return 'info'
-  if (number < 0.6) return 'danger'
-  if (number < 0.9) return 'warning'
-  return 'success'
-}
-
-function canReread(row: InvoiceField): boolean {
-  const invoice = detail.value?.invoice
-  if (!invoice || invoice.status !== 'draft') return false
-  if (row.source === 'manual' || row.confirmed || row.source === 'ocr_retry') return false
-  return row.source_line_no !== null
-}
-
-async function rereadField(row: InvoiceField): Promise<void> {
-  const invoice = detail.value?.invoice
-  if (!invoice) return
-  reocring.value.add(row.field_name)
-  try {
-    await reocrFields(invoice.id, [row.field_name], invoice.version)
-    ElMessage.success('已提交重识别，稍后自动刷新')
-    // 单次重识别预算 1.5s；2s×5 足够，超时就交给用户手动刷新（不在这里无限轮询）
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 2000))
-      await load()
-    }
-  } catch (error) {
-    ElMessage.error(error instanceof ApiError ? error.message : '重识别失败')
-  } finally {
-    reocring.value.delete(row.field_name)
+function revokeImage(): void {
+  if (imageUrl.value) {
+    URL.revokeObjectURL(imageUrl.value)
+    imageUrl.value = ''
   }
+}
+
+async function loadImage(): Promise<void> {
+  if (!Number.isFinite(invoiceId.value)) return
+  imageError.value = ''
+  revokeImage()
+  try {
+    const blob = await fetchInvoiceImage(invoiceId.value, page.value)
+    imageUrl.value = URL.createObjectURL(blob)
+  } catch (cause) {
+    imageError.value =
+      cause instanceof ApiError && cause.status === 409
+        ? '影像暂不可用（加密链路待 S4）'
+        : '影像加载失败'
+  }
+  try {
+    const data = await fetchInvoiceLines(invoiceId.value, page.value)
+    lineBoxes.value = data.lines
+  } catch {
+    // 行框失败只降级为"只画字段框"，不阻塞字段核对
+    lineBoxes.value = []
+  }
+}
+
+function selectField(fieldName: string | null): void {
+  activeField.value = fieldName
+  if (!fieldName) return
+  canvasRef.value?.scrollToField(fieldName)
+  tableRef.value?.scrollToField(fieldName)
+}
+
+function onEditableUpdate(payload: { field: string; value: string }): void {
+  editable[payload.field] = payload.value
 }
 
 async function load(): Promise<void> {
@@ -139,6 +182,7 @@ async function load(): Promise<void> {
   try {
     detail.value = await getInvoiceDetail(invoiceId.value)
     if (editMode.value) startEdit()
+    await loadImage()
   } catch (cause) {
     detail.value = null
     error.value =
@@ -166,6 +210,24 @@ function startEdit(): void {
 function cancelEdit(): void {
   editMode.value = false
   amountConfirm.value = false
+}
+
+async function rereadField(field: InvoiceField): Promise<void> {
+  const invoice = detail.value?.invoice
+  if (!invoice) return
+  reocring.value.add(field.field_name)
+  try {
+    await reocrFields(invoice.id, [field.field_name], invoice.version)
+    ElMessage.success('已提交重识别，稍后自动刷新')
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      await load()
+    }
+  } catch (cause) {
+    ElMessage.error(cause instanceof ApiError ? cause.message : '重识别失败')
+  } finally {
+    reocring.value.delete(field.field_name)
+  }
 }
 
 async function save(): Promise<void> {
@@ -217,10 +279,20 @@ async function save(): Promise<void> {
   }
 }
 
-watch(invoiceId, () => {
-  editMode.value = false
-  void load()
-}, { immediate: true })
+watch(
+  invoiceId,
+  () => {
+    editMode.value = false
+    page.value = 1
+    activeField.value = null
+    hoveredField.value = null
+    lineBoxes.value = []
+    void load()
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(revokeImage)
 </script>
 
 <template>
@@ -242,7 +314,7 @@ watch(invoiceId, () => {
       <div class="page-heading">
         <div>
           <h2>票据详情</h2>
-          <p>核对识别字段；草稿态可修改，金额字段仅审核人可改并留痕。</p>
+          <p>左图右表核对：hover 字段高亮图上框、点框定位字段；草稿态可修改，金额字段仅审核人可改并留痕。</p>
         </div>
       </div>
 
@@ -301,7 +373,11 @@ watch(invoiceId, () => {
           </el-descriptions-item>
         </el-descriptions>
 
-        <el-checkbox v-if="editMode && hasEditableAmount && store.role === 'reviewer'" v-model="amountConfirm" class="amount-confirm">
+        <el-checkbox
+          v-if="editMode && hasEditableAmount && store.role === 'reviewer'"
+          v-model="amountConfirm"
+          class="amount-confirm"
+        >
           确认修改金额（金额类字段的改动会留痕）
         </el-checkbox>
         <p v-if="editMode" class="edit-hint">
@@ -320,9 +396,28 @@ watch(invoiceId, () => {
 
       <div class="detail-grid">
         <el-card shadow="never" class="preview-card">
-          <template #header>票据影像</template>
-          <el-empty description="影像预览待 S3-5（加密信封落地后）" :image-size="80" />
-          <el-descriptions :column="1" border size="small">
+          <template #header>
+            <div class="card-header">
+              <span>票据影像</span>
+              <span class="card-sub">线条：字段框（绿/黄/红）＋文字行框（灰）</span>
+            </div>
+          </template>
+          <ImageCanvas
+            v-if="imageUrl"
+            ref="canvasRef"
+            :src="imageUrl"
+            :field-boxes="fieldBoxes"
+            :line-boxes="canvasLines"
+            :active-field="activeField"
+            :hovered-field="hoveredField"
+            :page="page"
+            :page-count="detail.invoice.page_count"
+            @select-field="selectField"
+            @hover-field="hoveredField = $event"
+            @update:page="page = $event; loadImage()"
+          />
+          <el-empty v-else :description="imageError || '影像加载中…'" :image-size="80" />
+          <el-descriptions :column="1" border size="small" class="file-meta">
             <el-descriptions-item label="文件名">{{ detail.invoice.filename }}</el-descriptions-item>
             <el-descriptions-item label="类型">{{ detail.invoice.mime }}</el-descriptions-item>
             <el-descriptions-item label="大小">
@@ -339,68 +434,24 @@ watch(invoiceId, () => {
           <template #header>
             <div class="card-header">
               <span>识别字段（{{ sortedFields.length }}）</span>
-              <span class="card-sub">置信度低于 90% 标黄、低于 60% 标红并必须人工核对；冲突字段不自动覆盖</span>
+              <span class="card-sub">低于 90% 黄底、低于 60% 或冲突红底；冲突不自动覆盖</span>
             </div>
           </template>
-          <el-table :data="sortedFields" size="small" row-key="id">
-            <el-table-column label="字段" width="130">
-              <template #default="{ row }">{{ fieldLabel(row.field_name) }}</template>
-            </el-table-column>
-            <el-table-column label="值" min-width="180">
-              <template #default="{ row }">
-                <el-input
-                  v-if="editMode && fieldEditable(row)"
-                  v-model="editable[row.field_name]"
-                  size="small"
-                  :data-field="row.field_name"
-                />
-                <span v-else>{{ displayValue(row) || '—' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="置信度" width="90">
-              <template #default="{ row }">
-                <el-tag :type="confidenceTag(row)" effect="plain" size="small">
-                  {{ formatPercent(row.confidence) }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="来源" width="90">
-              <template #default="{ row }">
-                {{ row.source_line_no === null ? '—' : `第 ${row.source_line_no} 行` }}
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="120">
-              <template #default="{ row }">
-                <el-tag v-if="row.conflict" type="danger" size="small" effect="plain">冲突</el-tag>
-                <el-tag v-else-if="row.need_review" type="warning" size="small" effect="plain">
-                  待确认
-                </el-tag>
-                <el-tag v-else-if="row.confirmed" type="success" size="small" effect="plain">
-                  已确认
-                </el-tag>
-                <span v-else class="muted">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="110">
-              <template #default="{ row }">
-                <el-button
-                  v-if="canReread(row)"
-                  size="small"
-                  text
-                  type="primary"
-                  :loading="reocring.has(row.field_name)"
-                  @click="rereadField(row)"
-                >重识别</el-button>
-                <el-tag v-else-if="row.source === 'ocr_retry'" size="small" type="info" effect="plain">
-                  已重识别
-                </el-tag>
-                <span v-else class="muted">—</span>
-              </template>
-            </el-table-column>
-            <template #empty>
-              <el-empty description="还没有识别字段（OCR 流水线尚未产出）" :image-size="70" />
-            </template>
-          </el-table>
+          <FieldTable
+            ref="tableRef"
+            :fields="sortedFields"
+            :edit-mode="editMode"
+            :editable="editable"
+            :editable-names="editableNames"
+            :reocring="reocring"
+            :active-field="activeField"
+            :hovered-field="hoveredField"
+            :reread-allowed="rereadAllowed"
+            @hover-field="hoveredField = $event"
+            @select-field="selectField"
+            @reread="rereadField"
+            @update:editable="onEditableUpdate"
+          />
         </el-card>
       </div>
     </template>
@@ -442,20 +493,22 @@ watch(invoiceId, () => {
 }
 .detail-grid {
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-columns: minmax(380px, 1.05fr) minmax(460px, 1fr);
   gap: 16px;
   align-items: start;
 }
 .preview-card {
-  position: sticky;
-  top: 16px;
+  min-width: 0;
 }
-@media (max-width: 960px) {
+.fields-card {
+  min-width: 0;
+}
+.file-meta {
+  margin-top: 12px;
+}
+@media (max-width: 1100px) {
   .detail-grid {
     grid-template-columns: 1fr;
   }
-}
-.muted {
-  color: var(--el-text-color-secondary);
 }
 </style>
