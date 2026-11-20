@@ -6,10 +6,10 @@
 
 ## 当前状态
 
-- 阶段：**阶段 3（识别流水线上线，M2）进行中**（S3-1 ~ S3-5 已完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、**S3-1 ~ S3-5**（共 30 张卡，全部 ✅ 通过）
-- 最近完成：**S3-5 详情页左图右表 + 框选高亮**（image/lines 接口、canvas 画字段框与行框、缩放/平移后数值对齐）
-- 下一步：**S3-6 字段修正与确认 API**
+- 阶段：**阶段 3（识别流水线上线，M2）进行中**（S3-1 ~ S3-6 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、**S3-1 ~ S3-6**（共 31 张卡，全部 ✅ 通过）
+- 最近完成：**S3-6 字段修正与整单确认**（`POST /confirm` 四类闸门 + 逐字段 422；实测 422→修复→200）
+- 下一步：**S3-7 重复报销检测**
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
@@ -56,7 +56,7 @@
 [x] S3-3 局部二次识别（crop 放大重识别）
 [x] S3-4 识别结果 JSON Schema 与落库
 [x] S3-5 票据详情页：图像与字段并排 + 框选高亮 ★关键
-[ ] S3-6 字段修正与确认 API
+[x] S3-6 字段修正与确认 API
 [ ] S3-7 重复报销检测
 [ ] S3-8 批量上传与进度
 
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S3-6 | `backend/app/services/{rule_source,invoice_service}.py`（`resolve_rules` 共享；`collect_confirm_errors` 四类闸门；`confirm_invoice` 幂等/版本/落库）、`api/v1/invoices.py` + `schemas/invoice.py`（`POST /{id}/confirm`、`ConfirmRequest`）、`web/src/{api/invoices.ts,types/invoice.ts,views/InvoiceDetail.vue,components/FieldTable.vue}`（确认整单/逐字段确认/422 列表）、`backend/tests/{test_rule_source,test_confirm}.py`、`docs/{spec,plan}/s3-6-confirm.md` | ① 闸门顺序 必填→冲突→低置信未确认→validators，同字段只留第一条，`422/42201` + `data.fields`；② 真实冒烟（vat_general）：首次确认 **422**，fields=amount(冲突)/invoice_no/tax_amount/total_amount/total_amount_upper(低置信)；reviewer 修金额 200、submitter 逐字段确认 200 → 再确认 **200**，`status/extract_status=confirmed`、version 3（0→1→2→3）；③ 幂等：已确认再调 200 且版本不再增加；权限：他人 404 / reviewer 403 / admin 404；旧 version 409；④ 并发验收：同 `version=0` 连发两次 PATCH → 200 + 409/40900；⑤ 详情页新增“确认整单”与逐字段“确认”按钮 + 422 字段列表；截图 `backend/eval/results/s36-confirmed.png`（页面显示“已确认”）；⑥ 单元 422 / 集成 222 passed，`typecheck`/`build` 通过，`alembic check` 零差异（head 0005，无迁移）；⑦ 冒烟票据/对象/账号已清理 | ✅ 通过（审计行留 S4-7；PATCH 未重写） |
 | S3-5 | `backend/app/services/image_service.py`（新：照片原字节 / PDF 250DPI / preprocessed；明文闸门）、`backend/app/services/line_service.py`（新：ocr_lines 四点→原图外接框、不含文本）、`schemas/invoice.py`（`OcrLineBoxOut/InvoiceLinesData`）、`api/v1/invoices.py`（`GET /{id}/image`、`GET /{id}/lines`）、`backend/tests/{test_image_service,test_lines_service,test_invoice_media}.py`、`web/src/utils/bbox.ts`、`web/src/components/{ImageCanvas,FieldTable}.vue`、`web/src/views/InvoiceDetail.vue`（左图右表）、`web/src/api/{http,invoices}.ts`、`web/src/types/invoice.ts`、`docs/{spec,plan}/s3-5-detail-canvas.md` | ① `GET /image`：本人/reviewer 200、他人/admin 404、密文/明文关闭 409、页码越界 422；响应头 `ETag/Cache-Control: private,no-store/nosniff`；PDF 按 250 DPI（A4 实测 2066±3×2924±3）；② `GET /lines`：行框经 `to_original` 映射（假 0.5× 断言 `[10,20,300,60]→[5,10,150,30]`），**响应不含 text**，字段归属正确，畸形框跳过；③ 真实冒烟（vat_general）：图片 260403B JPEG、40 行框、12 字段框；显示 532px 时 `scale=0.338854`，`amount` 框 `[841,772,946,795]→[285,262,321,270]`、`total_amount` 同理；④ 点两次放大后 `scale=0.487898`（=×1.44）、框坐标按新比例重算仍落在图片范围内、`visibleLines` 40→35（culling 生效）、`drawMs` 0.39/0.48ms（<16）；截图 `/tmp/s35-normal.png`、`/tmp/s35-zoom.png`（需用户目视抽查）；⑤ 单元 422 / 集成 211 passed，`typecheck`/`build` 通过，`alembic check` 零差异（head 0005，本卡无迁移）；⑥ 冒烟票据/对象/账号已清理 | ✅ 通过（明文影像仅本地；校验失败文案待 S3-6；行框接口为本卡新增契约） |
 | S3-4 | `backend/app/schemas/ocr.py`（新：唯一契约，含 `FieldError`/`raw_value`）、`backend/app/ocr/types.py`（转 re-export）、`backend/app/ocr/extractor.py`（`_extract_matched` 保留票面原文）、`backend/app/services/ocr_pipeline.py`（`field_value=raw`、`normalized_value=归一`）、`backend/app/services/invoice_service.py` + `schemas/invoice.py` + `api/v1/invoices.py`（`GET /{id}/fields`）、`scripts/export_ocr_schema.py` + `docs/schemas/ocr_result.schema.json`、`web/src/types/ocr.ts`、`backend/tests/test_ocr_schema.py` + 补 `test_extractor/test_ocr_pipeline/test_invoices`、`docs/{spec,plan}/s3-4-ocr-contract.md` | ① 契约单一来源：5 个模型 + `raw_value`；`ocr/types.py` 只是 re-export（同一类对象断言）；② JSON Schema 入库并由 `--check` + 单测深度比对；前端 `types/ocr.ts` 与模型字段**完全一致**（自动比对）；③ 字段名白名单测试发现并修正 `total_amount_upper` 不在可编辑白名单（详情页会永远无法确认）；④ `GET /fields` 实测：`field_value`=`￥1,796.37`（票面原文）、`normalized_value`=`1796.37`、`review_level` 三档齐全、`conflicts` 只回 `candidate_conflict`、`overall_confidence=0.900`；⑤ `ocr_lines` 单条 executemany 断言通过；⑥ 本卡**无迁移**（head 仍 0005，造空迁移属假动作）；⑦ 单元 415 / 集成 198 passed，`typecheck`/`build` 通过；冒烟数据与账号已清理 | ✅ 通过（旧 `field_value=归一值` 的历史数据不迁移，见遗留 #58；`secrets/` 未动） |
 | S3-3 | `backend/app/ocr/refine.py`（新：外扩/clamp/2×放大/四点→外接框 + 坐标映射）、`backend/app/services/reocr_service.py`（新：`submit_reocr` 校验 + `run_reocr` 写回）、`backend/app/api/v1/invoices.py`（`POST /{id}/reocr` 202）、`backend/app/schemas/invoice.py`（`ReocrRequest/ReocrData`）、`backend/app/tasks/{ocr_task,queue,worker}.py`（`reocr_task` + `enqueue_reocr`）、`backend/app/models/enums.py` + `alembic/versions/0005_audit_action_field_reread.py`（`field_reread` 枚举）、`backend/app/core/config.py` + `.env.example`（4 个 `REREAD_*`）、`backend/app/services/ocr_pipeline.py`（bbox 改原图坐标）、`backend/tests/{test_refine,test_reocr}.py` + 补 `test_ocr_pipeline/test_config/test_models`、`web/src/{api/invoices.ts,types/invoice.ts,views/InvoiceDetail.vue}`、`scripts/reread_eval.py`（新）、`docs/{spec,plan}/s3-3-reread.md` | ① 契约按 API.md 的异步 `reocr`（202+job_id），审核 403/他人 404/非 draft 409/字段非法 422/重复作业 409/入队失败 503；② worker：按 `ocr_lines` 四点裁剪（外扩 max(8px,10%行高) → 2× INTER_CUBIC，长边 1024）→ `recognize_line`，**只改 raw_text/confidence/source=ocr_retry，`field_value` 不变**；整单 `overall_confidence/extract_status` 重算；1.5s 预算、空文本/超预算记 skipped；③ 40 张离线验收：112 个低置信字段中 **109 个提升（97.3%）**，平均 Δ **+0.180**（total_amount 38/38、seller_name 22/22、amount/tax 各 10/10、invoice_date 20/21）；④ HTTP 冒烟：amount 0.743→**0.952**、tax 0.690→**0.946**，`source=ocr_retry`、值未变、整单 0.899；⑤ 坐标修正：`invoice_fields.bbox_json` 写原图坐标（`ocr_lines` 保持校正图）；⑥ 迁移 0005 只放开 `field_reread` CHECK（审计行留 S4-7）；单元 396 / 集成 194 passed；⑦ 冒烟数据、对象与临时账号已清理 | ✅ 通过（候选选择/改值归 S3-6；D-060/D-061） |
@@ -181,7 +182,7 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 26 | `q` 用 `ILIKE` 子串，无 trigram/GIN 索引 | 5 万行 p95 32.3ms，可接受 | 真实数据规模上升时评估 `pg_trgm`；论文里作为范围限定写明 |
 | 27 | 字段修改的审计行（`action=confirm_field`）未写 | 哈希链在 S4-7；当前只写应用日志（仅字段名，不含值） | S4-7 实现链时补 before/after（脱敏），D-040 原则 |
 | 28 | 真 HTTP 建单链路待 S2-6 | 契约建票是 `POST /invoices/upload`（S2-6） | S2-6 调用 `create_draft` 后补 curl 建单→改字段→详情；S3-6 复用本卡字段修改 |
-| 29 | 字段修改的 42201 较严（任何未决冲突都回滚） | 契约字面如此；已有冲突的票据需一次性提交修复字段 | S3-6 若需放宽，先改 API.md（D-043） |
+| 29 | 字段修改的 42201 较严（任何未决冲突都回滚） | 契约字面如此；S3-6 的 confirm 改为逐字段列出，PATCH 仍整体回滚 | 若评审要求 PATCH 也逐字段回滚，先改 API.md（D-065） |
 | 30 | 上传后的 `ocr_jobs` 只落 `pending`，未真正入队/执行 | ARQ 框架属 S2-7，当前没有 Worker | S2-7 用 ARQ 投递并在提交后入队；上传接口形状不变（D-044） |
 | 31 | S4 前本地 MinIO 存明文（`is_cipher=false`） | 信封/SM4 未实现；prod 已禁止该配置 | S4-3/S4-4 接入后切密文、`is_cipher=true`、删除 `STORAGE_ALLOW_PLAINTEXT` 开关 |
 | 32 | 不支持 TIFF | 契约白名单只有 jpeg/png/pdf（任务卡含 TIFF） | 业务确需时先改 API.md + 魔数白名单 |
@@ -198,7 +199,7 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 43 | 批量上传完不自动跳详情 | 任务卡写"上传完成跳 /invoices/{id}"；20 个文件跳走会丢进度 | 逐行给"查看详情"链接；单文件也不强制跳，S2-11 详情页可用后再评估 |
 | 44 | ✅ 已闭合（S3-5）：`GET /invoices/{id}/image` 已实现（明文仅本地，密文/prod 409 待 S4） | — | — |
 | 45 | 详情页影像可见，但**仅限本地明文调试**（`STORAGE_ALLOW_PLAINTEXT=true` 且 `is_cipher=false`） | S4 信封未接入；生产/密文下接口返回 409，页面显示"待 S4" | S4-4/S4-6 接入后在此处解密；论文如实写"影像加密链路未完成前仅本地演示" |
-| 46 | 字段编辑只改值，不提供冲突候选选择/批量确认 | S2-11 范围限定；S3-2 已让冲突字段强制 `review_level=review`，但候选选择 UI 仍未做 | S3-5 做候选交互，S3-6 做批量确认 |
+| 46 | 字段编辑只改值，不提供冲突候选选择/批量确认 | S3-6 补了逐字段“确认”与整单确认；**冲突候选选择 UI 仍未做**（S3-5 只做了画框） | 候选选择留 S5/S7 前端打磨；当前冲突需手工改值后确认 |
 | 47 | 字段中文标签/票种/状态文案维护在前端 | 后端没有字典接口（API.md 未定义） | 新增字段时同步 `web/src/utils/format.ts` 与后端 `INVOICE_FIELD_NAMES` |
 | 48 | `anchor_audit_task` 仍是占位（只日志） | 审计哈希链在 S4-7 | S4-7 替换实现，调度骨架不动；现在不得伪造审计行 |
 | 49 | 成功执行后锁保留到 TTL（默认 1h），失败才释放 | 防止同一 tick 多副本重复执行；TTL 必须小于调度周期 | 默认每日任务下 1h 足够；若将来改高频 cron，必须同步调小 TTL |
@@ -211,6 +212,9 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 58 | S3-3 之前写入的 `invoice_fields.field_value` 是归一值而非票面原文 | 本卡起新识别按契约写原文；旧行不自动迁移（本地无字段行） | 生产如有旧数据需重跑识别；如需保留人工修正值则需逐行迁移脚本（当前无需求） |
 | 59 | 详情页红底只覆盖"冲突候选 / manual 档"，**没有校验器错误文案**（如金额≠金额+税额） | 校验错误在确认动作（S3-6）才算，避免两处规则漂移 | S3-6 confirmation 接口返回 `FieldError{field,code,message}` 后接到详情页 |
 | 60 | 行框接口 `GET /invoices/{id}/lines` 是本卡**新增契约** | API.md 原先没有行级读取接口；"点字定位字段"需要它 | 已写入 API.md §2；若评审认为多余可只保留字段框（前端失败自动降级） |
+| 61 | `confirm_field` 审计行仍未写 | 只加了应用日志；哈希链 S4-7 未实现，写行=伪造 hash | S4-7 与 login_failed/logout/forbidden/field_reread 一起补 |
+| 62 | confirm 只有"本人"入口，reviewer 不能确认/反确认 | 契约如此；`confirmed` 后无回退路径（S5 才允许 void/审核） | S5 审核流再定 reviewer 复核与反确认；论文写明这是刻意的审计约束 |
+| 63 | 逐字段“确认”按钮只做了 typecheck/build，未做浏览器点击自动化 | 它走的是已被 `test_confirm` 覆盖的 `PATCH /fields confirm=true` 路径 | 若后续引入前端测试框架（遗留 #40），补一条点击用例 |
 | 50 | API.md 仍保留 S3/S4/S5 未实现接口的标注 | 对账只保证"已实现 → 有文档"这一个方向 | 后续任务把对应接口实现后，更新 API.md 的实现标记与测试覆盖 |
 | 51 | 界面仍是第一版视觉，没有设计稿/完整设计系统 | 任务卡没有美化项，先保证主流程与角色落地 | S3-5 会重做详情工作区；其余页面按反馈继续打磨（颜色/密度/品牌素材） |
 | 52 | 登录页品牌区是文字 + 字母 S 占位 | 没有校徽/系统 Logo 素材 | 答辩前可替换为学校/项目 Logo；布局不需要改 |

@@ -1,12 +1,12 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-20（S3-5 详情页影像画框上线）
+> 最后更新：2026-11-20（S3-6 整单确认上线）
 
 ## 1. 一句话现状
 
-**阶段 3 已通五张卡**：S3-1（识别全链路）+ S3-2（置信度三档与队列）+ S3-3（局部二次识别）+
-S3-4（识别产物契约）+ S3-5（详情页左图右表 + 框选高亮）；**下一步 S3-6 字段修正与确认 API**。
+**阶段 3 已通六张卡**：S3-1（识别全链路）+ S3-2（置信度三档与队列）+ S3-3（局部二次识别）+
+S3-4（识别产物契约）+ S3-5（详情页左图右表）+ S3-6（整单确认）；**下一步 S3-7 重复报销检测**。
 
 当前浏览器可走通：登录（三角色）→ 按角色落地 → 上传（"识别中… N%"）→ 票据列表/详情
 （字段带 `review_level`；低置信字段可点"重识别"，`source=ocr_retry`）→ reviewer 的"待核对"=
@@ -114,6 +114,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S3-3 局部重识别（40 张 / 112 个低置信字段） | **109 个提升（97.3%）**、平均 Δ **+0.180** | `scripts/reread_eval.py`（`reread_eval_*.json`） |
 | S3-4 识别产物契约 | `docs/schemas/ocr_result.schema.json`（5 模型）；`GET /fields` 实测原文 `￥1,796.37` / 归一 `1796.37` | `scripts/export_ocr_schema.py --check`；`tests/test_ocr_schema.py` |
 | S3-5 详情页画框 | 532px 显示 `scale=0.338854`；放大两次 `0.487898`（×1.44）；`drawMs` 0.39/0.48ms；40 行框/12 字段框 | `ui_smoke --eval` 数值断言 + `tests/test_{image_service,lines_service,invoice_media}.py` |
+| S3-6 整单确认 | 真实票首次 confirm **422**（5 字段：冲突1+低置信4）→ 修复后 **200 confirmed**（version 0→3）；同 version 并发 PATCH 第二次 **409** | `tests/{test_confirm,test_rule_source}.py` + 冒烟脚本 |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -146,6 +147,9 @@ curl -s localhost:8000/api/v1/invoices/1/ocr-status -H "Authorization: Bearer <t
 curl -s -o /tmp/inv.jpg -w "%{http_code} %{content_type}\n" \
   "localhost:8000/api/v1/invoices/1/image?page=1&variant=original" -H "Authorization: Bearer <token>"
 curl -s "localhost:8000/api/v1/invoices/1/lines?page=1" -H "Authorization: Bearer <token>"
+# S3-6 整单确认（失败 422/42201 + data.fields；成功 200 confirmed）
+curl -s -X POST "localhost:8000/api/v1/invoices/1/confirm" \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"version":1}'
 # 前端（Vite 5173 + 无头 Edge 9222）：类型检查/构建 + 真实登录冒烟（需要先起后端）
 (cd web && npm run typecheck && npm run build)
 # 无头 Edge（另起一个进程；bash 路径，PowerShell 用引号包住 exe）
@@ -223,41 +227,44 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-062 | 识别产物契约唯一来源 `schemas/ocr.py`（types 转 re-export）；`field_value=raw_value`、`normalized_value=归一`；`GET /fields` conflicts 只回候选冲突；本卡无迁移 |
 | D-063 | `GET /image` 按契约实现；明文仅 `STORAGE_ALLOW_PLAINTEXT`（密文/prod 409 待 S4）；PDF 固定 250 DPI；前端 blob 取图 |
 | D-064 | 新增 `GET /lines`（服务端映射原图坐标、不返回文本）；canvas 字段/行框分级 + culling；缩放改 CSS 尺寸而非 transform |
+| D-065 | 整单确认闸门顺序 必填→冲突→低置信未确认→validators；本人权限（reviewer 403）；幂等 + `version+1`；审计行留 S4-7；PATCH 不重写 |
 
-## 7. 下一步：S3-6 字段修正与确认 API
+## 7. 下一步：S3-7 重复报销检测
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S3-6；
-- 流程（AGENTS §11）：spec（`docs/spec/s3-6-*.md`）→ plan → 用户确认 → 写码；
-- **已提前完成、不要重复实现**：`PATCH /invoices/{id}/fields` 在 S2-5 已实现（乐观锁 `version`、
-  金额仅 reviewer + `confirm_amount`、42201 未决冲突回滚、`source=manual`、修改后 `extract_status=need_confirm`）；
-  S3-2 的 `review_level` 已用于前端着色；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S3-7；
+- 流程（AGENTS §11）：spec（`docs/spec/s3-7-*.md`）→ plan → 用户确认 → 写码；
+- **先报契约冲突（必须先拍板）**：任务卡要求 `GET /invoices/{id}/duplicate-check` 返回
+  `{level: strong|weak|none, matches:[...]}`；但 `docs/API.md` 已定稿 **D-013：弱重复不做独立接口**，
+  结果只体现在上传响应 `dedup` 与详情 `invoices.duplicate_of`。要么扩 API.md 新增该接口，要么按 D-013
+  用 `duplicate_of` + 上传 `dedup` 表达——**不要直接二选一，先报用户**；
+- 已就绪、不要重复实现：
+  1. **强重复**：`invoices (invoice_code, invoice_no) WHERE status <> 'void'` 部分唯一索引已在 0001；
+     流水线 `_persist` 用 savepoint 捕获唯一冲突并回退（metric `duplicate_invoice_no`，S3-1）；
+  2. **影像重复**：上传按分块 `sha256` 去重 → `409/40901` + 已有 `invoice_id`（S2-6）；
+  3. `invoices.duplicate_of` 列与 `InvoiceOut.duplicate_of` 已存在（**当前从未被赋值**）；
 - **本卡要补**：
-  1. `POST /invoices/{id}/confirm`（API.md §2 已定义：无参或可选 `version`；200 → `InvoiceOut`
-     `status=confirmed`、`extract_status=confirmed`）：**服务端重跑 `validators`**，必填齐全且全部通过才置
-     confirmed，否则 `422` + 逐字段 `{field, error}`（用 `schemas/ocr.py::FieldError`）；
-  2. 权限矩阵：谁能 confirm（契约写"本人"；reviewer 是否复核确认？与 S3-2 遗留 #55 的 reocr 权限一起定）；
-  3. 前端详情页加"确认整单"按钮 + 422 逐字段错误展示（现在只有"编辑字段/保存"）；
-  4. `audit_logs(action=confirm_field)` 行：哈希链 S4-7 未实现，**仍不写行**（D-040/D-061 口径）；
-- **必须先对账的契约点**：
-  - `confirm` 要同时改 `status` 与 `extract_status`，`version` 乐观锁语义与 PATCH 一致（建议自增）；
-  - "校验全部通过"包含金额合计/税号/日期/大写金额规则，必须用**库内当前值**重跑，不能信前端标记；
-    `conflict=true` 的字段也要处理（未决冲突应 422，不能带病确认）；
-  - `confirm` 与 `PATCH fields` 的提交顺序：同一票据两窗口并发时，后者必须 409；
-- 已就绪：`validators.run_validators`（纯函数，返回 `ValidationIssue{field,code,message,severity}`）、
-  `schemas/ocr.py::FieldError`、`invoice_fields` 全字段、`transition` 状态机、`GET /fields`；
-- 验收（任务卡）：两窗口同时改同一字段，后者 409；缺必填字段 confirm 返回 422 并列出字段名。
+  1. `services/duplicate.py`：三维度检测（强/影像/弱），返回结构化 matches；
+  2. 弱重复口径：同金额 + 同开票日期 + 同销方税号，**发票号不同** → warning 列表，**不阻断**
+     （任务卡明确：硬阻断会误伤连号票）；`level` 优先级 strong > weak > none；
+  3. 提交报销前再查一次影像 sha256（上传已拦，但库可能被外部导入/旧数据绕过）；
+  4. 并发测试：两个请求同时建同号单，只能成功一个（应用层预检 + 唯一索引兜底）；
+- **坑**：唯一索引是最后一道闸，应用层预检不能省（并发窗口）；弱重复不能做成硬阻断；
+  同号第二张的 409 响应要带已有 `invoice_id`（与上传 409 同形状，前端好跳转）；
+- 验收（任务卡）：同发票号第二张单 409；同图换发票号上传被拦；弱重复给出 warning 列表。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：S3-1 ~ S3-5 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
+1. **push**：S3-1 ~ S3-6 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
-3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
+3. `taxi_ticket` 整单 0.200：S3-3 已试过低置信二次识别（整体 97.3% 提升，但出租车票字太少，提升有限）；
+   论文如实写"出租车票是已知短板"，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；
 5. ✅ S3-1 已把 `intake.prepare_pages` 接进 Worker（PDF 前 3 页 + 照片重拍提示）；
 6. 真实样本只剩 1 份（数电票 PDF，仅本地）：论文需如实写"合成集为主 + 1 份真实件定性校验"；
 7. 审计动作：`login_failed`/`logout`/`forbidden` 枚举已加（0002），但 S2-2 **未写审计行**（哈希链在 S4-7）；
    `template_create` 仍缺（S2-8 已完成但未写审计），`report_create`/`issue_cert` 也未加；S4-7 前一起补。
-8. `GET /invoices/{id}/image` 未实现（依赖 S4 信封，API 标 S3-5/S5-4）：详情页目前是占位，不做明文后门。
+8. `GET /invoices/{id}/image` 已实现（S3-5），但**明文仅本地**（`STORAGE_ALLOW_PLAINTEXT=true` 且 `is_cipher=false`）；
+   密文/生产返回 `409/40900`，页面显示"待 S4"——S4 接入信封后在此处解密，不做明文后门。
 9. 管理端模板页已补（D-052），但**新建票种入口已按用户要求移除**（D-054）：票种固定 5 类 + unknown；
    新增票种必须改 SCHEMA/迁移/模板/样本并发版，不能从管理端新建。
 

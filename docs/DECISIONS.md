@@ -1273,3 +1273,34 @@
   行框与字段框在视觉上可能重叠，命中测试优先字段框。
 - **验证**：`tests/test_lines_service.py` 4 条；`tests/test_invoice_media.py` 行框 3 条；
   冒烟：`scale 0.338854 → 0.487898`（×1.44）、框坐标按比例一致、`visibleLines 40→35`、`drawMs 0.39/0.48ms`。
+
+---
+
+## D-065 整单确认闸门：四类优先级、本人权限、幂等与 version+1；审计行留 S4-7
+
+- **日期**：2026-11-20（S3-6，用户确认）
+- **背景**：`PATCH /fields` 在 S2-5 已实现（乐观锁/权限矩阵/42201），但 `POST /confirm` 一直缺；
+  任务卡要求"服务端重跑 validators，必填齐备且全部通过才置 confirmed，否则 422 + 逐字段 {field,error}"，
+  同时要求"每次修改写 audit_logs(before/after)"。契约 §2 confirm 把错误定为 `422/42201` + `data.fields`。
+- **决策**：
+  1. **闸门与顺序**（`collect_confirm_errors`，纯函数）：必填缺失 → 未决冲突 → 低置信未确认
+     （`need_review=true 且 confirmed=false`）→ `run_validators` 的 error；**同一字段只留第一条**。
+     理由：给用户的是"先解决什么"，先补必填再消冲突，最后才是细粒度校验。
+  2. **必填集来源**：`services/rule_source.resolve_rules(db, invoice_type)` —— DB active 模板优先、YAML 回退，
+     与流水线**同一实现**（新模块 `rule_source.py`）。否则"确认用的必填集和识别用的规则不一样"会静默漂移。
+  3. **权限按契约"本人"**：仅 `uploader_id == user.id`；reviewer → 403、admin → 404；
+     审核/复核在 S5。**不擅自放宽**。
+  4. **幂等**：已 `confirmed` 再调返回当前 InvoiceOut，**不再 `version += 1`**；
+     非 `draft`（如 void/archived）→ 409；可选 `version` 不匹配 → 409；通过后 `status` 与
+     `extract_status` 同事务置 `confirmed`、`version += 1`。
+  5. **审计行仍不写**：`audit_logs.prev_hash/entry_hash` 非空且 64 位 hex，哈希链 S4-7 才实现；
+     本卡只打应用日志（`event=invoice_confirmed`，不含字段值），与 D-040/D-061 同口径。
+  6. **不重写 PATCH**：任务卡重复描述 `PATCH /fields`，S2-5 已实现；卡片里自相矛盾的权限句
+     （"reviewer 不能改金额（金额修改需 reviewer）"）按 **D-017** 执行：submitter 不能改金额、
+     reviewer 改金额需 `confirm_amount=true`。
+  7. **前端**补"确认整单"与**逐字段"确认"**按钮（后者用 `PATCH confirm=true` 提交当前值）——
+     否则低置信字段在界面上无法消除，422 无法在 UI 内闭环。
+- **代价**：确认后无回退路径（改字段需 S5 的反确认/void）；reviewer 做了修改也要等本人确认；
+  冲突候选仍只能手工改值（候选选择 UI 未做，遗留 #46）。
+- **验证**：`tests/test_confirm.py` 9 条（happy/幂等/必填/冲突/低置信/校验失败/权限/状态与版本/并发 409）；
+  `tests/test_rule_source.py` 2 条；真实冒烟：首次 confirm **422**（5 个字段）→ reviewer/submitter 修复 → **200 confirmed**（version 3）。
