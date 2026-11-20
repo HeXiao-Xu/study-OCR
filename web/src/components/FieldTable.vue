@@ -21,18 +21,13 @@ const props = defineProps<{
   editMode: boolean
   editable: Record<string, string>
   editableNames: Set<string>
-  reocring: Set<string>
   activeField: string | null
   hoveredField: string | null
-  rereadAllowed: boolean
-  canConfirm: boolean
 }>()
 
 const emit = defineEmits<{
   'hover-field': [fieldName: string | null]
   'select-field': [fieldName: string]
-  reread: [field: InvoiceField]
-  'confirm-field': [field: InvoiceField]
   'update:editable': [payload: { field: string; value: string }]
 }>()
 
@@ -140,30 +135,6 @@ defineExpose({ scrollToField, amountEditable })
         <el-tag v-if="row.conflict" type="danger" size="small" effect="plain">冲突</el-tag>
         <el-tag v-else-if="row.need_review" type="warning" size="small" effect="plain">待确认</el-tag>
         <el-tag v-else-if="row.confirmed" type="success" size="small" effect="plain">已确认</el-tag>
-        <span v-else class="muted">—</span>
-      </template>
-    </el-table-column>
-    <el-table-column label="操作" width="110">
-      <template #default="{ row }">
-        <el-button
-          v-if="canConfirm && row.need_review && !row.confirmed"
-          size="small"
-          text
-          type="success"
-          @click.stop="emit('confirm-field', row)"
-        >确认</el-button>
-        <el-button
-          v-if="rereadAllowed && row.source_line_no !== null && row.source !== 'manual' && !row.confirmed && row.source !== 'ocr_retry'"
-          size="small"
-          text
-          type="primary"
-          title="重识别只更新置信度与原文，不会自动改字段值"
-          :loading="reocring.has(row.field_name)"
-          @click.stop="emit('reread', row)"
-        >重识别</el-button>
-        <el-tag v-else-if="row.source === 'ocr_retry'" size="small" type="info" effect="plain">
-          已重识别
-        </el-tag>
         <span v-else class="muted">—</span>
       </template>
     </el-table-column>

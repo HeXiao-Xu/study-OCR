@@ -15,7 +15,6 @@ import {
   fetchInvoiceImage,
   fetchInvoiceLines,
   getInvoiceDetail,
-  reocrFields,
   reviewInvoice,
   updateInvoiceFields,
 } from '../api/invoices'
@@ -53,7 +52,6 @@ const router = useRouter()
 const store = useUserStore()
 
 const detail = ref<InvoiceDetail | null>(null)
-const reocring = ref(new Set<string>())
 const confirmErrors = ref<ConfirmError[]>([])
 const duplicates = ref<DuplicateCheckData | null>(null)
 const confirming = ref(false)
@@ -117,8 +115,6 @@ const canReview = computed(() => {
       !invoice.reviewed_at,
   )
 })
-
-const rereadAllowed = computed(() => detail.value?.invoice.status === 'draft')
 
 const sortedFields = computed<InvoiceField[]>(() => {
   const fields = detail.value?.fields ?? []
@@ -249,76 +245,6 @@ function cancelEdit(): void {
   amountConfirm.value = false
 }
 
-async function refreshDetailOnly(): Promise<void> {
-  // 只重拉 JSON：不动影像/行框/重复检测，避免"重识别一次整页闪五次"
-  detail.value = await getInvoiceDetail(invoiceId.value)
-}
-
-async function rereadField(field: InvoiceField): Promise<void> {
-  const invoice = detail.value?.invoice
-  if (!invoice) return
-  reocring.value.add(field.field_name)
-  try {
-    await reocrFields(invoice.id, [field.field_name], invoice.version)
-    const oldConfidence = field.confidence
-    ElMessage.info('已提交重识别（只更新置信度与原文，字段值仍需人工确认）')
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-      await refreshDetailOnly()
-      const latest = detail.value?.fields.find(
-        (item) => item.field_name === field.field_name,
-      )
-      if (latest && (latest.source === 'ocr_retry' || latest.confidence !== oldConfidence)) {
-        break
-      }
-    }
-  } catch (cause) {
-    ElMessage.error(cause instanceof ApiError ? cause.message : '重识别失败')
-  } finally {
-    reocring.value.delete(field.field_name)
-  }
-}
-
-async function confirmField(field: InvoiceField): Promise<void> {
-  const invoice = detail.value?.invoice
-  if (!invoice) return
-  // 确认 ≠ 改值：优先提交票面原文，服务端归一化后仍保留 displayValue
-  const value = field.field_value ?? field.normalized_value ?? ''
-  const isAmount = AMOUNT_FIELDS.has(field.field_name)
-  try {
-    const result = await updateInvoiceFields(invoice.id, {
-      version: invoice.version,
-      fields: [{ field_name: field.field_name, value, confirm: true }],
-      confirm_amount: isAmount ? true : undefined,
-    })
-    // 就地更新：只重算这一行 + 版本，不重载详情/影像/行框（避免整页刷新与滚动跳位）
-    const row = detail.value?.fields.find((item) => item.field_name === field.field_name)
-    const after = result.updated.find((item) => item.field_name === field.field_name)?.after
-    if (row) {
-      row.confirmed = true
-      row.need_review = false
-      row.conflict = false
-      row.conflict_value = null
-      row.confidence = 1
-      row.source = 'manual'
-      row.review_level = 'auto'
-      row.normalized_value = after ?? row.normalized_value
-    }
-    if (detail.value) detail.value.invoice.version = result.version
-    confirmErrors.value = confirmErrors.value.filter(
-      (item) => item.field_name !== field.field_name,
-    )
-    ElMessage.success(`已确认「${fieldLabel(field.field_name)}」`)
-  } catch (cause) {
-    if (cause instanceof ApiError && cause.code === 40900) {
-      ElMessage.error('版本冲突：票据已被修改，已为你刷新')
-      await load()
-    } else {
-      ElMessage.error(cause instanceof ApiError ? cause.message : '确认失败，请重试')
-    }
-  }
-}
-
 function goBack(): void {
   // 优先回浏览器上一页（保留列表筛选）；直接打开详情时退回列表
   if (window.history.length > 1) router.back()
@@ -330,9 +256,10 @@ async function confirmAll(): Promise<void> {
   if (!invoice || confirming.value) return
   try {
     await ElMessageBox.confirm(
-      '确认后票据进入「已确认」，之后修改字段需要重新走草稿流程。是否继续？',
+      '请确认已仔细核对所有字段内容与票据一致。如有不一致，请先点「编辑字段」修改；' +
+        '确认后票据进入「待复核」，字段不可再修改。',
       '确认整单',
-      { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' },
+      { type: 'warning', confirmButtonText: '已核对，确认整单', cancelButtonText: '返回修改' },
     )
   } catch {
     return
@@ -477,7 +404,7 @@ onBeforeUnmount(revokeImage)
       <div class="page-heading">
         <div>
           <h2>票据详情</h2>
-          <p>左图右表核对：hover 字段高亮图上框、点框定位字段；草稿态可修改，金额字段仅审核人可改并留痕。</p>
+          <p>左图右表核对：hover 字段高亮图上框、点框定位字段；草稿态可编辑，确认整单前请核对所有字段。</p>
         </div>
         <el-button class="back-button" @click="goBack">返回列表</el-button>
       </div>
@@ -662,15 +589,10 @@ onBeforeUnmount(revokeImage)
             :edit-mode="editMode"
             :editable="editable"
             :editable-names="editableNames"
-            :reocring="reocring"
             :active-field="activeField"
             :hovered-field="hoveredField"
-            :reread-allowed="rereadAllowed"
-            :can-confirm="canEdit"
             @hover-field="hoveredField = $event"
             @select-field="selectField"
-            @reread="rereadField"
-            @confirm-field="confirmField"
             @update:editable="onEditableUpdate"
           />
         </el-card>

@@ -404,7 +404,9 @@ def update_fields(
 def collect_confirm_errors(
     rows: dict[str, InvoiceField], rules: list[FieldRule], ticket_type: str
 ) -> list[dict]:
-    """整单确认闸门（纯函数）：必填 → 冲突 → 低置信未确认 → 校验器，同字段只留第一条。
+    """整单确认闸门（纯函数）：必填 → 冲突 → 校验器，同字段只留第一条。
+
+    S3-10/D-070 起不再要求"逐字段确认"：整单确认本身就代表用户已核对了全部字段。
 
     为什么顺序固定：返回给用户的是"先解决什么"，先补必填再消冲突，最后才是细粒度校验。
     """
@@ -421,11 +423,8 @@ def collect_confirm_errors(
             add(rule.name, "必填字段缺失")
 
     for name in sorted(rows):
-        row = rows[name]
-        if row.conflict:
+        if rows[name].conflict:
             add(name, "存在未决冲突，请先选择候选")
-        elif row.need_review and not row.confirmed:
-            add(name, "低置信字段尚未人工确认")
 
     values = {
         name: (row.normalized_value or row.field_value) for name, row in rows.items()
@@ -478,6 +477,11 @@ def confirm_invoice(
     errors = collect_confirm_errors(rows, resolved.rules, invoice.invoice_type)
     if errors:
         raise UnresolvedConflictError("整单校验未通过", detail={"fields": errors})
+
+    # 整单确认即"用户已逐项核对全部字段"：一并落 confirmed，不再要求逐字段点确认
+    for row in rows.values():
+        row.confirmed = True
+        row.need_review = False
 
     invoice.status = InvoiceStatus.CONFIRMED.value
     invoice.extract_status = ExtractStatus.CONFIRMED.value

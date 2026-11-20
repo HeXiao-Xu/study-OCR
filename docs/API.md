@@ -226,7 +226,7 @@
   审计行（`action=confirm_field`）仍留 S4-7 哈希链一起写（D-065）
 
 ### POST /api/v1/invoices/{id}/reocr
-- 权限：本人（`reviewer` 触发权限与 S3-6 一起定）｜ 类型：异步（202）｜ 幂等：否（有进行中作业时 409）｜ 实现：S3-3 ✅
+- 权限：本人（`reviewer` 触发权限与 S3-6 一起定）｜ 类型：异步（202）｜ 幂等：否（有进行中作业时 409）｜ 实现：S3-3 ✅（**前端入口已移除**，D-070；接口保留）
 - 入参（JSON）：
 
 | 字段 | 类型 | 必填 | 约束 |
@@ -269,10 +269,11 @@
 
 - 出参：**200**，`data` = InvoiceOut（`status=confirmed`、`extract_status=confirmed`）
 - 错误：`404/40400`；`409/40900` 状态不允许；`422/42201` 整单校验未通过，`data.fields = [{field_name, error}]` 逐字段列出
-- 备注：**整单确认闸门**——服务端重跑 validators（必填齐备 + 无未决冲突 + 低置信项均已确认），**不信前端传来的"已校验"标记**；
-  闸门顺序固定：必填缺失 → 未决冲突 → 低置信未确认（`need_review=true 且 confirmed=false`）→ validators 错误，
-  同一字段只留第一条；`data.fields` 逐条给出 `{field_name, error}`；通过后 `status` 与 `extract_status`
-  同事务置 `confirmed`、`version += 1`；`confirm_field` 审计行待 S4-7 哈希链一起写（S3-6/D-065）
+- 备注：**整单确认闸门**——服务端重跑 validators（必填齐备 + 无未决冲突），**不信前端传来的"已校验"标记**；
+  闸门顺序固定：必填缺失 → 未决冲突 → validators 错误，同一字段只留第一条；`data.fields` 逐条给出
+  `{field_name, error}`；通过后**把全部字段置 `confirmed=true, need_review=false`**（整单确认即已核对全部字段，D-070），
+  `status` 与 `extract_status` 同事务置 `confirmed`、`version += 1`；不再要求逐字段确认；
+  `confirm_field` 审计行待 S4-7 哈希链一起写（S3-6/D-065）
 
 ### POST /api/v1/invoices/{id}/review
 - 权限：`reviewer`（submitter → 403；admin/他人 → 404）｜ 类型：同步 ｜ 幂等：是（已复核返回当前状态）｜ 实现：S3-9 ✅

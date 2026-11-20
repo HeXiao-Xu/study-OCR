@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 from alembic import command
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text as sa_text
+from sqlalchemy import create_engine, select, text as sa_text
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
@@ -183,26 +183,21 @@ def test_confirm_unresolved_conflict_gate(client, session_factory, actors) -> No
                for item in response.json()["data"]["fields"])
 
 
-def test_confirm_low_confidence_must_be_confirmed_first(client, session_factory, actors) -> None:
+def test_confirm_marks_all_fields_confirmed(client, session_factory, actors) -> None:
+    """整单确认即"已核对全部字段"：低置信字段一并落 confirmed，不再逐字段点确认（D-070）。"""
     invoice_id = _make_invoice(session_factory, actors["alice"].id)
     _seed_fields(session_factory, invoice_id, _complete_fields())
     _seed_fields(session_factory, invoice_id, {"buyer_name": "武汉某某有限公司"},
                  need_review=True)
 
-    blocked = _confirm(client, invoice_id, actors["alice"])
-    assert blocked.status_code == 422
-    assert any(item["error"].startswith("低置信")
-               for item in blocked.json()["data"]["fields"])
+    response = _confirm(client, invoice_id, actors["alice"])
 
-    patched = client.patch(
-        f"{BASE}/{invoice_id}/fields",
-        json={"version": 0, "fields": [{"field_name": "buyer_name",
-                                        "value": "武汉某某有限公司", "confirm": True}]},
-        headers=_auth(actors["alice"]),
-    )
-    assert patched.status_code == 200, patched.text
-
-    assert _confirm(client, invoice_id, actors["alice"]).status_code == 200
+    assert response.status_code == 200, response.text
+    with session_factory() as db:
+        rows = db.scalars(select(InvoiceField).where(
+            InvoiceField.invoice_id == invoice_id)).all()
+        assert all(row.confirmed for row in rows)
+        assert not any(row.need_review for row in rows)
 
 
 def test_confirm_validator_failure(client, session_factory, actors) -> None:
