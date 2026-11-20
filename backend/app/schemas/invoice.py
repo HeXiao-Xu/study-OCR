@@ -176,6 +176,16 @@ class UploadData(BaseModel):
     dedup: UploadDedup
 
 
+class InvoiceFieldsData(BaseModel):
+    """字段级识别结果（API.md §2 `GET /invoices/{id}/fields`，S3-4）。"""
+
+    invoice_id: int
+    overall_confidence: Decimal | None = None
+    needs_confirm: list[str] = Field(default_factory=list)
+    conflicts: list[ConflictOut] = Field(default_factory=list)
+    items: list[InvoiceFieldOut] = Field(default_factory=list)
+
+
 class ReocrRequest(BaseModel):
     """局部二次识别入参（API.md §2）：1–6 个字段。"""
 

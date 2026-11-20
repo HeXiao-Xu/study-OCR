@@ -24,6 +24,7 @@ from app.schemas.invoice import (
     InvoiceFieldsUpdateRequest,
     InvoiceListQuery,
     InvoiceOut,
+    InvoiceFieldsData,
     OcrStatusData,
     ReocrData,
     ReocrRequest,
@@ -50,6 +51,19 @@ def get_invoice(
     db: Session = Depends(get_db),
 ) -> dict:
     return ok(invoice_service.get_invoice_detail(db, user, invoice_id))
+
+
+@router.get(
+    "/{invoice_id}/fields",
+    response_model=Envelope[InvoiceFieldsData],
+    summary="字段级识别结果（原文/归一值/置信度/冲突）",
+)
+def get_invoice_fields(
+    invoice_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return ok(invoice_service.get_invoice_fields(db, user, invoice_id))
 
 
 @router.get(

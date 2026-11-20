@@ -637,3 +637,48 @@ def test_detail_field_exposes_review_level(client, session_factory, actors) -> N
 
     levels = {row["field_name"]: row["review_level"] for row in data["fields"]}
     assert levels == {"buyer_name": "auto", "total_amount": "review"}
+
+
+def test_fields_endpoint_returns_items_and_conflicts(client, session_factory, actors) -> None:
+    """S3-4：字段级接口（契约 §2）——原文/归一值/置信度/冲突/整体分。"""
+    invoice_id = _make_invoice(session_factory, actors["alice"].id)
+    with session_factory() as db:
+        db.add(InvoiceField(
+            invoice_id=invoice_id, field_name="total_amount", field_value="￥1,234.56",
+            normalized_value="1234.56", raw_text="价税合计（小写）￥1,234.56",
+            source="ocr", confidence=Decimal("0.700"), need_review=True,
+            conflict=True, conflict_value="1234.00", bbox_json=[1, 2, 3, 4],
+        ))
+        db.execute(sa_text("update invoices set overall_confidence = 0.75 where id = :id"),
+                   {"id": invoice_id})
+        db.commit()
+
+    data = client.get(f"{BASE}/{invoice_id}/fields", headers=_auth(actors["alice"])).json()["data"]
+
+    assert data["invoice_id"] == invoice_id
+    assert data["overall_confidence"] == "0.750"
+    assert data["needs_confirm"] == ["total_amount"]
+    assert data["conflicts"] == [{
+        "field_name": "total_amount", "reason": "candidate_conflict",
+        "expected": "￥1,234.56", "actual": "1234.00",
+    }]
+    item = data["items"][0]
+    assert item["field_name"] == "total_amount"
+    assert item["review_level"] == "review"
+    assert item["normalized_value"] == "1234.56"
+
+
+def test_fields_endpoint_empty_and_permissions(client, session_factory, actors) -> None:
+    invoice_id = _make_invoice(session_factory, actors["alice"].id)
+
+    empty = client.get(f"{BASE}/{invoice_id}/fields", headers=_auth(actors["alice"])).json()["data"]
+    assert empty["items"] == []
+    assert empty["needs_confirm"] == []
+    assert empty["conflicts"] == []
+
+    assert client.get(f"{BASE}/{invoice_id}/fields",
+                      headers=_auth(actors["bob"])).status_code == 404
+    assert client.get(f"{BASE}/{invoice_id}/fields",
+                      headers=_auth(actors["ada"])).status_code == 404
+    assert client.get(f"{BASE}/{invoice_id}/fields",
+                      headers=_auth(actors["rita"])).status_code == 200

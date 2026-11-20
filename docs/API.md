@@ -159,22 +159,25 @@
   `error` 只挂在失败阶段；失败重试上限 3 次；建议轮询间隔 1–2s、总时长 ≤5min
 
 ### GET /api/v1/invoices/{id}/fields
-- 权限：本人，或 `reviewer` ｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S3-2 / S3-4
+- 权限：本人，或 `reviewer`；`admin` → 404 ｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S3-4 ✅
 - 入参：无
 - 出参：**200**，`data` = `{invoice_id, overall_confidence, needs_confirm: [field_name], conflicts: [{field_name, reason, expected, actual}], items: InvoiceFieldOut[]}`
 
 ```json
-{"invoice_id": 101, "overall_confidence": 0.89, "needs_confirm": ["buyer_tax_no"],
- "conflicts": [{"field_name": "total_amount", "reason": "sum_mismatch",
-                "expected": "1234.56", "actual": "1200.00"}],
- "items": [{"field_name": "total_amount", "field_value": "¥1,234.56",
+{"invoice_id": 101, "overall_confidence": "0.890", "needs_confirm": ["buyer_tax_no"],
+ "conflicts": [{"field_name": "total_amount", "reason": "candidate_conflict",
+                "expected": "￥1,234.56", "actual": "1200.00"}],
+ "items": [{"field_name": "total_amount", "field_value": "￥1,234.56",
             "normalized_value": "1234.56", "confidence": 0.98,
-            "bbox": [700, 610, 900, 640], "source": "rule",
-            "need_review": false, "conflict": true}]}
+            "bbox": [700, 610, 900, 640], "source": "ocr",
+            "need_review": false, "conflict": true, "review_level": "auto"}]}
 ```
 
 - 错误：`404/40400`
-- 备注：`items` 含 12 个核心字段；低置信（<0.85）字段 `need_review=true`；冲突**不静默修正**，`conflict=true` 且保留 `conflict_value`
+- 备注：`items` 含 12 个核心字段；`field_value` 是**票面原文**（如 `￥1,234.56`）、`normalized_value` 是**归一值**（如 `1234.56`）；
+  `need_review = level != auto`（S3-2 三档），`review_level` 由服务端派生；冲突**不静默修正**，`conflict=true` 且保留 `conflict_value`；
+  `conflicts[].reason` 当前只有 `candidate_conflict`（抽取阶段的同优先级多候选）——`money_sum_mismatch` 等校验原因
+  在确认接口（S3-6）返回，避免两处规则各算一套
 
 ### PATCH /api/v1/invoices/{id}/fields
 - 权限：本人（`submitter`，仅非金额字段）；`reviewer`（全部字段，含金额）；`admin` → 404 ｜ 类型：同步 ｜ 幂等：否 ｜ 实现：S3-6

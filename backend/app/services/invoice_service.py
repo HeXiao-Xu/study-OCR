@@ -43,6 +43,7 @@ from app.schemas.invoice import (
     FieldChange,
     InvoiceDetailData,
     InvoiceFieldOut,
+    InvoiceFieldsData,
     InvoiceFieldsUpdateData,
     InvoiceFieldsUpdateRequest,
     InvoiceListQuery,
@@ -222,6 +223,37 @@ def get_invoice_detail(db: Session, user: User, invoice_id: int) -> InvoiceDetai
 # --------------------------------------------------------------------------- #
 # 软删
 # --------------------------------------------------------------------------- #
+def get_invoice_fields(db: Session, user: User, invoice_id: int) -> InvoiceFieldsData:
+    """字段级识别结果（API.md §2）：原文/归一值/置信度/待确认/已存候选冲突。
+
+    校验类冲突（如 money_sum_mismatch）不在这里重算——那是确认动作的职责（S3-6），
+    两处各算一套规则必然漂移。
+    """
+    invoice = get_visible_or_404(db, Invoice, invoice_id, user)
+    rows = db.scalars(
+        select(InvoiceField)
+        .where(InvoiceField.invoice_id == invoice.id)
+        .order_by(InvoiceField.field_name.asc())
+    ).all()
+    conflicts = [
+        ConflictOut(
+            field_name=row.field_name,
+            reason="candidate_conflict",
+            expected=row.field_value,
+            actual=row.conflict_value,
+        )
+        for row in rows
+        if row.conflict
+    ]
+    return InvoiceFieldsData(
+        invoice_id=invoice.id,
+        overall_confidence=invoice.overall_confidence,
+        needs_confirm=[row.field_name for row in rows if row.need_review],
+        conflicts=conflicts,
+        items=[_field_out(row) for row in rows],
+    )
+
+
 def soft_delete(db: Session, user: User, invoice_id: int) -> None:
     invoice = get_visible_or_404(db, Invoice, invoice_id, user)
     if invoice.uploader_id != user.id:
