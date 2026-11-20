@@ -58,13 +58,6 @@ SORT_MAP = {
 
 _JPEG_MAGIC = b"\xff\xd8\xff"
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-_STRATEGY_TO_DIRECTION = {
-    "inline_right": "right",
-    "below_center": "below",
-    "table_column": "any",
-    "label_neighbor": "any",
-    "total_zone": "any",
-}
 
 
 # --------------------------------------------------------------------------- #
@@ -316,38 +309,10 @@ def _copy_and_merge_rules(
 
 
 def _to_field_rules(specs: dict[str, Any]) -> list:
-    """DB 的 field_specs_json → extractor.FieldRule（不改抽取算法，只换规则来源）。"""
-    from app.ocr.extractor import FieldRule  # 延迟导入
+    """DB 的 field_specs_json → extractor.FieldRule（规则映射只在 `ocr/extractor.py` 一处）。"""
+    from app.ocr.extractor import rules_from_specs  # 延迟导入：不在路由加载期拖入 cv2
 
-    rules = []
-    for name, spec in specs.items():
-        if not isinstance(spec, dict):
-            continue
-        keywords = spec.get("keywords") or spec.get("anchors") or []
-        direction = spec.get("direction") or _STRATEGY_TO_DIRECTION.get(
-            str(spec.get("strategy") or ""), "right"
-        )
-        zone = spec.get("zone")
-        rules.append(
-            FieldRule(
-                name=name,
-                value_type=str(spec.get("value_type", "text")),
-                anchors=[str(item) for item in keywords],
-                direction=direction,
-                regex=spec.get("regex") or spec.get("pattern"),
-                max_distance=float(spec.get("max_distance") or 300.0),
-                zone=(float(zone[0]), float(zone[1])) if zone else None,
-                occurrence=str(spec.get("occurrence", "all")),
-                tickets=spec.get("tickets"),
-                required=bool(spec.get("required", False)),
-                if_multiple=spec.get("if_multiple"),
-                value_index=int(spec.get("value_index", 0)),
-                exclude=spec.get("exclude"),
-                whole_line_anchors=spec.get("whole_line_anchors"),
-                rule_id=f"{name}:{spec.get('value_type', 'text')}",
-            )
-        )
-    return rules
+    return rules_from_specs(specs)
 
 
 def _read_image(upload: UploadFile, max_upload_mb: int) -> bytes:

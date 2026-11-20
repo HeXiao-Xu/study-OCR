@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -22,7 +23,7 @@ from app.ocr.layout import LayoutResult
 from app.ocr.types import ExtractedField, ExtractionResult, OcrLine
 from app.ocr.validators import parse_date, parse_money, parse_upper_amount, run_validators
 
-__all__ = ["FieldRule", "load_field_rules", "extract_fields"]
+__all__ = ["FieldRule", "load_field_rules", "rules_from_specs", "extract_fields"]
 
 RULES_PATH = Path(__file__).resolve().parent / "templates" / "field_rules.yaml"
 _ANCHOR_STRENGTH = {0: 1.0, 1: 0.92, 2: 0.84}      # 锚点顺序即强度：第一个最可信
@@ -79,6 +80,51 @@ def load_field_rules(path: Path | None = None) -> list[FieldRule]:
         ))
     if not rules:
         raise ValueError(f"字段规则为空：{path}")
+    return rules
+
+
+# DB 的 `field_specs_json.strategy` → 抽取方向（S2-8 起的库内规则形态）
+_STRATEGY_TO_DIRECTION = {
+    "inline_right": "right",
+    "below_center": "below",
+    "table_column": "any",
+    "label_neighbor": "any",
+    "total_zone": "any",
+}
+
+
+def rules_from_specs(specs: dict[str, Any]) -> list[FieldRule]:
+    """`ticket_templates.field_specs_json` → `FieldRule`（S3-1 流水线读库用）。
+
+    与 `load_field_rules()` 必须逐字段等价（单测钉住）：DB 规格是 YAML 的 seed 快照，
+    两条路给出不同规则就会让"有没有 seed 过库"悄悄改变识别结果。
+    """
+    rules: list[FieldRule] = []
+    for name, spec in (specs or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        keywords = spec.get("keywords") or spec.get("anchors") or []
+        direction = spec.get("direction") or _STRATEGY_TO_DIRECTION.get(
+            str(spec.get("strategy") or ""), "right"
+        )
+        zone = spec.get("zone")
+        rules.append(FieldRule(
+            name=name,
+            value_type=str(spec.get("value_type", "text")),
+            anchors=[str(item) for item in keywords],
+            direction=direction,
+            regex=spec.get("regex") or spec.get("pattern"),
+            max_distance=float(spec.get("max_distance") or _DEFAULT_MAX_DISTANCE),
+            zone=(float(zone[0]), float(zone[1])) if zone else None,
+            occurrence=str(spec.get("occurrence", "all")),
+            tickets=spec.get("tickets"),
+            required=bool(spec.get("required", False)),
+            if_multiple=spec.get("if_multiple"),
+            value_index=int(spec.get("value_index", 0)),
+            exclude=spec.get("exclude"),
+            whole_line_anchors=spec.get("whole_line_anchors"),
+            rule_id=f"{name}:{spec.get('value_type', 'text')}",
+        ))
     return rules
 
 

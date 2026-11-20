@@ -133,3 +133,29 @@ def test_empty_lines_do_not_raise() -> None:
     result = extract_fields([], (1200, 800), "unknown")
     assert result.fields == {}
     assert set(result.missing_required) >= {"invoice_no", "invoice_date", "total_amount"}
+
+
+def test_rules_from_specs_matches_yaml_rules() -> None:
+    """DB 版规则（`field_specs_json`）与 YAML 版必须逐字段等价，否则两套来源会悄悄漂移。
+
+    S3-1 起流水线优先读库（S2-8 既定方向），YAML 只作回退；两条路给出不同规则 = 识别结果随
+    "有没有 seed 过库"变化，这是最隐蔽的一类不一致。
+    """
+    from app.ocr.extractor import rules_from_specs
+    from app.services.template_seed import build_seed_templates
+
+    yaml_rules = {rule.name: rule for rule in load_field_rules()}
+    seed = next(item for item in build_seed_templates() if item.type_code == "vat_digital")
+    db_rules = {rule.name: rule for rule in rules_from_specs(seed.field_specs_json)}
+
+    assert db_rules, "vat_digital 的 DB 规则不能为空"
+    for name, db_rule in db_rules.items():
+        expected = yaml_rules[name]
+        assert db_rule == expected, f"{name} 的 DB 规则与 YAML 不一致"
+
+
+def test_rules_from_specs_ignores_non_dict_specs() -> None:
+    from app.ocr.extractor import rules_from_specs
+
+    assert rules_from_specs({"broken": "not-a-dict"}) == []
+    assert rules_from_specs({}) == []
