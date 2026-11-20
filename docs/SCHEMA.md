@@ -212,7 +212,8 @@ erDiagram
 | extract_status | TEXT | 否 | `'raw'` | 枚举见 §9.5 ✅ | idx ⚠ |
 | overall_confidence | NUMERIC(4,3) | 是 | — | 整单置信度 = **已抽到字段置信度的算术平均**（无字段记 0）；**只用于展示/排序，不参与单字段是否核对的判定**（S3-2/D-058）✅ | CHECK 0–1 ⚠ |
 | quality_flag | TEXT | 是 | — | 影像质量标记 `ok` / `low`（**不设 `fail`**：不可识别由 `ocr_status='failed'` 表达，避免同一事实两处编码），见 §9.5d ✅ | CHECK |
-| duplicate_of | BIGINT | 是 | — | 疑似重复的既有票据 id（自引用，**软提示不硬拦**，方案 6.7 语义级）✅ | idx ⚠ |
+| duplicate_of | BIGINT | 是 | — | 疑似重复的既有票据 id（自引用，**软提示不硬拦**，方案 6.7 语义级）✅；S3-7 起由流水线在唯一冲突回退时写 | idx ⚠ |
+| batch_id | UUID | 是 | — | 批量上传的弱聚合（S3-8/D-067）；**批次不落表、不建外键**，跨批查询靠索引 | idx（`ix_invoices_batch_id`） |
 | status | TEXT | 否 | `'draft'` | 枚举见 §9.5 ✅ | 部分唯一索引的条件列 ✅ |
 | version | INTEGER | 否 | `0` | **乐观锁计数器**（应用层 `UPDATE ... WHERE version = ?`，冲突 → `409`；与 `signatures.version` 无关）⚠ 见「定稿清单」第 19 项 | — |
 | created_at | TIMESTAMPTZ | 否 | `now()` | 创建时间 ✅ | 组成 idx ✅ |
@@ -290,6 +291,7 @@ erDiagram
 | params_json | JSONB | 是 | — | 阶段参数（缩放比、阈值、语言等；**不含明文与密钥**）✅ | — |
 | elapsed_ms | INTEGER | 是 | — | 耗时毫秒（性能预算对照，方案 7.7）✅ | — |
 | retry_count | INTEGER | 否 | `0` | 第几次尝试（上限 3，方案 6.6）✅ | `CHECK (retry_count >= 0)` ⚠ |
+| dispatched | BOOLEAN | 否 | `true` | S3-8：`true` = 已投递 ARQ（含排队/运行）；`false` = 服务端排队中（单用户并发上限，`after_job_end` 补位）；历史行迁移时置 true | — |
 | error | TEXT | 是 | — | 失败时写错误码 + 短消息（≤500 字符）✅ | — |
 | created_at | TIMESTAMPTZ | 否 | `now()` | 写入时间 ✅ | — |
 | metrics | JSONB | 是 | — | 逐阶段状态与耗时（`metrics.stages`）、引擎参数、`counts`、`warnings`；**不含票面明文**（S3-1，D-055）✅ | — |

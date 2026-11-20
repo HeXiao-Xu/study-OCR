@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -22,6 +23,7 @@ from sqlalchemy import (
     Numeric,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
     text,
 )
@@ -63,6 +65,7 @@ class Invoice(Base):
         Index("ix_invoices_ocr_status", "ocr_status"),
         Index("ix_invoices_extract_status", "extract_status"),
         Index("ix_invoices_duplicate_of", "duplicate_of"),
+        Index("ix_invoices_batch_id", "batch_id"),
         # 待确认队列 / 我的草稿：两条部分索引（SCHEMA 定稿清单第 13 项）
         Index(
             "ix_invoices_need_confirm",
@@ -104,6 +107,8 @@ class Invoice(Base):
     duplicate_of: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("invoices.id", name="fk_invoices_duplicate_of")
     )
+    # 批量上传的弱聚合（S3-8）：批次本身不落表，不为它建外键
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
     # 乐观锁计数器（与 signatures.version 无关）
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))

@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -53,6 +54,10 @@ class OcrJob(Base):
     params_json: Mapped[dict[str, Any] | None] = mapped_column(postgresql.JSONB)
     elapsed_ms: Mapped[int | None] = mapped_column(Integer)
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # S3-8：false = 服务端排队中（批量限单用户并发，等 after_job_end 补位）
+    dispatched: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
     # 只存错误码 + 短消息，不得包含明文票据内容
     error: Mapped[str | None] = mapped_column(Text)
     # 逐阶段状态/耗时、引擎参数、警告；不含明文（SCHEMA §3.5，S3-1/D-055）

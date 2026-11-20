@@ -91,6 +91,8 @@ class Settings(BaseSettings):
     ocr_pdf_max_pages: int = 3                 # 任务卡"限前 3 页"
     # PaddleOCR 模型非线程安全（AGENTS §5）；1 是默认，2 只用于 IO/推理重叠对照
     ocr_worker_max_jobs: int = 1
+    # S3-8：批量上传时单用户"已入队"识别任务上限（服务端排队，worker 完成后补位）
+    ocr_max_active_per_user: int = 3
 
     # ---------- 置信度聚合（S3-2）----------
     # 三档口径：>=auto 免人工；[manual, auto) 待核对；<manual 必须人工（D-058）
