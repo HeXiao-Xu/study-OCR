@@ -303,3 +303,84 @@ def test_mark_enqueue_failed(session_factory, owner) -> None:
     job = _get_job(session_factory, job_id)
     assert job.status == "failed"
     assert "入队失败" in job.error
+
+
+# --------------------------------------------------------------------------- #
+# S3-1：起止时间与终态守卫
+# --------------------------------------------------------------------------- #
+@pytest.mark.integration
+def test_execute_job_attempt_records_started_and_finished(session_factory, owner) -> None:
+    job_id = _create_job(session_factory, owner.id)
+
+    outcome = job_service.execute_job_attempt(
+        job_id,
+        attempt=1,
+        handler=lambda db, job: None,
+        session_factory=session_factory,
+        lock_store=FakeLockStore(),
+    )
+
+    assert outcome == "succeeded"
+    job = _get_job(session_factory, job_id)
+    assert job.started_at is not None
+    assert job.finished_at is not None
+    assert job.finished_at >= job.started_at
+
+
+@pytest.mark.integration
+def test_execute_job_attempt_retry_clears_finished_at(session_factory, owner) -> None:
+    job_id = _create_job(session_factory, owner.id)
+
+    def handler(db: Session, job) -> None:
+        raise OSError("磁盘临时错误")
+
+    with pytest.raises(job_service.RetryLater):
+        job_service.execute_job_attempt(
+            job_id,
+            attempt=1,
+            handler=handler,
+            session_factory=session_factory,
+            lock_store=FakeLockStore(),
+        )
+
+    job = _get_job(session_factory, job_id)
+    assert job.status == "pending"
+    assert job.started_at is not None
+    assert job.finished_at is None          # 回到 pending 时不写结束时间
+
+
+@pytest.mark.integration
+def test_execute_job_attempt_superseded_does_not_commit(session_factory, owner) -> None:
+    """handler 写完业务列后才发现作业已被别的执行改掉 → 业务写入回滚、状态不被覆盖。"""
+    job_id = _create_job(session_factory, owner.id)
+    with session_factory() as db:
+        invoice_id = db.scalar(
+            sa_text("select invoice_id from ocr_jobs where id = :id"), {"id": job_id}
+        )
+
+    def handler(db: Session, job) -> None:
+        db.execute(
+            sa_text("update invoices set ocr_status = 'running' where id = :id"),
+            {"id": invoice_id},
+        )
+        # 模拟"另一个执行/僵尸恢复在另一个连接里把这行改成 failed"
+        with session_factory() as other:
+            other.execute(
+                sa_text("update ocr_jobs set status = 'failed', retry_count = 9 where id = :id"),
+                {"id": job_id},
+            )
+            other.commit()
+
+    outcome = job_service.execute_job_attempt(
+        job_id,
+        attempt=1,
+        handler=handler,
+        session_factory=session_factory,
+        lock_store=FakeLockStore(),
+    )
+
+    assert outcome == "superseded"
+    with session_factory() as db:
+        assert db.get(Invoice, invoice_id).ocr_status == "pending"     # 业务写入回滚
+        job = db.get(OcrJob, job_id)
+        assert (job.status, job.retry_count) == ("failed", 9)          # 别人的状态没被覆盖

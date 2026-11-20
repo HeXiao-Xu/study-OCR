@@ -7,6 +7,8 @@
 
 状态：`pending → running → succeeded | failed`；可重试失败回到 `pending`。
 `retry_count` 记录"已尝试次数"（1 表示第一次尝试），`error` 只存错误码/短消息（≤500 字符）。
+`started_at`/`finished_at` 记录本次尝试的真实起止（S3-1，D-056）；写终态前会重读状态指纹，
+发现已被别的执行接管就返回 `superseded`，不覆盖别人的状态。
 """
 from __future__ import annotations
 
@@ -69,6 +71,10 @@ class TaskNotReadyError(RuntimeError):
     """流水线尚未接入（S3-1 之前）。永久错误，不重试。"""
 
 
+class AbortAttempt(RuntimeError):
+    """作业已不在 running（被别的执行接管/已终态）：不写状态、不重试，视作 `superseded`。"""
+
+
 class RetryableTaskError(RuntimeError):
     """业务侧显式标记的可重试错误（网络/临时 IO/内存类）。"""
 
@@ -86,6 +92,10 @@ def is_retryable(exc: BaseException) -> bool:
             MemoryError,
         ),
     )
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def retry_delay(attempt: int) -> int:
@@ -151,6 +161,9 @@ def execute_job_attempt(
             job.status = OcrStatus.RUNNING.value
             job.retry_count = attempt
             job.error = None
+            # 每次尝试都刷新开始时间；回 pending 时清掉上一轮的结束时间（D-056）
+            job.started_at = _utcnow()
+            job.finished_at = None
             db.commit()
             db.refresh(job)
 
@@ -168,8 +181,18 @@ def execute_job_attempt(
                     elapsed_ms=elapsed_ms,
                 )
 
+            # 写终态前重读作业行：ARQ 超时/并发 restore 可能已经把这行改成别的状态，
+            # 僵尸线程（to_thread 杀不掉）不能覆盖新一轮的状态（S3-1）
+            state = db.execute(
+                select(OcrJob.status, OcrJob.retry_count).where(OcrJob.id == job_id)
+            ).one()
+            if state.status != OcrStatus.RUNNING.value or state.retry_count != attempt:
+                db.rollback()          # 撤掉本次尝试的业务写入
+                return "superseded"
+
             job.status = OcrStatus.SUCCEEDED.value
             job.elapsed_ms = int((time.perf_counter() - started) * 1000)
+            job.finished_at = _utcnow()
             job.error = None
             db.commit()
             return "succeeded"
@@ -194,6 +217,14 @@ def _persist_failure(
     if job is None:
         return "missing"
 
+    # 僵尸线程/重复投递：这行已被别的执行接管（状态或尝试次数变了）就不写
+    if (
+        isinstance(exc, AbortAttempt)
+        or job.status != OcrStatus.RUNNING.value
+        or job.retry_count != attempt
+    ):
+        return "superseded"
+
     message = f"{type(exc).__name__}: {exc}"[:_ERROR_MAX_LEN]
     job.elapsed_ms = elapsed_ms
     job.retry_count = attempt
@@ -201,10 +232,12 @@ def _persist_failure(
     if is_retryable(exc) and attempt < max_tries:
         job.status = OcrStatus.PENDING.value
         job.error = message
+        job.finished_at = None       # 这一轮没结束，等下一次尝试
         db.commit()
         raise RetryLater(retry_delay(attempt))
 
     job.status = OcrStatus.FAILED.value
+    job.finished_at = _utcnow()
     job.error = (
         f"重试 {max_tries} 次仍失败：{message}" if is_retryable(exc) else message
     )[:_ERROR_MAX_LEN]
@@ -242,6 +275,7 @@ def recover_stale_jobs(
         for job in jobs:
             job.status = OcrStatus.FAILED.value
             job.retry_count = max(job.retry_count, 1)
+            job.finished_at = _utcnow()
             job.error = "worker 重启或超时，任务中断（S2-7 恢复）"[:_ERROR_MAX_LEN]
         db.commit()
         return len(jobs)
@@ -257,6 +291,7 @@ def mark_enqueue_failed(
         if job is None or job.status != OcrStatus.PENDING.value:
             return
         job.status = OcrStatus.FAILED.value
+        job.finished_at = _utcnow()
         job.error = "任务入队失败（队列不可用）"[:_ERROR_MAX_LEN]
         session.commit()
 
