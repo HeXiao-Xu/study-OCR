@@ -27,8 +27,10 @@ from app.models.invoice_fields import InvoiceField
 from app.models.invoice_files import InvoiceFile
 from app.models.invoices import Invoice
 from app.models.ocr_jobs import OcrJob
+from app.models.ocr_lines import OcrLine
 from app.models.users import User
 from app.services import invoice_service
+from app.services.storage import get_storage
 from tests.db_helpers import alembic_config, temporary_database
 
 pytestmark = pytest.mark.integration
@@ -83,8 +85,23 @@ def actors(session_factory, clean_db) -> dict[str, User]:
         return users
 
 
+class FakeStorage:
+    """删除接口用：只记录被删对象，不碰真实 MinIO。"""
+
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+
+    def delete(self, key: str) -> None:
+        self.deleted.append(key)
+
+
 @pytest.fixture()
-def client(session_factory, clean_db) -> Iterator[TestClient]:
+def fake_storage() -> FakeStorage:
+    return FakeStorage()
+
+
+@pytest.fixture()
+def client(session_factory, clean_db, fake_storage) -> Iterator[TestClient]:
     app = create_app()
 
     def _override_db() -> Iterator[Session]:
@@ -95,6 +112,7 @@ def client(session_factory, clean_db) -> Iterator[TestClient]:
             db.close()
 
     app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_storage] = lambda: fake_storage
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
 
@@ -361,28 +379,72 @@ def test_detail_isolated_and_admin_404(client, session_factory, actors) -> None:
 # --------------------------------------------------------------------------- #
 # 软删
 # --------------------------------------------------------------------------- #
-def test_delete_is_soft_and_idempotent(client, session_factory, actors) -> None:
+def test_delete_is_hard_and_removes_related_rows(
+    client, session_factory, actors, fake_storage
+) -> None:
     invoice_id = _make_invoice(session_factory, actors["alice"].id)
+    with session_factory() as db:
+        db.add(InvoiceField(invoice_id=invoice_id, field_name="buyer_name",
+                            field_value="x", normalized_value="x", raw_text="x"))
+        db.add(OcrLine(invoice_id=invoice_id, page_no=1, line_no=0, text="x",
+                       score=Decimal("0.9"),
+                       box_json=[[1, 2], [3, 2], [3, 4], [1, 4]]))
+        job = OcrJob(invoice_id=invoice_id, stage="preprocess", status="succeeded")
+        db.add(job)
+        db.commit()
+
     headers = _auth(actors["alice"])
+    response = client.delete(f"{BASE}/{invoice_id}", headers=headers)
 
-    first = client.delete(f"{BASE}/{invoice_id}", headers=headers)
-    assert first.status_code == 204
-    assert first.content == b""
+    assert response.status_code == 204
+    assert len(fake_storage.deleted) == 1          # MinIO 对象一起删
+    assert client.get(f"{BASE}/{invoice_id}", headers=headers).status_code == 404
+    with session_factory() as db:
+        assert db.get(Invoice, invoice_id) is None
+        assert db.scalar(sa_text("select count(*) from invoice_fields where invoice_id=:i"),
+                         {"i": invoice_id}) == 0
+        assert db.scalar(sa_text("select count(*) from ocr_lines where invoice_id=:i"),
+                         {"i": invoice_id}) == 0
+        assert db.scalar(sa_text("select count(*) from ocr_jobs where invoice_id=:i"),
+                         {"i": invoice_id}) == 0
+        assert db.scalar(sa_text("select count(*) from invoice_files where id not in "
+                                 "(select file_id from invoices)")) == 0
 
-    detail = client.get(f"{BASE}/{invoice_id}", headers=headers)
-    assert detail.json()["data"]["invoice"]["status"] == "void"
-
-    again = client.delete(f"{BASE}/{invoice_id}", headers=headers)
-    assert again.status_code == 204
+    # 硬删后不存在，重复删除 → 404（不再是幂等 204）
+    assert client.delete(f"{BASE}/{invoice_id}", headers=headers).status_code == 404
 
 
-@pytest.mark.parametrize("status", ["in_report", "archived"])
-def test_delete_rejects_non_deletable_states(client, session_factory, actors, status: str) -> None:
+def test_delete_rejects_non_draft_states(client, session_factory, actors) -> None:
+    for status in ("confirmed", "in_report", "archived"):
+        invoice_id = _make_invoice(session_factory, actors["alice"].id)
+        _set_status(session_factory, invoice_id, status)
+        response = client.delete(f"{BASE}/{invoice_id}", headers=_auth(actors["alice"]))
+        assert response.status_code == 409
+        assert response.json()["code"] == 40900
+
+
+def test_delete_rejects_active_job(client, session_factory, actors) -> None:
     invoice_id = _make_invoice(session_factory, actors["alice"].id)
-    _set_status(session_factory, invoice_id, status)
+    with session_factory() as db:
+        db.add(OcrJob(invoice_id=invoice_id, stage="preprocess", status="pending"))
+        db.commit()
+
     response = client.delete(f"{BASE}/{invoice_id}", headers=_auth(actors["alice"]))
     assert response.status_code == 409
-    assert response.json()["code"] == 40900
+
+
+def test_delete_clears_duplicate_reference(client, session_factory, actors) -> None:
+    first = _make_invoice(session_factory, actors["alice"].id)
+    second = _make_invoice(session_factory, actors["alice"].id)
+    with session_factory() as db:
+        db.execute(sa_text("update invoices set duplicate_of=:a where id=:b"),
+                   {"a": first, "b": second})
+        db.commit()
+
+    assert client.delete(f"{BASE}/{first}",
+                         headers=_auth(actors["alice"])).status_code == 204
+    with session_factory() as db:
+        assert db.get(Invoice, second).duplicate_of is None
 
 
 def test_delete_other_submitter_and_reviewer_404(client, session_factory, actors) -> None:
@@ -401,7 +463,7 @@ def test_void_releases_invoice_number(session_factory, actors) -> None:
             invoice_code="1234567890",
             invoice_no="12345678",
         )
-        invoice_service.soft_delete(db, actors["alice"], first.id)
+        invoice_service.transition(db, first, "void", actors["alice"])
 
     with session_factory() as db:
         # void 释放了部分唯一索引，同号可以再建

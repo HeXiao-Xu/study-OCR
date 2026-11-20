@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import (
@@ -22,11 +22,14 @@ from app.core.exceptions import (
     UnresolvedConflictError,
     ValidationFailedError,
 )
-from app.models.enums import ExtractStatus, FieldSource, InvoiceStatus, UserRole
+from app.models.enums import ExtractStatus, FieldSource, InvoiceStatus, OcrStatus, UserRole
 from app.models.invoice_fields import InvoiceField
 from app.models.invoice_files import InvoiceFile
 from app.models.invoices import Invoice
+from app.models.envelopes import Envelope
 from app.models.ocr_jobs import OcrJob
+from app.models.ocr_lines import OcrLine
+from app.models.report_items import ReportItem
 from app.models.users import User
 from app.ocr.validators import (
     ValidationIssue,
@@ -82,6 +85,7 @@ AMOUNT_FIELDS = frozenset({"amount", "tax_amount", "total_amount"})
 # passenger_name 只存 invoice_fields（invoices 表没有该列，SCHEMA 原文如此）
 # invoices 表没有这两列：passenger_name（SCHEMA 原文）与大写金额（只在 invoice_fields）
 _COLUMN_FIELDS = frozenset(INVOICE_FIELD_NAMES) - {"passenger_name", "total_amount_upper"}
+_ACTIVE_JOB_STATUSES = (OcrStatus.PENDING.value, OcrStatus.RUNNING.value)
 
 SORT_MAP = {
     "created_at": Invoice.created_at,
@@ -262,16 +266,59 @@ def get_invoice_fields(db: Session, user: User, invoice_id: int) -> InvoiceField
     )
 
 
-def soft_delete(db: Session, user: User, invoice_id: int) -> None:
+def delete_invoice(
+    db: Session, user: User, invoice_id: int, *, storage: StorageService
+) -> None:
+    """硬删除（S3-11/D-071）：票据 + 字段 + 行 + 作业 + 文件 + 对象一起删，释放 sha256 去重。
+
+    只允许本人删 `draft`，且必须没有进行中的识别任务/报销单引用——
+    删除后不可恢复，影像也不能再作为审计证据，这是与旧"软删作废"的取舍。
+    """
     invoice = get_visible_or_404(db, Invoice, invoice_id, user)
     if invoice.uploader_id != user.id:
         # 契约：DELETE 仅本人；reviewer 能读但不能删
         raise PermissionDeniedError()
-    if invoice.status == InvoiceStatus.VOID.value:
-        return  # 幂等：已删仍返回 204
-    if invoice.status in (InvoiceStatus.IN_REPORT.value, InvoiceStatus.ARCHIVED.value):
+    if invoice.status != InvoiceStatus.DRAFT.value:
         raise ConflictError(f"票据当前状态为 {invoice.status}，禁止删除")
-    transition(db, invoice, InvoiceStatus.VOID.value, user)
+    active = db.scalar(
+        select(OcrJob.id).where(
+            OcrJob.invoice_id == invoice.id, OcrJob.status.in_(_ACTIVE_JOB_STATUSES)
+        ).limit(1)
+    )
+    if active is not None:
+        raise ConflictError("识别任务进行中，请稍后再删除")
+    if db.scalar(select(ReportItem.id).where(ReportItem.invoice_id == invoice.id).limit(1)):
+        raise ConflictError("票据已加入报销单，禁止删除")
+
+    file_row = db.get(InvoiceFile, invoice.file_id)
+    if file_row is not None and db.scalar(
+        select(Envelope.id).where(Envelope.file_id == file_row.id).limit(1)
+    ):
+        raise ConflictError("票据已被报销单信封引用，禁止删除")
+    storage_key = file_row.storage_key if file_row is not None else None
+
+    # 先断开别的票对本票的 duplicate_of 自引用，否则删原票会撞外键
+    db.execute(
+        update(Invoice).where(Invoice.duplicate_of == invoice.id).values(duplicate_of=None)
+    )
+    db.execute(delete(InvoiceField).where(InvoiceField.invoice_id == invoice.id))
+    db.execute(delete(OcrLine).where(OcrLine.invoice_id == invoice.id))
+    db.execute(delete(OcrJob).where(OcrJob.invoice_id == invoice.id))
+    # 用显式 DELETE 而不是 session.delete：两张表没有 relationship，
+    # ORM 的 flush 排序会先删 invoice_files，撞上 invoices.file_id 外键
+    db.execute(delete(Invoice).where(Invoice.id == invoice.id))
+    if file_row is not None:
+        db.execute(delete(InvoiceFile).where(InvoiceFile.id == file_row.id))
+    db.commit()
+
+    if storage_key:
+        try:
+            storage.delete(storage_key)
+        except Exception:  # noqa: BLE001 - 对象删除失败不把已提交的删除回滚，只告警
+            logger.warning(
+                "票据对象删除失败",
+                extra={"event": "storage_delete_failed", "invoice_id": invoice_id},
+            )
 
 
 # --------------------------------------------------------------------------- #

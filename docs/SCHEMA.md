@@ -223,6 +223,9 @@ erDiagram
 
 **存什么**：一张票据的业务主体、票面要素、识别与确认状态、质量标记。**谁写**：识别流水线写状态与置信度，人工确认接口写字段汇总与状态，报销接口写 `status='in_report'`。**关键不变式**：`(invoice_code, invoice_no)` 在非作废票据内唯一（同一张票不能报两次）；`status='void'` 释放该唯一约束，允许重新提交（方案 7.5）；`file_id` 唯一（一个文件最多对应一张票）。
 
+> **删除语义（S3-11/D-071）**：`DELETE /invoices/{id}` 是**硬删除**（仅 `draft`），会级联删除字段/行/作业/文件与对象；
+> `void` 状态仍可由作废流程产生（状态机保留），但接口不再使用软删。
+>
 > 票据级状态**只走 5 个值**（`draft/confirmed/in_report/archived/void`）。方案 6.6 状态图里的 `signed/encrypted/submitted/approved/rejected` 是**报销单级**状态，落在 `report_forms.status`，不要混进 `invoices.status`（⚠ 见「定稿清单」第 1 项）。
 >
 > 红冲 / 负数票：**本期不支持**（D-013）——`total_amount >= 0` 保留，论文“范围限定”写明；若将来支持，需同时放开约束并加 `is_red` 标记。

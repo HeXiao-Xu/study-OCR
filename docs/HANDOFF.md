@@ -1,7 +1,7 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-20（S3-9 双人复核 + 抽取修复 D-069 + 确认流程简化 D-070）
+> 最后更新：2026-11-20（S3-9 + 抽取修复 D-069 + 确认简化 D-070 + 硬删除 D-071）
 
 ## 1. 一句话现状
 
@@ -248,6 +248,7 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-068 | 双人复核（取代 D-017 金额限制）：提交人可改全部字段（金额须勾选）；审核人 `POST /review` 二审；`reviewed_at` 锁定修改；不加 status 枚举 |
 | D-069 | 横版票金额规则排除"价税合计"、税号 O→0/I→1 纠偏（`field_value` 用纠正值、`raw_text` 留原样）、重识别只刷新详情不重拉影像 |
 | D-070 | 字段表去掉"操作"列（无重识别/逐字段确认）；整单确认弹窗核对，服务端把全部字段置 confirmed；reocr API 保留但无前端入口 |
+| D-071 | DELETE 改硬删除（仅 draft）：级联字段/行/作业/文件 + MinIO 对象，释放 sha256 可重传；删除后 404 不幂等 |
 
 ## 7. 下一步：S4-1 SM3 摘要与 canonical JSON 规范化（★关键）
 

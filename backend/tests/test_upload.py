@@ -420,3 +420,27 @@ def test_filename_is_sanitized(upload_env, actors) -> None:
 def test_build_object_key_format() -> None:
     key = build_object_key(datetime(2026, 11, 19, tzinfo=timezone.utc))
     assert re.fullmatch(r"invoices/2026/11/[0-9a-f]{32}\.bin", key)
+
+@pytest.mark.integration
+def test_hard_delete_allows_reupload_same_image(upload_env, actors) -> None:
+    """硬删（D-071）：票据/文件/对象一起删，同一影像可以重新上传。"""
+    content = _jpeg_bytes()
+    first = _upload(upload_env, actors["alice"], content)
+    assert first.status_code == 202
+    invoice_id = first.json()["data"]["invoice_id"]
+
+    # 识别任务必须结束，否则删除会被 409 挡住
+    with upload_env.session_factory() as db:
+        db.execute(sa_text("update ocr_jobs set status='succeeded' where invoice_id=:i"),
+                   {"i": invoice_id})
+        db.commit()
+
+    deleted = upload_env.client.delete(f"/api/v1/invoices/{invoice_id}",
+                                       headers=_auth(actors["alice"]))
+    assert deleted.status_code == 204
+    assert len(upload_env.storage.deleted) == 1
+
+    again = _upload(upload_env, actors["alice"], content)
+    assert again.status_code == 202, again.text
+    assert again.json()["data"]["invoice_id"] != invoice_id
+    assert _counts(upload_env) == (1, 1, 1)

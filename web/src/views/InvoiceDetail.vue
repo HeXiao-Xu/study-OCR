@@ -113,7 +113,7 @@ const canDelete = computed(() => {
     invoice &&
       store.role === 'submitter' &&
       invoice.uploader_id === store.user?.id &&
-      ['draft', 'confirmed'].includes(invoice.status),
+      invoice.status === 'draft',
   )
 })
 
@@ -302,9 +302,9 @@ async function removeInvoice(): Promise<void> {
   if (!invoice) return
   try {
     await ElMessageBox.confirm(
-      '删除后票据作废（void），列表不再显示；影像保留用于审计，同一张影像不能再次上传。是否继续？',
+      '将彻底删除该票据及其识别结果、影像文件（不可恢复）；删除后可以重新上传同一张影像。是否继续？',
       '删除票据',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+      { type: 'warning', confirmButtonText: '彻底删除', cancelButtonText: '取消' },
     )
   } catch {
     return

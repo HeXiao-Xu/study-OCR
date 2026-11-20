@@ -290,11 +290,13 @@
   `reviewed_at` 非空即**锁定修改**（PATCH 一律 409）；审计行待 S4-7；"待复核" = `status='confirmed' AND reviewed_at IS NULL`
 
 ### DELETE /api/v1/invoices/{id}
-- 权限：本人 ｜ 类型：同步（软删）｜ 幂等：是（已 `void` 返回 204）｜ 实现：S2-5
+- 权限：本人（`reviewer`/`admin` → 404）｜ 类型：同步（**硬删除**）｜ 幂等：否（删后再删 → 404）｜ 实现：S3-11/D-071
 - 入参：无
-- 出参：**204** 无响应体（`status=void`，行保留）
-- 错误：`404/40400`；`409/40900` 已加入报销单 / 已提交 / 已归档，禁止删除
-- 备注：不物理删除记录与 MinIO 对象（审计与追溯需要）；`(invoice_code, invoice_no) WHERE status <> 'void'` 唯一索引允许同号重传
+- 出参：**204** 无响应体
+- 错误：`404/40400`；`409/40900` 非 `draft`（已确认/待复核/已进报销单/已归档）、识别任务进行中、已被报销单引用
+- 备注：**物理删除** `invoices + invoice_fields + ocr_lines + ocr_jobs + invoice_files` 并删除 MinIO 对象；
+  删除后同一影像可重新上传（sha256 去重记录一并释放）。**不可恢复**，因此仅允许删草稿；
+  删除前会把其他票据的 `duplicate_of` 指向本票的引用置空
 
 ### GET /api/v1/invoices/{id}/image
 - 权限：本人，或 `reviewer`；`admin` → 404 ｜ 类型：下载（二进制流）｜ 幂等：是 ｜ 实现：S3-5 ✅（S4 接入后在此解密）

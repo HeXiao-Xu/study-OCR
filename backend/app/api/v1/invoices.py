@@ -322,12 +322,13 @@ def confirm_invoice(
     "/{invoice_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_model=None,
-    summary="软删票据（status=void，幂等）",
+    summary="硬删除票据（级联字段/行/作业/文件/对象；仅 draft）",
 )
 def delete_invoice(
     invoice_id: int,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    storage: StorageService = Depends(get_storage),
 ) -> Response:
-    invoice_service.soft_delete(db, user, invoice_id)
+    invoice_service.delete_invoice(db, user, invoice_id, storage=storage)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
