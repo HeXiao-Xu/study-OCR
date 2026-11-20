@@ -49,6 +49,8 @@ class InvoiceOut(BaseModel):
     overall_confidence: Decimal | None
     quality_flag: str | None
     duplicate_of: int | None
+    reviewed_by: int | None = None
+    reviewed_at: datetime | None = None
 
     # 文件元数据（join 而来）
     file_id: int
@@ -117,6 +119,8 @@ class InvoiceListQuery(PageParams):
     q: str | None = Field(default=None, max_length=100, description="发票号/销售方名称子串")
     date_from: date | None = None
     date_to: date | None = None
+    # S3-9 二审筛选：pending = confirmed 且未复核；reviewed = 已复核
+    review_status: Literal["pending", "reviewed"] | None = None
 
 
 class FieldValueIn(BaseModel):

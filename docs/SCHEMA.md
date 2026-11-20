@@ -214,6 +214,8 @@ erDiagram
 | quality_flag | TEXT | 是 | — | 影像质量标记 `ok` / `low`（**不设 `fail`**：不可识别由 `ocr_status='failed'` 表达，避免同一事实两处编码），见 §9.5d ✅ | CHECK |
 | duplicate_of | BIGINT | 是 | — | 疑似重复的既有票据 id（自引用，**软提示不硬拦**，方案 6.7 语义级）✅；S3-7 起由流水线在唯一冲突回退时写 | idx ⚠ |
 | batch_id | UUID | 是 | — | 批量上传的弱聚合（S3-8/D-067）；**批次不落表、不建外键**，跨批查询靠索引 | idx（`ix_invoices_batch_id`） |
+| reviewed_by | BIGINT | 是 | — | 二审复核人，FK→`users.id`（S3-9/D-068）；只存 id，不存姓名 | — |
+| reviewed_at | TIMESTAMPTZ | 是 | — | 复核时间（S3-9）；非空即锁定修改；**待复核 = `status='confirmed' AND reviewed_at IS NULL`** | idx（`ix_invoices_reviewed_at`） |
 | status | TEXT | 否 | `'draft'` | 枚举见 §9.5 ✅ | 部分唯一索引的条件列 ✅ |
 | version | INTEGER | 否 | `0` | **乐观锁计数器**（应用层 `UPDATE ... WHERE version = ?`，冲突 → `409`；与 `signatures.version` 无关）⚠ 见「定稿清单」第 19 项 | — |
 | created_at | TIMESTAMPTZ | 否 | `now()` | 创建时间 ✅ | 组成 idx ✅ |

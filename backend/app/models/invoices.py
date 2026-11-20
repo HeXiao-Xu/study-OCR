@@ -66,6 +66,7 @@ class Invoice(Base):
         Index("ix_invoices_extract_status", "extract_status"),
         Index("ix_invoices_duplicate_of", "duplicate_of"),
         Index("ix_invoices_batch_id", "batch_id"),
+        Index("ix_invoices_reviewed_at", "reviewed_at"),
         # 待确认队列 / 我的草稿：两条部分索引（SCHEMA 定稿清单第 13 项）
         Index(
             "ix_invoices_need_confirm",
@@ -109,6 +110,13 @@ class Invoice(Base):
     )
     # 批量上传的弱聚合（S3-8）：批次本身不落表，不为它建外键
     batch_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    # 二审（S3-9）：待复核 = status='confirmed' AND reviewed_at IS NULL；两列同进同出
+    reviewed_by: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("users.id", name="fk_invoices_reviewed_by"), nullable=True
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
     # 乐观锁计数器（与 signatures.version 无关）
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
