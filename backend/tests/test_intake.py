@@ -10,7 +10,13 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from app.ocr.intake import PHOTO_GUIDE, PreparedInput, detect_input_kind, prepare_input
+from app.ocr.intake import (
+    PHOTO_GUIDE,
+    PreparedInput,
+    detect_input_kind,
+    prepare_input,
+    prepare_pages,
+)
 from app.ocr.preprocess import PreprocessOptions, preprocess
 
 
@@ -100,3 +106,58 @@ def test_photo_guide_is_actionable() -> None:
 def test_prepared_input_defaults() -> None:
     prepared = PreparedInput(image=np.zeros((4, 4, 3), dtype=np.uint8), kind="photo", preprocessed=True)
     assert prepared.needs_retake is False and prepared.retake_hints == []
+
+
+# --------------------------------------------------------------------------- #
+# S3-1：多页入口（PDF 限前 N 页；照片单页）
+# --------------------------------------------------------------------------- #
+def _write_multipage_pdf(path, pages: int = 3) -> None:
+    try:
+        import pymupdf
+    except ImportError:  # pragma: no cover
+        pytest.skip("PyMuPDF 不可用")
+    document = pymupdf.open()
+    for index in range(pages):
+        page = document.new_page()
+        page.insert_text((72, 100), f"第 {index + 1} 页")
+    document.save(str(path))
+    document.close()
+
+
+def test_prepare_pages_pdf_returns_all_pages(tmp_path) -> None:
+    pdf = tmp_path / "multi.pdf"
+    _write_multipage_pdf(pdf, pages=3)
+
+    pages = prepare_pages(pdf)
+    assert [page.page_no for page in pages] == [1, 2, 3]
+    assert all(page.kind == "pdf" for page in pages)
+    assert all(page.image.ndim == 3 and page.image.size > 0 for page in pages)
+    assert all(page.quality_flag is None for page in pages)      # PDF 不预处理，不编造质量结论
+
+
+def test_prepare_pages_pdf_caps_max_pages(tmp_path) -> None:
+    pdf = tmp_path / "multi.pdf"
+    _write_multipage_pdf(pdf, pages=3)
+
+    pages = prepare_pages(pdf, max_pages=2)
+    assert [page.page_no for page in pages] == [1, 2]
+
+
+def test_prepare_pages_photo_returns_single_page(tmp_path) -> None:
+    photo = tmp_path / "shot.jpg"
+    _write_photo(photo)
+
+    pages = prepare_pages(photo, PreprocessOptions(illum=False, detect_seal=False))
+    assert len(pages) == 1
+    assert pages[0].page_no == 1
+    assert pages[0].kind == "photo"
+    assert pages[0].quality_flag in {"ok", "low"}
+    assert pages[0].preprocess is not None
+
+
+def test_prepare_pages_pdf_from_bytes(tmp_path) -> None:
+    pdf = tmp_path / "multi.pdf"
+    _write_multipage_pdf(pdf, pages=2)
+
+    pages = prepare_pages(pdf.read_bytes(), max_pages=3)
+    assert [page.page_no for page in pages] == [1, 2]
