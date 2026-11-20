@@ -1145,7 +1145,7 @@
   5. 权重/阈值全部进 `Settings`（`CONFIDENCE_*`），校验"权重和为 1、0 ≤ cap < manual < auto ≤ 1"。
 - **代价**：40 张合成集上 review 占 52%（110/213）、40/40 张票据都进待核对队列——合成集里"故意拍坏"的
   样本本来就多，且阈值是任务卡给的初值，**未用真实分布校准**（遗留 #53，S6 回填）。
-- **验证**：`tests/test_confidence.py` 15 条；`scripts/confidence_eval.py --samples 40`：
+- **验证**：`tests/test_confidence.py` 11 条（含 4 个参数化配置校验）；`scripts/confidence_eval.py --samples 40`：
   阈值扫描字段 2/2/23/90/112/152、整单 25/25/33/40/40/40（单调不减）；不变量全过。
 
 ---
