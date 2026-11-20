@@ -1,12 +1,13 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-20 19:40（阶段 3 完成 + 真实联调收口；开新会话用）
+> 最后更新：2026-11-20 20:20（阶段 4 起步：S4-1 完成；开新会话用）
 
 ## 1. 一句话现状
 
-**阶段 3 已完成**：S3-1 ~ S3-8 + 补充卡 S3-9（双人复核）；之后真实票据联调又做了 **D-069 ~ D-071** 与 UI 收口。
-**下一步：S4-1 SM3 摘要与 canonical JSON 规范化（★关键，密码链路起点）**。
+**阶段 3 已完成**（S3-1 ~ S3-8 + 补充卡 S3-9）；**阶段 4 已开工**：S4-1（canonical JSON + SM3）完成，
+`gmssl==3.2.2` 已装并锁版本。
+**下一步：S4-2 SM2 签名与验签（防双重哈希）★关键**。
 
 当前浏览器可走通（`http://127.0.0.1:5173`）：
 
@@ -34,7 +35,8 @@
 | Docker | `study-ocr-{postgres,redis,minio}` 三个容器（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0007`（16 业务表 + alembic_version）** |
 | 依赖锁 | `backend/requirements.txt`（手写锁）+ `requirements.lock.txt`（pip freeze） |
 
-> ⚠️ `gmssl` **还没装**——那是 S4 密码链路才需要的，别提前装（会打乱 numpy 版本）。
+> ✅ `gmssl==3.2.2`（+ 传递依赖 `pycryptodomex==3.24.2`）已在 S4-1 装好并写进 requirements/lock；
+> 装入后 numpy 1.26.4 / paddle 2.6.2 / paddleocr 2.7.3 **未变**，全量单测 480 passed。
 
 ### 2.1 本地开发库现状（2026-11-20 19:40）
 
@@ -44,7 +46,8 @@
   `113` / `117`（已复核）；`117` 是真实 PDF（金额 1057.43 / 税额 10.57 / 合计 1068.00）。
   `invoice_fields` 47 行、`ocr_lines` 174 行、`ocr_jobs` 7 行、`invoice_files` 5 行；审计行为 0（S4-7 才写）。
 - 端口：后端 8000、Vite 5173、MinIO 控制台 9003；无头冒烟 Edge 用 9222（临时 profile）。
-- **本次会话结束时** API/worker/Vite 都在跑（后台进程）；新会话请按 §5 命令重新启动（或用 `netstat -ano | findstr :8000` 找到残留进程）。
+- **本次会话（S4-1）**只跑 pytest 与命令行脚本，**没有**起 API / ARQ worker / Vite；
+  下一次需要浏览器联调时按 §5 启动（或先 `netstat -ano | findstr :8000` 看有没有残留进程）。
 
 ## 3. 目录与关键文件（认路用）
 
@@ -55,6 +58,8 @@ backend/alembic/         ← 0001_init / 0002_audit_action / 0003_ticket_type / 
 backend/app/core/{security,redis}.py  ← S2-2：Argon2id + HS256 JWT；Redis 单例
 backend/app/services/{auth_service,token_store}.py  ← S2-2：注册/认证/签发/轮换/吊销；refresh 白名单
 backend/app/api/{deps.py,v1/auth.py}  ← S2-2：Bearer 解析、get_current_user、require_roles、5 条 auth 路由
+backend/app/crypto/canonical.py  ← S4-1：canonical_json / canonical_sha256（键码点序、拒 float/Decimal/超大 int）
+backend/app/crypto/sm/sm3.py     ← S4-1：sm3_digest(bytes)->32B / sm3_hex（gmssl 唯一入口；入参副本防原地改）
 backend/app/services/repository.py  ← S2-3：行级隔离（策略表 + filter_visible + get_visible_or_404，deny-by-default）
 backend/app/services/pagination.py  ← S2-4：分页/排序协议（PageParams/PageResult、白名单排序、同一 stmt 求 total）
 backend/app/services/invoice_service.py  ← S2-5/S3-9：建草稿/状态机/列表/详情/**硬删**/字段修改/复核
@@ -132,6 +137,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S3-8 批量上传 | 30 文件 POST **1.17s** 建单；**48.6s** 全部 succeeded、progress 全 100；批内仅 3 个入队；重试后 invoice 30→30、job 2 条且重跑成功 | `tests/test_batch.py`（7 条）+ 冒烟脚本 |
 | S3-9 双人复核 | 提交人改金额（勾选）→ 整单确认 v4；审核人复核 **200**（`reviewed_by=15`、`reviewed_at` 落库、v5）；复核后改字段 **409**、重复复核 **200 且版本不变** | `tests/test_review.py`（8 条）+ 冒烟脚本 |
 | D-069 真实票修复 | 同一 PDF 重传后金额 **1057.43**、税额 **10.57**、合计 **1068.00**、税号显示 `91130730MAK5MAN60W`；重识别时影像/行框请求 1→1 | `test_extractor.py`（横版/税号用例）+ 冒烟 |
+| S4-1 canonical + SM3 | SM3 国标向量全过（`abc`/512bit/空串）；键序不同同摘要；`100`/`"100"`/`"100.00"` 三种字节；float/Decimal/非 str 键/`2^53`/循环/代理项全被拒；跨语言 Python↔Node 三字段逐字相等（`sm3=ae5c73b0…`，JS 默认 UTF-16 排序会得 `1504e4f3…`） | `pytest tests/test_crypto`（54 passed）+ `scripts/canonical_cross_check.{py,mjs}` |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -144,6 +150,11 @@ cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
 (cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 365 passed（默认跳过集成）
 (cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 169 passed（需 Docker）
+# S4-1 密码封装（离线、不连库）：54 passed，含 SM3 国标向量与 canonical 字节级契约
+(cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto -q)
+# 跨语言一致性：Python 与 Node 各算一遍，三字段（canonical_b64/sm3/sha256）必须逐字相等
+.venv/Scripts/python.exe scripts/canonical_cross_check.py
+node scripts/canonical_cross_check.mjs
 # 模板 seed（幂等；部署时调用一次）
 (cd backend && ../.venv/Scripts/python.exe ../scripts/seed_templates.py)
 # ARQ worker（另开一个终端；与 API 共用同一份 backend/.env）
@@ -263,41 +274,40 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-070 | 字段表去掉"操作"列（无重识别/逐字段确认）；整单确认弹窗核对，服务端把全部字段置 confirmed；reocr API 保留但无前端入口 |
 | D-071 | DELETE 改硬删除（仅 draft）：级联字段/行/作业/文件 + MinIO 对象，释放 sha256 可重传；删除后 404 不幂等 |
 | D-072 | 业务状态前端派生：待确认(draft)/待复核(confirmed 未复核)/已复核(confirmed 已复核)；不加 DB 枚举；reviewer `/review` 入口同步 |
+| D-073 | `gmssl==3.2.2` 落地（纯 Python）+ 传递依赖 `pycryptodomex==3.24.2` 显式锁；**不引 gmssl-python**；不用它的随机源；装完 numpy/paddle 未变 |
+| D-074 | canonical JSON 11 条硬规则：码点序、无空格、拒 float/Decimal/非 str 键/`|int|>2^53-1`/循环/代理项；金额必须字符串；**JS 默认按 UTF-16 码元排序会算出不同摘要**（`1504e4f3…` vs 正确 `ae5c73b0…`） |
 
-## 7. 下一步：S4-1 SM3 摘要与 canonical JSON 规范化（★关键）
+## 7. 下一步：S4-2 SM2 签名与验签（防双重哈希）（★关键）
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章的 S4-1；
-- 流程（AGENTS §11）：spec（`docs/spec/s4-1-*.md`）→ plan → 用户确认 → 写码；
-- **阶段 4 规则**（任务卡开头）：只写 `backend/app/crypto/` 与 `backend/tests/test_crypto/`，**不碰业务接口**；
-  全部能力用 pytest + 命令行脚本验证；算法参数、密钥格式、载荷结构在这里定死，S5 只调用不修改；
-- **本卡范围**：
-  1. `crypto/canonical.py`：`canonical_json(obj) -> bytes`，键按 Unicode 码点升序、分隔符 `(",", ":")` 无空格、
-     `ensure_ascii=False` + UTF-8、`None` 保留 null、**拒绝 float/NaN/Infinity**（金额由调用方先格式化成字符串）、
-     另给 `canonical_sha256` 对照；
-  2. `crypto/sm/sm3.py`：`sm3_digest(bytes) -> bytes(32)`（`gmssl.sm3.sm3_hash` 返回 hex 且**会原地改入参**，
-     内部转 bytes；业务禁止直接调 gmssl）、`sm3_hex` 仅供日志；
-  3. `tests/test_crypto/{test_canonical,test_sm3}.py`：键序不同同摘要、中文/负数/嵌套 list、`100` vs `100.00`、
-     float 被拒、SM3 国标测试向量（`abc` → `66c7f0f462eeedd9...`）、空输入、1 bit 篡改；
-- **开工前必须先解决的环境缺口**：
-  1. `gmssl` **尚未安装**，`backend/requirements.txt` / `requirements.lock.txt` 里**没有** gmssl；
-     S4-1 第一步要先征得用户同意后 `../.venv/Scripts/python.exe -m pip install gmssl==3.2.2`，
-     再把它写进 requirements 与 lock（AGENTS §2.1/§2.2：新增/升级依赖必须确认并记录）。
-     不要提前装（会打乱当前已验证的 numpy/paddle 组合的复现性）；
-  2. `backend/app/crypto/` 已有空骨架（`__init__.py` + `sm/__init__.py`，无实现），
-     首个落地者负责补实现并回填 AGENTS §10.8 "密码封装"锚点；
-- **必须先定的口径**（spec 里要写死）：
-  1. `Decimal` 是否允许进 `canonical_json`？任务卡说"金额先格式化成字符串"，建议**只接受 str/int/bool/None/list/dict**，
-     `Decimal`/`float` 一律拒绝（防 100 vs 100.00 两种字节）；
-  2. dict 键必须是 `str`（非 str 键拒绝，不隐式 `str()`，防 "1" 与 1 撞车）；
-  3. 空 dict/list 输出 `{}`/`[]`；字符串不转义非 ASCII；控制字符按 JSON 标准转义；
-  4. `sm3_digest` 入参只收 `bytes`（`bytearray` 拒绝或转换要定）；
-- 验收（任务卡）：`pytest backend/tests/test_crypto -q` 全绿且含 SM3 国标向量；键序不同摘要相同、
-  含中文/负数/嵌套用例通过；`100` 与 `100.00` 不同/被拒的用例明确。
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章 S4-2；
+- 流程（AGENTS §11）：spec（`docs/spec/s4-2-*.md`）→ plan → 写码（本轮用户已授权"不逐步确认"）；
+- **阶段 4 规则**：只写 `backend/app/crypto/` 与 `backend/tests/test_crypto/`，**不碰业务接口**；
+  算法参数、密钥格式、载荷结构在这里定死，S5 只调用不修改；
+- **S4-1 已交付可复用的地基**（S4-2 直接用，别再写第二套）：
+  - `crypto/canonical.py::canonical_json`（签名对象的唯一字节形态；**禁止对 dict 直接签名**）；
+  - `crypto/sm/sm3.py::sm3_digest`（32B；`sign_bytes(digest32)` 的输入就是它）；
+  - 依赖与锁已就位（`gmssl==3.2.2` / `pycryptodomex==3.24.2`）；
+- **S4-2 范围**（任务卡原文 + 本卡口径）：
+  1. `crypto/sm/sm2.py`：`CryptSM2(private_key=hex, public_key=hex, mode=1)`（**显式 C1C3C2**，
+     默认 `mode=0` 不许用）；对外只暴露 `sign_bytes(digest32) -> hex` 与 `verify_bytes(digest32, sig_hex) -> bool`，
+     **函数内不再做任何哈希**；
+  2. **随机源必须换掉**：gmssl 的 `sign/sign_with_sm3` 内部用 `func.random_hex`（基于 `random`），
+     封装层必须显式传 `secrets.token_hex(32)` 生成的 K；这条要写进论文"实现"章节；
+  3. `crypto/signature.py`：签名记录 `{algo, digest_algo, signature, cert_id, signed_at,
+     payload_version, canonical_payload_base64}` + `sign_canonical` / `verify_canonical`；
+  4. 单测（`tests/test_crypto/test_sm2.py`）：正常通过；改明文 1 bit 失败；**双重哈希陷阱固化成用例**
+     （`sign_with_sm3` 与"已摘要数据"混用必须失败）；同明文连签两次签名不同（随机源生效）；
+     **fixed K 两次签名相同**（证明 K 参数被采纳）；
+- **必须先定的口径**（spec 里写死）：签名策略二选一（推荐"外部摘要 + `sign_bytes`"，与 S4-1 的
+  `sm3_digest` 对接，且便于验签方复算）、公钥 hex 是否带 `04` 前缀、`verify_bytes` 对畸形签名的返回语义；
+- **验收**：`pytest backend/tests/test_crypto/test_sm2.py -q`；用 `openssl dgst -sm3`（或 Node
+  `createHash('sm3')`）对同一 payload 复算摘要，与代码一致。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地领先 origin **68 个 commit**（S3-1 ~ S3-9 + D-069~D-072 的修复/收口），AI 不推，由用户 `git push`；
-2. **gmssl 未装**（见 §7）：S4-1 开工前需要用户确认安装 `gmssl==3.2.2` 并锁版本；
+1. **push**：本地领先 origin **69 个 commit**（S3-1 ~ S3-9 + D-069~D-074 + S4-1），AI 不推，由用户 `git push`；
+2. ✅ 已闭合（S4-1）：`gmssl==3.2.2` 已装并锁进 `requirements.txt` / `requirements.lock.txt`（D-073）；
+   装完 numpy/paddle/paddleocr 未变、全量单测 480 passed；
 3. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`、
    `s37-dup.png`、`ui-111-new.png` 等；真实 PDF 的框选对齐需要人眼确认；
 4. `taxi_ticket` 整单 0.200：S3-3 已试过低置信二次识别（整体 97.3% 提升，但出租车票字太少，提升有限）；
@@ -317,6 +327,8 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 
 - 用户是"放手型"：希望**替他做决定并给理由**，事后复核，不要每步都问；
 - 但**功能级任务卡要走 spec → plan → 确认**（AGENTS §11），小修/bugfix 可只在对话里给设计；
+- **2026-11-20 起**用户把审批策略改成"从不询问"：spec/plan 仍要落盘，但**不再等用户逐步确认**，
+  拍板理由写进 spec/plan/DECISIONS，做完一次性汇报供事后复核（本轮 S4-1 即按此执行）；
 - 汇报风格：先给**实测数字与命令输出**，再解释"为什么这样做"，**不要粉饰**（做不到就直说）；
 - 每次收口都要更新 `docs/PROGRESS.md`，新增取舍写 `docs/DECISIONS.md`；
 - 提交信息用 Conventional Commits（含任务号，如 `feat(s2-1): ...`）；**push 永远由用户做**。

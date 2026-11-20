@@ -68,6 +68,14 @@ argon2-cffi==25.1.0
 # ARQ：投递/重试/超时；与 API 共用同一份 Settings（不抄第二份 DATABASE_URL）。
 arq==0.28.0
 
+# --- 国密算法（S4-1 起）---
+# PyPI 的 gmssl 是纯 Python 实现（SM2/SM3/SM4），pip 即装、Windows 免编译、离线可跑（AGENTS §2.2）。
+# **不是** gmssl-python（ctypes 封装，需先编译 libgmssl，只作可选升级路线，不进主线）。
+# 它的随机源是 Python random（可预测），密码代码一律不用它的随机（AGENTS §6，S4-2 起用 secrets）。
+# 传递依赖 pycryptodomex 只被 gmssl 的 SM4/SM2 内部用到，显式钉住避免漂移。
+gmssl==3.2.2
+pycryptodomex==3.24.2
+
 # --- 测试 ---
 httpx==0.28.1
 pytest==9.2.0

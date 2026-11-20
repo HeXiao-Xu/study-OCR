@@ -1464,3 +1464,54 @@
   `status=confirmed` + `review_status=pending`。
 - **验证**：`test_sub` 列表 5 行状态分别为 待确认/待复核/已复核；`test_rev` `/review` 只显示 `review_status=pending` 的票；
   详情页 112 显示"待复核"。
+
+---
+
+## D-073 国密库落地：gmssl==3.2.2（纯 Python）+ 传递依赖 pycryptodomex；不引 gmssl-python
+
+- **日期**：2026-11-20（S4-1，用户"开始 S4-1"即授权安装任务卡指定版本）
+- **背景**：AGENTS §2 指定 `gmssl==3.2.2`；HANDOFF §7 要求装前先确认（"不要提前装，会打乱已验证的
+  numpy/paddle 组合"）。用户本轮明确"开始 S4-1"并关闭逐步审批，故直接安装并**立即锁版本 + 回归**。
+- **决策**：
+  1. 只装 `gmssl==3.2.2`（PyPI 纯 Python 实现，pip 即装、Windows 免编译、离线可跑）；
+     **不装 `gmssl-python`**（ctypes 封装，需先编译 libgmssl，AGENTS §2.2 只作可选升级路线）。
+  2. 它带入传递依赖 `pycryptodomex==3.24.2`（SM4/SM2 内部用到），**显式钉进**
+     `requirements.txt` 与 `requirements.lock.txt`，避免将来被间接升级。
+  3. **不使用 gmssl 的随机源**：`gmssl.func.random_hex` 基于 Python `random`（可预测）。
+     本卡（SM3）无随机数；S4-2 起 K/会话密钥/IV 全部走 `secrets`（AGENTS §6）。
+  4. gmssl 的 SM3 只在 `crypto/sm/sm3.py` 内可见；业务代码禁止 import gmssl。
+- **验证**（装完立刻做的三件事，防"装个库把识别链路搞崩"）：
+  - `gmssl 3.2.2` / `pycryptodomex 3.24.2` 已装；`numpy 1.26.4`、`paddle 2.6.2`、
+    `paddleocr 2.7.3`、`redis 5.3.1`、`SQLAlchemy 2.0.58` **均未变**；
+  - 全量单测 **426 passed → 480 passed**（新增 54 条），0 失败；
+  - `alembic check` 零差异（本卡无迁移）。
+
+---
+
+## D-074 canonical JSON 口径（11 条硬规则）与跨语言排序坑
+
+- **日期**：2026-11-20（S4-1，用户授权按 spec 自行拍板）
+- **背景**：签名域必须逐字节可复现。`json.dumps` 的默认行为（`", "`/`": "` 分隔、插入序、
+  `ensure_ascii=True`、`100.0` 与 `100` 两种字节）会让"同一份数据、不同进程/语言"算出不同摘要，
+  验签恒失败且极难排查（任务卡"坑"第一条）。
+- **决策**（完整版见 `docs/spec/s4-1-canonical-sm3.md` §2–§3）：
+  1. 键按 **Unicode 码点**升序；分隔符 `(",", ":")` 无空格；`ensure_ascii=False` + UTF-8；无 BOM/尾随换行；
+  2. 只接受 `None`/`bool`/`int`/`str`/`list`/`dict[str, ...]`；
+  3. **拒绝 float 与 `Decimal`**——金额一律由调用方先格式化成字符串（`100` / `100.0` / `100.00` 是三种字节）；
+  4. **拒绝非 str 键**（不做隐式 `str()`，防 `1` 与 `"1"` 撞车）；
+  5. **拒绝 `|int| > 2^53-1`**——JS `Number` 只能精确到 2^53-1，放行会让跨语言摘要**静默分叉**；
+     业务 id/金额本来就该是字符串；
+  6. `bool` 先于 `int` 判断（Python 里 `True` 是 `int` 子类），`true/false` 与 `1/0` 不同摘要；
+  7. 非法容器（`tuple`/`set`/`bytes`/自定义对象）、循环引用、孤立代理项 → `CanonicalJSONError`（`ValueError` 子类）；
+  8. `sm3_digest` 只收 `bytes`/`bytearray`/`memoryview`，`str` 抛 `TypeError`（编码是调用方的责任）；
+     返回恒 32 字节；`sm3_hex` 仅日志；
+  9. `gmssl.sm3.sm3_hash` **原地修改入参**（实测 `list(b"abc")` 调用后长度变 64），封装层只传 `list(bytes)` 副本；
+  10. `canonical_sha256` 回 64 位小写 hex，仅作跨实现对照，不进国密签名链路；
+  11. **跨语言坑（必须写进论文）**：JS `Array.prototype.sort()` 默认比较 **UTF-16 码元**，
+      与码点序在"BMP 的 U+E000–U+FFFF"和"增补平面"之间相反（`～` U+FF5E vs `😀` U+1F600）；
+      Node 侧必须显式按码点排序。实测：用默认排序算出的 SM3 是 `1504e4f3…`，
+      正确实现是 `ae5c73b0…`——fixture 能抓住这个差异。
+- **代价**：调用方不能把 `Decimal`/`float` 直接塞进签名载荷（必须先 `format(x, "f")`）；
+  超 2^53 的裸整数也必须转字符串。这是**故意的失败**：早炸好过静默分叉。
+- **验证**：`backend/tests/test_crypto/` 54 条；`scripts/canonical_cross_check.{py,mjs}` 三字段逐字相等
+  （`canonical_utf8_b64` / `sm3` / `sha256`）；SM3 国标向量 `abc`/512bit/空串全过。
