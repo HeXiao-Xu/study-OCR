@@ -1,8 +1,7 @@
-"""ARQ 任务函数（S2-7）。
+"""ARQ 任务函数（S2-7 / S3-1）。
 
-`ocr_task` 目前把真实流水线委托给 `_run_pipeline`，而它在 S3-1 之前会**如实失败**：
-不伪造 `succeeded`（AGENTS §7）。框架的重试/幂等由 `job_service.execute_job_attempt` 保证，
-S3-1 只需要替换 `_run_pipeline` 的实现。
+`ocr_task` 把真实流水线委托给 `services/ocr_pipeline.run_pipeline`；
+重试/幂等/终态守卫由 `job_service.execute_job_attempt` 负责，这里只做"ARQ 适配"。
 """
 from __future__ import annotations
 
@@ -32,8 +31,13 @@ async def ocr_task(ctx: dict, job_id: int) -> dict:
 
 
 def _run_pipeline(db, job) -> None:
-    """S3-1 接入：intake → preprocess → detect/recognize → layout → extract → validators。"""
-    raise job_service.TaskNotReadyError("OCR 流水线未接入（S3-1）")
+    """S3-1：下载 → 渲染/预处理 → 检测识别 → 票种 → 抽取 → 校验 → 落库。
+
+    延迟导入：API 进程不跑流水线，没必要在启动时把 cv2/paddle 拖进来。
+    """
+    from app.services.ocr_pipeline import run_pipeline
+
+    run_pipeline(db, job)
 
 
 async def anchor_audit_task(ctx: dict) -> dict:
