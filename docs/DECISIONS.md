@@ -1166,3 +1166,42 @@
 - **代价**：队列页就是列表页（没有"按整单置信度排序"）；要按置信度排序需扩 `sort_by` 白名单（未做，S3-5 可评估）。
 - **验证**：真实上传 2 张 → `extract_status=need_confirm`；reviewer API 查询 total=2；
   UI 冒烟 reviewer 登录后 `/review` 显示"共 2 张"。
+
+---
+
+## D-060 重识别接口按契约异步 `reocr`；只改 raw_text/confidence，值不自动改；bbox 改存原图坐标
+
+- **日期**：2026-11-20（S3-3，用户确认）
+- **背景**：任务卡产出两个**同步**接口（`POST /invoices/{id}/fields/{field}/reread`、
+  `POST /invoices/{id}/reread-region`）并要求"返回候选由人选择"；而 `docs/API.md` §2 早已定义
+  `POST /invoices/{id}/reocr`（异步 202、fields 1–6、自动取更高分、`source=ocr_retry`）。
+- **决策**：
+  1. **按契约实现异步 `reocr`**（AGENTS §9 契约优先）：202 + `job_id`，前端轮询详情；
+     任务卡两个同步接口不落地（契约里没有，且"整块区域"没有业务入口）。
+  2. **写回只改 `raw_text` / `confidence` / `source=ocr_retry`**，`field_value`/`normalized_value` 一律不动；
+     逐字段 old/new 文本与分数写进 `ocr_jobs.metrics.fields[]` 供追溯；改值由人工在 S3-6 选择——
+     "自动覆盖错字"与"禁止静默覆盖"的折中，宁可让人多点一次。
+  3. `manual`/`confirmed` 字段**不可触发**（422）；上次已写回（`source=ocr_retry`）的字段也不可再触发（422）。
+  4. **坐标修正**：`invoice_fields.bbox_json` 改为**原图**坐标（用 `PreprocessResult.to_original` 映射，PDF 恒等）；
+     `ocr_lines.box_json` 保持**校正图**坐标（识别就发生在校正图上）。S3-1 写成了校正图坐标，属偏差。
+- **代价**：重识别不会自动修正值，用户需在 S3-6 点选；旧版本写入的 bbox 需要重跑识别才符合新口径
+  （本地无此类数据，PROGRESS 遗留 #57）。
+- **验证**：`tests/test_reocr.py` 18 条（提交/写回/预算/整单重算）；`tests/test_refine.py` 11 条；
+  `tests/test_ocr_pipeline.py::test_run_pipeline_maps_field_bbox_to_original`。
+
+---
+
+## D-061 裁剪参数（max(8px,10%行高) + 2× 放大 + 1.5s 预算）；审计只加枚举不写行
+
+- **日期**：2026-11-20（S3-3）
+- **决策**：
+  1. **外扩** = `max(8px, 10% × 行高)`：契约写 8px、任务卡写 10%；取两者较大值——窄行靠 8px 兜底，
+     大字号靠 10% 才够。**不按行宽算比例**：票据行宽可达 700px，按宽度 10% 会把相邻行框进来。
+  2. **放大 2×**（契约值；任务卡 2–3×），`INTER_CUBIC`，长边封顶 1024：再大只是烧 CPU。
+  3. **预算 1.5s/张**（契约备注）：超预算的字段记 `skipped:budget`，作业仍成功；识别为空/分数 <0.3
+     记 `skipped:no_text`（异步接口无法同步回 422；任务卡的"非文本区域 422"只在入参/定位非法时成立）。
+  4. **审计只加枚举**：迁移 0005 放开 `audit_logs.action='field_reread'`，但**不写审计行**——
+     `prev_hash/entry_hash` 非空且要求 64 位 hex，哈希链在 S4-7 才实现，现在写行只能伪造 hash（AGENTS §7）。
+- **代价**：`field_reread` 审计行缺失（遗留 #54）；重识别预算下多字段请求可能只处理一部分（如实记 skipped）。
+- **验证**：`scripts/reread_eval.py --samples 40`：112 个低置信字段 **109 个提升（97.3%）**、平均 Δ +0.180；
+  HTTP 冒烟 amount 0.743→0.952、tax 0.690→0.946，值与人工语义未被改写。

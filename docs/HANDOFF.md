@@ -1,16 +1,16 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-20（S3-2 置信度聚合与确认队列上线）
+> 最后更新：2026-11-20（S3-3 局部二次识别上线）
 
 ## 1. 一句话现状
 
-**阶段 3 已通两张关键卡**：S3-1（识别全链路）+ S3-2（置信度三档与 reviewer 队列）都已上线；
-**下一步 S3-3 局部二次识别（crop 放大重识别）**。
+**阶段 3 已通三张卡**：S3-1（识别全链路）+ S3-2（置信度三档与 reviewer 队列）+ S3-3（局部二次识别）；
+**下一步 S3-4 识别结果 JSON Schema 与落库契约**。
 
 当前浏览器可走通：登录（三角色）→ 按角色落地 → 上传（"识别中… N%"）→ 票据列表/详情
-（字段带 `review_level`，<90% 黄、<60% 红）→ reviewer 的"待核对"= `extract_status=need_confirm` 列表
-→ 管理端模板查看/升版本/试跑；`GET /invoices/{id}/ocr-status` 可轮询阶段与进度。
+（字段带 `review_level`；低置信字段可点"重识别"，`source=ocr_retry`）→ reviewer 的"待核对"=
+`extract_status=need_confirm` 列表 → 管理端模板查看/升版本/试跑；`GET /invoices/{id}/ocr-status` 可轮询阶段与进度。
 
 ## 2. 仓库与环境
 
@@ -109,6 +109,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | OCR 单张推理 | P50 ≈1.4s（P95 ≈2.0s） | baseline 报告 |
 | S3-1 真实链路 20 张 | **20/20 成功**、P50 1012ms、P95 1680ms、max 4995ms | `scripts/ocr_acceptance.py`（`backend/eval/results/ocr_acceptance_*.json`） |
 | S3-2 置信度分布（40 张 / 213 字段） | auto 101 / review 110 / manual 2；阈值 0.90 时 40/40 张进待核对（合成集偏难） | `scripts/confidence_eval.py`（`confidence_eval_*.json`） |
+| S3-3 局部重识别（40 张 / 112 个低置信字段） | **109 个提升（97.3%）**、平均 Δ **+0.180** | `scripts/reread_eval.py`（`reread_eval_*.json`） |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -131,6 +132,8 @@ curl -s -F "file=@票据.jpg" localhost:8000/api/v1/invoices/upload -H "Authoriz
 .venv/Scripts/python.exe scripts/ocr_acceptance.py --samples 20 --username <账号> --password <口令>
 # S3-2 置信度验收（离线，不写库；40 张约 2 分钟）：阈值扫描单调性 + 校验封顶 + auto/review 口径
 .venv/Scripts/python.exe scripts/confidence_eval.py --samples 40
+# S3-3 局部重识别验收（离线，不写库；40 张约 3 分钟）
+.venv/Scripts/python.exe scripts/reread_eval.py --samples 40
 # 轮询识别进度（stage/progress/起止时间）
 curl -s localhost:8000/api/v1/invoices/1/ocr-status -H "Authorization: Bearer <token>"
 # 前端（Vite 5173 + 无头 Edge 9222）：类型检查/构建 + 真实登录冒烟（需要先起后端）
@@ -205,30 +208,31 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-057 | PDF 复用 PyMuPDF（不引 pypdfium2，前 3 页）；抽取规格 DB 优先/YAML 回退；worker 并发 1；协作式 deadline 165s 不硬杀线程 |
 | D-058 | 置信度 = (0.35×锚点行 + 0.65×值行) × agreement × rule_factor；三档 0.90/0.60；校验失败封顶 0.45；整单分只展示不判定 |
 | D-059 | 队列用 `extract_status=need_confirm`（不加 `needs_review` 状态、不加 `low_confidence` 作业态）；auto ≠ confirmed；`/review` 重定向 |
+| D-060 | 重识别按契约异步 `reocr`（202）；只改 raw_text/confidence/source=ocr_retry，值不动；字段 bbox 改原图坐标 |
+| D-061 | 外扩 max(8px,10%行高)、2× 放大（长边 1024）、1.5s 预算；审计只加 `field_reread` 枚举不写行 |
 
-## 7. 下一步：S3-3 局部二次识别（crop 放大重识别）
+## 7. 下一步：S3-4 识别结果 JSON Schema 与落库契约
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S3-3；
-- 流程（AGENTS §11）：spec（`docs/spec/s3-3-*.md`）→ plan → 用户确认 → 写码；
-- 目标：按 `invoice_fields.source_line_no` 取 `ocr_lines.box_json`（四点）→ 四周扩 10% 并 clamp →
-  INTER_CUBIC 放大 2–3 倍 → `recognizer.recognize_line(crop)` → 返回候选 `[{old, new, score}]` 由人选择，
-  **禁止自动覆盖已人工确认值**；整块区域重识别接受 bbox；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S3-4；
+- 流程（AGENTS §11）：spec（`docs/spec/s3-4-*.md`）→ plan → 用户确认 → 写码；
+- 目标：用 Pydantic v2 定义 `OcrResult/OcrLine/ExtractedField/FieldError` 单一契约，导出 JSON Schema 附到
+  `docs/API.md`，供前端 TS 类型与评测脚本共用；`ocr_lines`/`invoice_fields` 落库契约对齐；
+  实现 `GET /invoices/{id}/fields`（契约 §2 已定义，仍标 S3-2/S3-4）；
 - **落地前必须先对账**：
-  1. `audit_logs.action` 枚举**没有** `field_reread`（现只有 upload/confirm_field/sign/...，0002 补过三值）；
-     要么加枚举 + 迁移，要么先只写应用日志——按 §9 先报告再定；
-  2. 新接口 `POST /invoices/{id}/fields/{field}/reread` 与 `POST /invoices/{id}/reread-region` 在 API.md 未定义，
-     需先补契约（权限、入参、候选返回结构、422 边界）；
-  3. 重识别后是否更新 `invoice_fields.confidence/need_review`：应重新走 `services/confidence.py`
-     （`source=ocr_retry`，与首次识别可区分，SCHEMA §9.8），不要手改分数；
-  4. `ocr_lines` 的 box 是**校正图坐标**、`invoice_fields.bbox_json` 是原图外接框——裁剪必须回到识别图坐标系，
-     否则会裁错位置（S3-5 画框同理会踩）；
-- 已就绪：`recognizer.recognize_line(crop)`（S1-3，空裁剪返回 `("",0.0)` 不抛异常）、`ocr_lines` 全量四点坐标、
-  `confidence.resolve_field`、`invoice_fields.bbox_json`；
-- 验收（任务卡）：对一张低置信金额重识别后置信度明显上升；候选列表正确；越界 bbox 返回 422 而非 500。
+  1. 契约里的 `GET /invoices/{id}/fields` 出参（`overall_confidence/needs_confirm/conflicts/items`）
+     与详情接口的 `fields` 有重叠，需明确"谁依赖谁"（详情页已用 `fields`，S3-5 画框要用 `source_line_no` 回查）；
+  2. 任务卡把 `ocr_lines`/`invoice_fields` 的写入放在 S3-4，但 S3-1 已经落了库——S3-4 只做**契约与批量写入优化**，
+     不要重复实现（报告差异）；
+  3. `invoice_fields.field_value` 目前存归一值（遗留 #52），S3-4 应给 `ExtractedField` 补 `raw_value` 并一次改齐；
+  4. bbox 口径已由 S3-3 定为"字段=原图、行=校正图"，JSON Schema 里必须写清楚，否则 S3-5 画框会全偏；
+- 已就绪：`ocr/types.py`（OcrLine/OcrResult/ExtractedField/ExtractionResult + 三个置信度成分）、
+  `ocr_lines` 全量四点、`invoice_fields` 全字段（confidence/need_review/conflict/source/bbox/页码行号）、
+  `services/confidence.py` 三档、`GET /invoices/{id}` 已返回 fields+review_level；
+- 验收（任务卡）：JSON Schema 导出可被前端对照；`ocr_lines` 行数与检测结果一致；旧库上 `alembic upgrade head` 成功。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：S3-1/S3-2 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
+1. **push**：S3-1/S3-2/S3-3 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：计划在 **S3-3（低置信二次识别）** 解决，不要在 S1 继续调；
 4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；
