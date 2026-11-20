@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     # PaddleOCR 模型非线程安全（AGENTS §5）；1 是默认，2 只用于 IO/推理重叠对照
     ocr_worker_max_jobs: int = 1
 
+    # ---------- 置信度聚合（S3-2）----------
+    # 三档口径：>=auto 免人工；[manual, auto) 待核对；<manual 必须人工（D-058）
+    confidence_auto_confirm: float = 0.90
+    confidence_manual_below: float = 0.60
+    # validators 判错的字段封顶到该值（任务卡"直接 <0.5"）
+    confidence_validator_cap: float = 0.45
+    # 基础分 = 锚点行 score × w_anchor + 值行 score × w_value（权重和必须为 1）
+    confidence_weight_anchor: float = 0.35
+    confidence_weight_value: float = 0.65
+
     # ---------- 定时任务（S2-12）----------
     # 每个 API 进程都会起调度器；真正执行前抢 Redis 锁，保证多副本同一次只跑一遍。
     scheduler_enabled: bool = True
@@ -159,6 +169,19 @@ class Settings(BaseSettings):
         if not 1 <= value <= 2:
             raise ValueError("OCR_WORKER_MAX_JOBS 只能是 1 或 2（模型非线程安全）")
         return value
+
+    @model_validator(mode="after")
+    def _check_confidence_config(self) -> "Settings":
+        weights = (self.confidence_weight_anchor, self.confidence_weight_value)
+        if not all(0.0 <= weight <= 1.0 for weight in weights):
+            raise ValueError("置信度权重必须在 [0,1]")
+        if abs(sum(weights) - 1.0) > 1e-6:
+            raise ValueError("置信度权重之和必须为 1")
+        if not 0.0 <= self.confidence_validator_cap < self.confidence_manual_below:
+            raise ValueError("CONFIDENCE_VALIDATOR_CAP 必须小于 CONFIDENCE_MANUAL_BELOW")
+        if not 0.0 <= self.confidence_manual_below < self.confidence_auto_confirm <= 1.0:
+            raise ValueError("置信度阈值必须满足 0 <= manual < auto <= 1")
+        return self
 
     @model_validator(mode="after")
     def _check_storage_mode(self) -> "Settings":

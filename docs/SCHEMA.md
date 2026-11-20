@@ -210,7 +210,7 @@ erDiagram
 | file_id | BIGINT | 否 | — | 原始文件，FK→`invoice_files.id` ✅ | **UNIQUE** ⚠（1:1 靠它保证） |
 | ocr_status | TEXT | 否 | `'pending'` | 枚举见 §9.5 ✅ | idx ⚠ |
 | extract_status | TEXT | 否 | `'raw'` | 枚举见 §9.5 ✅ | idx ⚠ |
-| overall_confidence | NUMERIC(4,3) | 是 | — | 整单置信度（字段置信度聚合，方案 6.4）✅ | CHECK 0–1 ⚠ |
+| overall_confidence | NUMERIC(4,3) | 是 | — | 整单置信度 = **已抽到字段置信度的算术平均**（无字段记 0）；**只用于展示/排序，不参与单字段是否核对的判定**（S3-2/D-058）✅ | CHECK 0–1 ⚠ |
 | quality_flag | TEXT | 是 | — | 影像质量标记 `ok` / `low`（**不设 `fail`**：不可识别由 `ocr_status='failed'` 表达，避免同一事实两处编码），见 §9.5d ✅ | CHECK |
 | duplicate_of | BIGINT | 是 | — | 疑似重复的既有票据 id（自引用，**软提示不硬拦**，方案 6.7 语义级）✅ | idx ⚠ |
 | status | TEXT | 否 | `'draft'` | 枚举见 §9.5 ✅ | 部分唯一索引的条件列 ✅ |
@@ -234,13 +234,13 @@ erDiagram
 | field_value | TEXT | 是 | — | 票面原文形态的值，如 `¥1,234.56` ✅ | — |
 | normalized_value | TEXT | 是 | — | 归一值，金额为两位小数字符串 `1234.56`、日期为 `YYYY-MM-DD`（方案 6.3）✅ | — |
 | raw_text | TEXT | 是 | — | 命中的原始文本行（人工核对页展示"机器看到了什么"）✅ | — |
-| confidence | NUMERIC(4,3) | 是 | — | 字段置信度 `base × agreement × rule_factor`（方案 6.4）✅ | `CHECK BETWEEN 0 AND 1` ✅ |
+| confidence | NUMERIC(4,3) | 是 | — | 字段置信度 = `(0.35×锚点行score + 0.65×值行score) × agreement × rule_factor`（权重/阈值见 `services/confidence.py`）；`validators` 判错封顶 **0.45**（S3-2/D-058）✅ | `CHECK BETWEEN 0 AND 1` ✅ |
 | bbox_json | JSONB | 是 | — | 位置框 **`[x1,y1,x2,y2]`（原图坐标系，两点外接框）**——前端画框只认这一种格式（AGENTS.md §5）；由 `ocr_lines.box_json` 的四点坐标取外接矩形得到 ✅ | — |
 | source | TEXT | 否 | `'ocr'` ⚠ | 枚举见 §9.8（5 值，含二次识别的 `ocr_retry`）✅ | idx ⚠ |
 | source_page_no | INTEGER | 否 | `1` | 命中行所在页码（回查 `ocr_lines` 的唯一键是 `(invoice_id, page_no, line_no)`，缺页码会歧义）⚠ 见「定稿清单」第 3 项 | — |
 | source_line_no | INTEGER | 是 | — | 页内行号，回查 `ocr_lines` 用 ✅ | — |
 | rule_id | BIGINT | 是 | — | 命中的校验规则，FK→`field_rules.id` ✅ | — |
-| need_review | BOOLEAN | 否 | `false` | 是否需要人工确认（`confidence < 0.85` 置 true，方案 3.4 规则 1）✅ | idx ⚠ |
+| need_review | BOOLEAN | 否 | `false` | 是否需要人工确认：置信度 **< 0.90**（`review`）或 **< 0.60**（`manual`）或存在未决冲突（S3-2/D-058）✅ | idx ⚠ |
 | conflict | BOOLEAN | 否 | `false` | 是否存在交叉校验冲突（价税合计 ≠ 金额 + 税额等）✅ | — |
 | conflict_value | TEXT | 是 | — | 冲突时的"校验值 B"（方案 3.4 规则 2 的 A/B 双候选）✅ | — |
 | confirmed | BOOLEAN | 否 | `false` | 人工是否已确认 ✅ | — |
@@ -250,6 +250,11 @@ erDiagram
 **存什么**：**字段级**抽取结果——原值、归一值、原文、置信度、坐标、来源、规则命中、冲突与人工确认痕迹。**谁写**：三阶段抽取流水线（`ocr`/`rule`/`semantic`）、二次识别（`ocr_retry`，方案 6.4）、人工核对（`manual`）。**关键不变式**：`(invoice_id, field_name)` 唯一（一个字段一行，重新抽取是 upsert 不是追加）；冲突时"两个值都留"——识别值在 `field_value`，校验值在 `conflict_value`，**不静默改写**（方案 3.4 规则 2、6.3 校验规则库）。
 
 > 人工修正的审计要求：确认时把"改前值 / 改后值 / 操作人"写进 `audit_logs.detail_json`（方案 6.6 "确认"一行），本表只保留最终值。
+>
+> **置信度三档与待确认状态（S3-2，D-058/D-059）**：`auto ≥0.90` 免人工、`review 0.60–0.90` 待核对、
+> `manual <0.60` 必须人工；`need_review = level != auto`，未决冲突（同优先级多候选）不允许 `auto`。
+> `invoices.extract_status`：全部 `auto` 且无缺失/冲突保持 `raw`；否则置 `need_confirm`；
+> `confirmed` **只由人工确认动作设置**（S3-6）——"机器自动通过"不等于"人已确认"。
 
 ### 3.4 ocr_lines
 

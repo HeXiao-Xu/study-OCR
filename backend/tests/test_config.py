@@ -76,6 +76,13 @@ def test_ocr_worker_max_jobs_is_capped(value: int) -> None:
         _settings(ocr_worker_max_jobs=value)
 
 
+def test_confidence_settings_defaults() -> None:
+    settings = _settings()
+    assert (settings.confidence_auto_confirm, settings.confidence_manual_below) == (0.90, 0.60)
+    assert settings.confidence_validator_cap == 0.45
+    assert settings.confidence_weight_anchor + settings.confidence_weight_value == pytest.approx(1.0)
+
+
 @pytest.mark.parametrize("missing", ["database_url", "redis_url", "minio_bucket", "jwt_secret"])
 def test_settings_missing_required_field_raises(missing: str) -> None:
     data = {key: value for key, value in _BASE.items() if key != missing}
