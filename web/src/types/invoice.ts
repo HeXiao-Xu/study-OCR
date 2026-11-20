@@ -48,6 +48,42 @@ export interface OcrStage {
   error: string | null
 }
 
+/** 批量上传（S3-8）：POST 的逐项结果与 GET 的汇总。 */
+export type BatchItemStatus = 'created' | 'duplicate' | 'rejected'
+
+export interface BatchUploadItem {
+  filename: string
+  status: BatchItemStatus
+  invoice_id: number | null
+  job_id: number | null
+  error: string | null
+}
+
+export interface BatchUploadData {
+  batch_id: string
+  created: number
+  duplicates: number
+  rejected: number
+  items: BatchUploadItem[]
+}
+
+export interface BatchInvoiceItem {
+  invoice_id: number
+  filename: string
+  ocr_status: OcrStatus
+  extract_status: string
+  progress: number
+  error: string | null
+}
+
+export interface BatchSummaryData {
+  batch_id: string
+  total: number
+  counts: Record<string, number>
+  items: BatchInvoiceItem[]
+  created_at: string
+}
+
 /** 重复检测（S3-7）：strong 会在 confirm 时 409，weak 只提示。 */
 export interface DuplicateMatch {
   invoice_id: number

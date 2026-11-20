@@ -6,6 +6,7 @@ import type {
   InvoiceFieldsUpdateRequest,
   InvoiceLinesData,
   InvoiceListData,
+  BatchSummaryData,
   DuplicateCheckData,
   InvoiceListParams,
   InvoiceOut,
@@ -45,6 +46,17 @@ export async function updateInvoiceFields(
     silent: true,
   })
   return unwrap(envelope)
+}
+
+/** 批量上传汇总（S3-8）：轮询逐项进度；调用即顺带触发服务端补位。 */
+export async function fetchBatch(batchId: string): Promise<BatchSummaryData> {
+  const envelope = await get<BatchSummaryData>(`/invoices/batch/${batchId}`, { silent: true })
+  return unwrap(envelope)
+}
+
+/** 失败批次项重试（S3-8）：用原文件重投，不建新单。 */
+export async function retryBatchItem(batchId: string, invoiceId: number): Promise<void> {
+  await post(`/invoices/batch/${batchId}/items/${invoiceId}/retry`, undefined, { silent: true })
 }
 
 /** 重复检测（S3-7）：strong 时 confirm 会 409；weak 只提示不阻断。 */

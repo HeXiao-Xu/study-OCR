@@ -1,19 +1,19 @@
 <script setup lang="ts">
 /**
- * 上传页（S2-10）：拖拽/多选 → 本地校验 → 串行上传 → 逐文件状态与进度 → 识别状态轮询。
+ * 上传页（S2-10 → S3-8）：拖拽/多选 → 本地校验 → 单文件串行 / 多文件批量 → 逐项进度与重试。
  *
  * 三个刻意的取舍：
- * - **串行上传**：一次 20 个同时打队列会把 OCR worker 压爆，逐文件更能看清失败原因；
- * - **409 是绿色提示**：重复影像是正常业务（同一张票传了两次），给"查看已上传票据"链接；
- * - **轮询用 `GET /invoices/{id}/ocr-status`**（S3-1）：拿阶段明细与 progress，上传页直接显示百分比。
+ * - **单文件仍串行**：一个文件没必要走 batch，失败原因也更直接；
+ * - **多文件走 POST /invoices/batch**：服务端限单用户并发 ≤3、其余排队，前端只轮询汇总；
+ * - **409 是绿色提示**：重复影像是正常业务（同一张票传了两次），给"查看已上传票据"链接。
  */
 import { ElMessage, type UploadFile, type UploadInstance, type UploadRawFile } from 'element-plus'
 import { computed, onBeforeUnmount, ref } from 'vue'
 
-import { uploadInvoice } from '../api/files'
+import { uploadBatch, uploadInvoice } from '../api/files'
 import { ApiError } from '../api/http'
-import { waitForOcr } from '../api/invoices'
-import type { OcrStatus } from '../types/invoice'
+import { fetchBatch, retryBatchItem, waitForOcr } from '../api/invoices'
+import type { BatchSummaryData, OcrStatus } from '../types/invoice'
 
 type TaskStatus =
   | 'pending'
@@ -36,24 +36,28 @@ interface UploadTask {
   invoiceId: number | null
   thumb: string | null
   ocrStatus: OcrStatus | null
-  jobStatus: OcrStatus | null
   jobError: string | null
   controller: AbortController | null
 }
 
-const MAX_FILES = 20
+const MAX_FILES = 30
 const MAX_UPLOAD_MB = Number(import.meta.env.VITE_MAX_UPLOAD_MB ?? 20)
 const ALLOWED_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'pdf'])
 const ALLOWED_MIMES = new Set(['image/jpeg', 'image/png', 'application/pdf'])
+const BATCH_POLL_MS = 3000
+const BATCH_POLL_MAX_MS = 10 * 60 * 1000
 
 const uploadRef = ref<UploadInstance>()
 const tasks = ref<UploadTask[]>([])
 const running = ref(false)
-const queue: UploadTask[] = []
+const batchId = ref<string | null>(null)
 let sequence = 0
+let startTimer: ReturnType<typeof setTimeout> | null = null
+let batchTimer: ReturnType<typeof setInterval> | null = null
+let batchStartedAt = 0
 
 const STATUS_LABEL: Record<TaskStatus, string> = {
-  pending: '等待上传',
+  pending: '待上传',
   uploading: '上传中',
   recognizing: '识别中',
   done: '识别完成',
@@ -78,6 +82,7 @@ const stats = computed(() => {
     done: list.filter((task) => task.status === 'done').length,
     failed: list.filter((task) => task.status === 'failed' || task.status === 'local_error').length,
     duplicate: list.filter((task) => task.status === 'duplicate').length,
+    active: list.filter((task) => task.status === 'recognizing' || task.status === 'uploading').length,
   }
 })
 
@@ -114,48 +119,45 @@ function handleChange(uploadFile: UploadFile): void {
 
   const problem = localError(raw)
   const isImage = (raw.type || '').startsWith('image/')
-  const task: UploadTask = {
+  tasks.value.push({
     id: ++sequence,
     file: raw,
     name: raw.name,
     size: raw.size,
-    progress: problem ? 0 : 0,
+    progress: 0,
     status: problem ? 'local_error' : 'pending',
     message: problem ?? '',
     invoiceId: null,
     thumb: isImage ? URL.createObjectURL(raw) : null,
     ocrStatus: null,
-    jobStatus: null,
     jobError: null,
     controller: null,
-  }
-  tasks.value.push(task)
-  // push 进去后要拿到 Vue 的**响应式代理**再改；直接改原始 task 对象不会触发视图更新
-  const current = tasks.value[tasks.value.length - 1]
-  if (!problem) {
-    queue.push(current)
-    void processQueue()
-  }
+  })
+  scheduleStart()
 }
 
-function handleExceed(): void {
-  ElMessage.warning(`一次最多 ${MAX_FILES} 个文件，已忽略多出的文件`)
+/** el-upload 是一次选一个回调，攒 350ms 再决定走单文件还是批量。 */
+function scheduleStart(): void {
+  if (startTimer) clearTimeout(startTimer)
+  startTimer = setTimeout(() => {
+    startTimer = null
+    void startSelected()
+  }, 350)
 }
 
-async function processQueue(): Promise<void> {
+async function startSelected(): Promise<void> {
   if (running.value) return
-  running.value = true
-  try {
-    while (queue.length) {
-      const task = queue.shift()
-      if (task) await runUpload(task)
-    }
-  } finally {
-    running.value = false
+  const pending = tasks.value.filter((task) => task.status === 'pending')
+  if (!pending.length) return
+  if (pending.length === 1) {
+    await runUpload(pending[0])
+    return
   }
+  await runBatch(pending)
 }
 
 async function runUpload(task: UploadTask): Promise<void> {
+  running.value = true
   task.status = 'uploading'
   task.progress = 0
   try {
@@ -178,6 +180,53 @@ async function runUpload(task: UploadTask): Promise<void> {
     }
     task.status = 'failed'
     task.message = error instanceof ApiError ? error.message : '上传失败，请重试'
+  } finally {
+    running.value = false
+  }
+}
+
+async function runBatch(pending: UploadTask[]): Promise<void> {
+  running.value = true
+  pending.forEach((task) => {
+    task.status = 'uploading'
+    task.progress = 0
+    task.message = '批量上传中…'
+  })
+  try {
+    const data = await uploadBatch(
+      pending.map((task) => task.file),
+      (percent) => pending.forEach((task) => (task.progress = percent)),
+    )
+    batchId.value = data.batch_id
+    pending.forEach((task, index) => {
+      const item = data.items[index]
+      if (!item) {
+        task.status = 'failed'
+        task.message = '批次结果缺失，请刷新后重试'
+        return
+      }
+      task.invoiceId = item.invoice_id
+      if (item.status === 'duplicate') {
+        task.progress = 100
+        task.status = 'duplicate'
+        task.message = '该票据已上传'
+      } else if (item.status === 'rejected') {
+        task.status = 'failed'
+        task.message = item.error ?? '上传被拒绝'
+      } else {
+        task.progress = 0
+        task.status = 'recognizing'
+        task.message = '排队识别中…'
+      }
+    })
+    if (data.created > 0) startBatchPolling()
+  } catch (error) {
+    pending.forEach((task) => {
+      task.status = 'failed'
+      task.message = error instanceof ApiError ? error.message : '批量上传失败，请重试'
+    })
+  } finally {
+    running.value = false
   }
 }
 
@@ -189,7 +238,6 @@ function startPolling(task: UploadTask): void {
     task.invoiceId,
     (status) => {
       task.ocrStatus = status.ocr_status
-      task.jobStatus = status.ocr_status
       task.jobError = status.stages.find((stage) => stage.error)?.error ?? null
       task.message = `识别中… ${status.progress}%`
     },
@@ -201,16 +249,86 @@ function startPolling(task: UploadTask): void {
       task.message = '识别时间较长，请稍后在详情页查看'
       return
     }
-    if (task.ocrStatus === 'failed' || task.jobStatus === 'failed') {
+    if (task.ocrStatus === 'failed') {
       task.status = 'failed'
-      task.message = task.jobError
-        ? `识别失败：${task.jobError.slice(0, 80)}`
-        : '识别失败，请稍后在详情页查看'
+      task.message = task.jobError ? `识别失败：${task.jobError.slice(0, 80)}` : '识别失败'
     } else {
       task.status = 'done'
+      task.progress = 100
       task.message = '识别完成'
     }
   })
+}
+
+function applyBatchSummary(summary: BatchSummaryData): void {
+  const byInvoice = new Map(summary.items.map((item) => [item.invoice_id, item]))
+  for (const task of tasks.value) {
+    if (task.invoiceId === null) continue
+    const item = byInvoice.get(task.invoiceId)
+    if (!item) continue
+    task.progress = item.progress
+    task.ocrStatus = item.ocr_status
+    task.jobError = item.error
+    if (item.ocr_status === 'succeeded') {
+      task.progress = 100
+      task.status = 'done'
+      task.message = '识别完成'
+    } else if (item.ocr_status === 'failed') {
+      task.status = 'failed'
+      task.message = item.error ? `识别失败：${item.error.slice(0, 80)}` : '识别失败'
+    } else {
+      task.status = 'recognizing'
+      task.message = `识别中… ${item.progress}%`
+    }
+  }
+}
+
+function startBatchPolling(): void {
+  if (!batchId.value) return
+  if (batchTimer) return
+  batchStartedAt = Date.now()
+  const tick = async (): Promise<void> => {
+    if (!batchId.value) return stopBatchPolling()
+    try {
+      const summary = await fetchBatch(batchId.value)
+      applyBatchSummary(summary)
+      const pending = (summary.counts.pending ?? 0) + (summary.counts.running ?? 0)
+      if (pending === 0) stopBatchPolling()
+    } catch {
+      // 单次轮询失败不终止，下一次再试；超时兜底在下面
+    }
+    if (Date.now() - batchStartedAt > BATCH_POLL_MAX_MS) {
+      stopBatchPolling()
+      for (const task of tasks.value) {
+        if (task.status === 'recognizing') {
+          task.status = 'timeout'
+          task.message = '识别时间较长，请稍后在详情页查看'
+        }
+      }
+    }
+  }
+  void tick()
+  batchTimer = setInterval(() => void tick(), BATCH_POLL_MS)
+}
+
+function stopBatchPolling(): void {
+  if (batchTimer) {
+    clearInterval(batchTimer)
+    batchTimer = null
+  }
+}
+
+async function retryTask(task: UploadTask): Promise<void> {
+  if (!batchId.value || task.invoiceId === null) return
+  try {
+    await retryBatchItem(batchId.value, task.invoiceId)
+    task.status = 'recognizing'
+    task.progress = 0
+    task.message = '已重新排队，识别中…'
+    startBatchPolling()
+  } catch (error) {
+    task.message = error instanceof ApiError ? error.message : '重试失败，请稍后再试'
+  }
 }
 
 function removeTask(task: UploadTask): void {
@@ -218,11 +336,11 @@ function removeTask(task: UploadTask): void {
   if (task.thumb) URL.revokeObjectURL(task.thumb)
   const index = tasks.value.findIndex((item) => item.id === task.id)
   if (index >= 0) tasks.value.splice(index, 1)
-  const queued = queue.indexOf(task)
-  if (queued >= 0) queue.splice(queued, 1)
 }
 
 onBeforeUnmount(() => {
+  if (startTimer) clearTimeout(startTimer)
+  stopBatchPolling()
   for (const task of tasks.value) {
     task.controller?.abort()
     if (task.thumb) URL.revokeObjectURL(task.thumb)
@@ -257,7 +375,7 @@ onBeforeUnmount(() => {
         :limit="MAX_FILES"
         accept=".jpg,.jpeg,.png,.pdf"
         :on-change="handleChange"
-        :on-exceed="handleExceed"
+        :on-exceed="() => ElMessage.warning(`一次最多 ${MAX_FILES} 个文件`)"
         class="uploader"
       >
         <div class="drop-zone">
@@ -272,7 +390,7 @@ onBeforeUnmount(() => {
         :closable="false"
         show-icon
         title="上传后自动排队识别"
-        description="表格里跟踪进度与识别状态；轮询最多 120 秒，超时会提示到详情页查看。"
+        description="多文件走批量接口：服务端单用户最多同时识别 3 个，其余排队；页面每 3 秒刷新逐项进度。"
         class="upload-alert"
       />
     </el-card>
@@ -282,8 +400,8 @@ onBeforeUnmount(() => {
         <div class="card-header">
           <span>上传队列</span>
           <span class="card-sub">
-            共 {{ stats.total }} ｜ 完成 {{ stats.done }} ｜ 失败 {{ stats.failed }} ｜ 重复
-            {{ stats.duplicate }}
+            共 {{ stats.total }} ｜ 完成 {{ stats.done }} ｜ 识别中 {{ stats.active }} ｜ 失败
+            {{ stats.failed }} ｜ 重复 {{ stats.duplicate }}
           </span>
         </div>
       </template>
@@ -342,8 +460,16 @@ onBeforeUnmount(() => {
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="90">
+        <el-table-column label="操作" width="140">
           <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'failed' && row.invoiceId && batchId"
+              text
+              type="primary"
+              @click="retryTask(row)"
+            >
+              重试
+            </el-button>
             <el-button
               text
               type="danger"
