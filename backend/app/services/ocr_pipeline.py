@@ -473,6 +473,12 @@ def _flush_progress(
     db: Session, job: OcrJob, metrics: dict[str, Any], stage: str, *, commit: bool = True
 ) -> None:
     job.stage = stage
+    # 引擎版本与检测参数落在作业行上（论文复现需要，SCHEMA §3.5）；metrics 里也留一份
+    engine_info = metrics.get("engine") or {}
+    if engine_info.get("version"):
+        job.engine_version = str(engine_info["version"])
+    if engine_info.get("det_params"):
+        job.params_json = dict(engine_info["det_params"])
     # 每次赋一个新对象：同一个 dict 反复赋同一属性不会触发 flush（坑过一次）
     job.metrics = dict(metrics)
     if commit:
@@ -508,6 +514,11 @@ def run_pipeline(db: Session, job: OcrJob, *, deps: PipelineDeps | None = None) 
     clock = deps.clock
     deadline = clock() + settings.ocr_pipeline_deadline_seconds
     metrics = _new_metrics(attempt=job.retry_count)
+    metrics["engine"] = {
+        "name": "paddleocr",
+        "version": getattr(engine, "version", ""),
+        "det_params": options.as_det_params(),
+    }
     stage = OcrStage.PREPROCESS.value
 
     try:
@@ -555,11 +566,6 @@ def run_pipeline(db: Session, job: OcrJob, *, deps: PipelineDeps | None = None) 
         metrics["timings_ms"]["ocr"] = ocr_ms
         metrics["pages_ocr"] = len(pages)
         metrics["counts"]["lines"] = sum(len(page.lines) for page in pages)
-        metrics["engine"] = {
-            "name": "paddleocr",
-            "version": getattr(engine, "version", ""),
-            "det_params": options.as_det_params(),
-        }
         _complete(
             metrics,
             OcrStage.DETECT.value,

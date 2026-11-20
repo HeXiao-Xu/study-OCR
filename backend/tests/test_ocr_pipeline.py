@@ -185,6 +185,8 @@ def _vat_digital_lines() -> list[OcrLineModel]:
 
 
 class FakeEngine:
+    version = "2.7.3"
+
     def __init__(self, pages: dict[int, list[OcrLineModel]], *, error: Exception | None = None,
                  on_call=None) -> None:
         self.pages = pages
@@ -342,6 +344,8 @@ def test_run_pipeline_happy_path_writes_rows(session_factory, owner) -> None:
             "preprocess", "detect", "recognize", "extract"]
         assert job.metrics["stages"][1]["elapsed_ms"] is None      # detect 与 recognize 合并
         assert job.metrics["timings_ms"]["total"] > 0
+        assert job.engine_version == "2.7.3"           # 论文复现要记引擎版本
+        assert job.params_json["lang"] == "ch"
 
 
 @pytest.mark.integration

@@ -6,10 +6,10 @@
 
 ## 当前状态
 
-- 阶段：**阶段 2（基础框架，M1）已完成**（S2-1 ~ S2-12 全部完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ **S2-12**（共 25 张卡，全部 ✅ 通过）
-- 最近完成：**S2-12 定时任务骨架与阶段收口**（APScheduler + Redis 时段锁 + 文档对账；双进程实测通过）
-- 下一步：**S3-1 OCR Worker 串起全链路**（下载 → 预处理 → 检测识别 → 票种 → 抽取 → 校验）
+- 阶段：**阶段 3（识别流水线上线，M2）进行中**（S3-1 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、**S3-1**（共 26 张卡，全部 ✅ 通过）
+- 最近完成：**S3-1 OCR Worker 串起全链路**（下载→渲染/预处理→识别→票种→抽取→校验→落库；20 张实测 20/20、P95 1.68s）
+- 下一步：**S3-2 字段级置信度聚合与低置信度确认队列**
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
@@ -51,7 +51,7 @@
 [x] S2-12 定时任务骨架与阶段收口
 
 ## 阶段 3：识别流水线上线（M2）
-[ ] S3-1 OCR Worker 串起全链路 ★关键
+[x] S3-1 OCR Worker 串起全链路 ★关键
 [ ] S3-2 字段级置信度聚合与低置信度确认队列 ★关键
 [ ] S3-3 局部二次识别（crop 放大重识别）
 [ ] S3-4 识别结果 JSON Schema 与落库
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S3-1 | `backend/app/services/ocr_pipeline.py`（新：`run_pipeline` + `PipelineDeps` 注入 + 19 条流水线测试（6 单元 + 13 集成））、`backend/app/services/ocr_status_service.py`（新）、`backend/app/tasks/{ocr_task,worker}.py`、`backend/app/ocr/{intake,extractor}.py`、`backend/app/services/{storage,job_service}.py`、`backend/app/api/v1/invoices.py`（`GET /{id}/ocr-status`）、`backend/app/schemas/invoice.py`（`OcrStageOut/OcrStatusData`）、`backend/alembic/versions/0004_ocr_jobs_metrics_and_times.py`、`backend/app/models/ocr_jobs.py`、`backend/tests/{test_ocr_pipeline,test_ocr_status,test_storage}.py` + `test_{jobs,intake,extractor,config}.py` 补例、`scripts/ocr_acceptance.py`（新）、`web/src/{api/invoices.ts,types/invoice.ts,views/Upload.vue}`、`docs/{spec,plan}/s3-1-ocr-pipeline.md` | ① 迁移 0004：`ocr_jobs` 加 `metrics/started_at/finished_at`，`alembic check` 零差异；② 流水线：下载（`storage.get_bytes`）→ 临时目录 → `intake.prepare_pages`（PDF 前 3 页）→ PaddleOCR（worker 单例）→ `classify_ticket` → DB 模板规则抽取（YAML 回退）→ `run_validators` → 落 `ocr_lines`/`invoice_fields`/`invoices` 冗余列；③ **真实验收 20 张：20/20 成功（100%）、P50 1012ms、P95 1680ms、max 4995ms、临时目录残留 0**；④ `ocr-status` 返回 4 阶段、`progress`（10/30/40/20）、真 `started_at/finished_at`、`engine_version=2.7.3`；⑤ 详情接口可见字段（如行程单 4 字段）、列表/详情与 `ocr_status=succeeded` 一致；⑥ 单元 365 passed、集成 169 passed、`typecheck`/`build` 通过、上传页冒烟"识别完成"；⑦ 失败分类：对象缺失可重试、契约错误/密文/作废票永久失败；僵尸线程 `superseded` 回滚业务写入；⑧ 测试数据、MinIO 对象与验收账号已清理 | ✅ 通过（`field_value` 暂存归一值待 S3-4；D-055/D-056/D-057） |
 | S2-12 | `backend/app/tasks/scheduler.py`、`backend/app/core/config.py`（scheduler/cron/锁配置）、`backend/app/main.py`（lifespan）、`backend/tests/{test_scheduler,test_api_docs}.py`、`requirements.txt/lock`（APScheduler 3.11.1 + tzlocal 5.4.5）、`.env.example`、`docs/{spec,plan}/s2-12-scheduler.md` | ① APScheduler 3.11.1 安装并钉住；② lifespan 启停调度器，`SCHEDULER_ENABLED=false` 完全不启动（测试默认关）；③ 锚定任务每日 02:00（Asia/Shanghai），cron/锁 key/TTL 进 Settings；④ 多副本：`SET NX EX` 抢锁，**成功后锁保留到 TTL**（时段去重），失败释放 + Lua token 校验；⑤ 双 uvicorn + 同一 Redis、`*/10`、TTL=5：4 个 tick 共执行 **4** 次、另一侧 4 次 skipped（不是 8 次）；⑥ `test_api_docs` 保证实际 OpenAPI 路由都在 API.md；⑦ `alembic check` 零差异；⑧ `pytest` 341 passed、集成 146、smoke 9 OK | ✅ 通过（anchor 任务仍为 S4-7 占位，只日志；D-050） |
 | S2-11 | `web/src/views/{InvoiceList,InvoiceDetail}.vue`、`web/src/utils/format.ts`、`web/src/api/invoices.ts`（list/update）、`web/src/types/invoice.ts`（全量类型）、`router`（/invoices 列表+详情）、`MainLayout`（reviewer 票据查询）、`backend/app/schemas/invoice.py`（补 vat_digital）+ `tests/test_invoices.py`、`scripts/ui_smoke.mjs`（`--steps`）、`docs/{spec,plan}/s2-11-invoice-ui.md` | ① `npm run typecheck` / `npm run build` 通过；② 列表筛选（状态/抽取/票种/关键字/日期/排序）+ 分页，URL query 为唯一状态源，`?status=draft&invoice_type=vat_digital` 刷新后仍命中；③ 详情字段表（置信度<85% 标红、待确认/冲突标签）；④ 草稿编辑 buyer_name → 保存 → 页面刷新可见，DB `confirmed=true/source=manual/version 0→1`；⑤ submitter 金额字段置灰、reviewer 金额需勾选确认（后端 42202 兜底）；⑥ 影像预览按 D-049 占位"待 S3-5"；⑦ reviewer 菜单"票据查询"且可看全量；⑧ `pytest` 全绿（新增 vat_digital 筛选用例）、`smoke.py` 9 OK；⑨ 测试数据/MinIO/Redis 已清理 | ✅ 通过（预览占位；后端补 vat_digital 漏项；D-049） |
 | S2-10 | `web/src/views/Upload.vue`、`web/src/api/{files,invoices}.ts`、`web/src/types/invoice.ts`、`web/src/api/http.ts`（`silent`）、`router`（/upload 换组件）、`.env.development/.env.example`（`VITE_MAX_UPLOAD_MB`）、`scripts/ui_smoke.mjs`（`--upload`）、`docs/{spec,plan}/s2-10-upload-ui.md` | ① `npm run typecheck` / `npm run build` 通过；② 真实上传 JPEG：行状态"失败 / 识别失败：TaskNotReadyError: OCR 流水线未接入（S3-1）"（S2-7 真实行为）；③ 同文件重传：绿色"已上传 / 该票据已上传 + 查看链接"，无全局红条；④ `.txt` 本地拒绝"只支持 JPG/PNG/PDF"；⑤ 串行上传 + 单文件/总进度，轮询 3s 起退避、120s 上限；⑥ `scripts/smoke.py` **9 OK / 0 FAIL**；⑦ 测试数据/MinIO/Redis 已清理 | ✅ 通过（轮询用详情接口，S3-1 换 `ocr-status`；批量不自动跳详情；D-048） |
@@ -164,7 +165,7 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 14 | 预处理对检测是负收益（Hmean -0.026） | 说明 S1-2 的部分步骤在"本来就没歪"的图上纯损失 | S6 做逐开关消融，按票种/扰动分组给出"什么情况下该开" |
 | 15 | 真实样本 R-001 的票种仍未确认 → 判为 unknown，只抽出 1 个字段 | 论文里"真实样本定性对照"只有 1 个数字 | 你告知票种后补 MANIFEST；必要时为新票种补模板 |
 | 16 | S1-2 的"肉眼确认不躺倒不扭曲"无法由 AI 完成 | 合成集与 R-001 的对照图需人工抽查一次 | 见 `backend/eval/results/preprocess/*_compare.jpg` 与 `layout/*_layout.jpg`（本地、不入库） |
-| 17 | `intake.prepare_input` 还没接进 S3 的 Worker | PDF 通道与重拍提示目前只有脚本级验证 | S3-1 串流水线时接上（接口已定） |
+| 17 | ✅ 已闭合（S3-1）：`intake.prepare_pages` 已接进 Worker，PDF 多页与照片重拍提示均走该入口 | — | — |
 | 18 | 重拍提示在合成集上触发了 18/60（多为远景/贴边） | 合成集里"故意拍坏"的样本本来就多，属预期 | S3 的前端上传页展示引导与提示；真实用户场景触发率应远低于此 |
 | 19 | 票种判对率是**合成集**上的 100% | 真实票据（尤其遮挡严重的）会更低 | 论文如实写"合成集 100%，真实样本仅定性"；S6 用真实样本抽检 |
 | 20 | `audit_logs.action` 仍缺 `template_create` / `report_create` / `issue_cert` | API.md 要求写审计，SCHEMA 枚举未覆盖 | 在 S2-8 / S5-1 / S4-6 开始前按 D-040 流程补 SCHEMA + 迁移 |
@@ -180,16 +181,16 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 30 | 上传后的 `ocr_jobs` 只落 `pending`，未真正入队/执行 | ARQ 框架属 S2-7，当前没有 Worker | S2-7 用 ARQ 投递并在提交后入队；上传接口形状不变（D-044） |
 | 31 | S4 前本地 MinIO 存明文（`is_cipher=false`） | 信封/SM4 未实现；prod 已禁止该配置 | S4-3/S4-4 接入后切密文、`is_cipher=true`、删除 `STORAGE_ALLOW_PLAINTEXT` 开关 |
 | 32 | 不支持 TIFF | 契约白名单只有 jpeg/png/pdf（任务卡含 TIFF） | 业务确需时先改 API.md + 魔数白名单 |
-| 33 | `ocr_task` 在 S3-1 前必然 `failed` | 真实流水线未接；框架已用测试与真实 worker 验证 | S3-1 替换 `_run_pipeline` 后正常；错误信息已写明原因 |
-| 34 | 僵尸恢复用 `created_at` 近似（没有 `started_at` 列） | 队列积压超过 30min 可能被误判为中断 | 阈值 1800s；论文写明局限；若要精确需改 SCHEMA 加列 |
-| 35 | 入队失败后票据已落库、job failed，缺"重跑失败作业"入口 | 客户端重试会命中 sha256 去重（409） | S3-1 后补运维/接口重跑；当前按失败人工处理 |
-| 36 | layout 的 `regions/aspect_ratio` 仍由 YAML 提供（DB 契约没有这两列） | 模板 CRUD 管不到版面区域 | S3-1 决定"YAML 版式 + DB 关键字/规格"的组合方式；若要全入库需先改 SCHEMA |
+| 33 | ✅ 已闭合（S3-1）：`ocr_task` 已接真实流水线，20 张实测全部 `succeeded` | — | — |
+| 34 | 僵尸恢复仍用 `created_at` 近似 | 0004 已加 `started_at`，但恢复逻辑仍按 `created_at`；队列积压超 30min 可能误判 | 若要精确，把 `recover_stale_jobs` 的判据换成 `started_at`（需先确认积压场景） |
+| 35 | 仍缺"重跑失败作业"入口 | `job_service` 对终态作业直接跳过，客户端重试会命中 sha256 去重（409） | S3-8（批量上传/单条重试）里补；当前按失败人工处理 |
+| 36 | layout 的 `regions/aspect_ratio` 仍由 YAML 提供（DB 契约没有这两列） | 模板 CRUD 管不到版面区域 | ✅ S3-1 已定：分类/版式用 YAML，抽取规格用 DB `field_specs_json`（缺票种回退 YAML，`metrics.rules_source` 可见）；全入库需先改 SCHEMA |
 | 37 | `template_create` 审计动作仍缺枚举值、未写审计行 | SCHEMA 枚举没有该值（D-040 已登记同类缺口） | 在 S4-7 前与 `report_create`/`issue_cert` 一起补 SCHEMA + 迁移 |
 | 38 | seed 是指令而非启动自动执行 | `create_app()` 启动不连库（测试/健康检查要能离线跑） | 部署脚本（S2-12/S7）调用 `scripts/seed_templates.py`；已有数据跳过 |
 | 39 | 业务页面用占位（我的票据/上传/待核对/待审核/模板/规则/证书/审计） | S2-10/S2-11/S5 的页面还没做 | 对应任务卡逐个替换 `Placeholder.vue`；页面明确标"待实现"，不放假数据 |
 | 40 | 前端没有单测框架 | 目前只有 `typecheck` + `build` + 浏览器冒烟 | 若后续交互复杂（上传/轮询/字段编辑），评估引入 Vitest（需用户确认新依赖） |
 | 41 | access/refresh 存 localStorage（XSS 可读） | D-021 已接受的取舍 | 全项目禁止 `v-html` 渲染用户内容；S6 安全测试里验证 CSP/转义 |
-| 42 | 识别轮询用 `GET /invoices/{id}` 而非 `ocr-status` | 专属接口 `GET /invoices/{id}/ocr-status` 尚未实现（S3-1） | S3-1 落地后只改 `web/src/api/invoices.ts::waitForOcr` |
+| 42 | ✅ 已闭合（S3-1）：上传页 `waitForOcr` 已改调 `GET /invoices/{id}/ocr-status` 并显示进度百分比 | — | — |
 | 43 | 批量上传完不自动跳详情 | 任务卡写"上传完成跳 /invoices/{id}"；20 个文件跳走会丢进度 | 逐行给"查看详情"链接；单文件也不强制跳，S2-11 详情页可用后再评估 |
 | 44 | `GET /invoices/{id}/image` 预览接口未实现 | API 备注指向它（详情不返回影像二进制） | S2-11 已用占位卡片"待 S3-5"；S3-5/S5-4 落地后替换预览组件 |
 | 45 | 详情页影像不可见 | 预览依赖 S4 信封/解密；临时明文接口会绕过安全边界 | 等 S3-5；答辩/演示时明确说明这是加密链路的前置依赖 |
@@ -197,6 +198,7 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 47 | 字段中文标签/票种/状态文案维护在前端 | 后端没有字典接口（API.md 未定义） | 新增字段时同步 `web/src/utils/format.ts` 与后端 `INVOICE_FIELD_NAMES` |
 | 48 | `anchor_audit_task` 仍是占位（只日志） | 审计哈希链在 S4-7 | S4-7 替换实现，调度骨架不动；现在不得伪造审计行 |
 | 49 | 成功执行后锁保留到 TTL（默认 1h），失败才释放 | 防止同一 tick 多副本重复执行；TTL 必须小于调度周期 | 默认每日任务下 1h 足够；若将来改高频 cron，必须同步调小 TTL |
+| 52 | `invoice_fields.field_value` 暂存**归一值**（契约写"票面原文形态"如 `¥1,234.56`） | 抽取器 `ExtractedField` 只暴露归一值与整行 `raw_text`，不暴露原始子串 | S3-4 给 `ExtractedField` 补 `raw_value` 后一次改齐（`normalized_value` 已是归一值，不丢信息） |
 | 50 | API.md 仍保留 S3/S4/S5 未实现接口的标注 | 对账只保证"已实现 → 有文档"这一个方向 | 后续任务把对应接口实现后，更新 API.md 的实现标记与测试覆盖 |
 | 51 | 界面仍是第一版视觉，没有设计稿/完整设计系统 | 任务卡没有美化项，先保证主流程与角色落地 | S3-5 会重做详情工作区；其余页面按反馈继续打磨（颜色/密度/品牌素材） |
 | 52 | 登录页品牌区是文字 + 字母 S 占位 | 没有校徽/系统 Logo 素材 | 答辩前可替换为学校/项目 Logo；布局不需要改 |

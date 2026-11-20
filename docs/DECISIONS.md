@@ -1064,3 +1064,60 @@
 - **代价**：专票/汽车票等真实票据只能走 `unknown` 低置信 + 人工，或在后续版本扩展；这是论文范围取舍。
 - **验证**：`typecheck`/`build` 通过；root 打开 `/templates` 显示"当前 5 个票种已全部覆盖"，
   页面不显示「新建模板」按钮（DOM 检查 false）；编辑升版本路径仍可用。
+
+---
+
+## D-055 `ocr_jobs` 一 run 一行 + 提交语义扩到 `invoices.ocr_status`
+
+- **日期**：2026-11-20（S3-1，用户确认）
+- **背景**：SCHEMA §3.5 原写"识别流水线每个阶段一条作业记录"，但表里**没有 `run_id`**：
+  一次运行会产生 4 行（preprocess/detect/recognize/extract），却无法把同一轮的行归组，
+  `ocr-status` 的 `stages` 也拼不出来；重试后更无法区分"第几次运行的哪一阶段"。
+- **决策**：
+  1. **一次运行一行**（1 个 ARQ 作业 = 1 行）：`stage` 记当前/最后阶段，逐阶段状态与耗时写 `metrics.stages`；
+     重试复用该行（`retry_count` 记第几次尝试）。
+  2. 中途提交的豁免从"只有 `ocr_jobs`"扩到**两处**：`ocr_jobs.stage/metrics` 与
+     `invoices.ocr_status='running'`（都只为一件事：阶段进度进行中可见）。
+     业务数据（`ocr_lines`/`invoice_fields`/`invoices` 其余列）只在最后一次事务提交，失败整批回滚。
+- **代价**：作业历史不再按阶段分行，"第 n 次运行的 preprocess 耗时"要从 `metrics` 里读；
+  `metrics` JSONB 随阶段增加会变大（已限 `warnings` ≤20 条）。
+- **验证**：`pytest -m integration tests/test_ocr_pipeline.py`（多页合并、空识别、僵尸 attempt、唯一索引冲突）；
+  `tests/test_ocr_status.py` 断言 stages 来自 metrics、无 metrics 时退化单条。
+
+---
+
+## D-056 `ocr_jobs` 新增 `metrics` / `started_at` / `finished_at`（推翻 S2-7 的"不加列"）
+
+- **日期**：2026-11-20（S3-1）
+- **背景**：S2-7 spec §2 曾明确"任务卡的 attempts/started_at/finished_at 不存在，不偷偷加列"，
+  当时代价只是"无法精确展示起止时间"。S3-1 起 `GET /invoices/{id}/ocr-status` 契约**要求**
+  `started_at`/`finished_at` 与逐阶段耗时，再用 `created_at + elapsed_ms` 反推会出现"开始时间早于上传完成"
+  这类无法解释的数据。
+- **决策**：迁移 `0004` 给 `ocr_jobs` 加三列（均可空，不写数据）：`metrics JSONB`、
+  `started_at TIMESTAMPTZ`、`finished_at TIMESTAMPTZ`。`params_json` 仍只放阶段参数，不与耗时混用。
+  `started_at` 每次尝试覆盖为本次开始；回 `pending` 重试时清空 `finished_at`。
+- **代价**：多一次迁移；`metrics` 无固定 schema（版本号 `version:1` 自描述）。
+- **验证**：`alembic upgrade head` → `0004`；`alembic check` 零差异；`tests/test_jobs.py` 断言起止时间与重试清空。
+
+---
+
+## D-057 PDF 复用 PyMuPDF（不引 pypdfium2）；规则 DB 优先 YAML 回退；worker 并发 1 + 协作式 deadline
+
+- **日期**：2026-11-20（S3-1）
+- **决策**：
+  1. **PDF 引擎**：任务卡写 `pypdfium2`，但 S1 已锁 PyMuPDF（`ocr/intake.py`，D-035）——
+     同一能力不装第二个引擎（AGENTS §2.1）。"限前 3 页"用 `prepare_pages(max_pages=3)` 实现；
+     PDF 仍**不做预处理**（D-035），`quality_flag` 保持 `NULL`（不编造"质量合格"）。
+  2. **规则来源**：抽取规格以 DB active 模板的 `field_specs_json` 为准（S2-8 既定方向，与 `/templates/{id}/test` 同源），
+     DB 缺该票种才回退 `templates/field_rules.yaml` 并在 `metrics.rules_source` 标明；
+     版式/分类关键字仍用 YAML（`regions`/`aspect_ratio`/权重 DB 没有，PROGRESS 遗留 #36 的解法）。
+     `extractor.rules_from_specs` 与 `load_field_rules` 由单测钉等价，防两套来源漂移。
+  3. **worker 并发**：`max_jobs` 默认 **1**，只允许配 1–2（PaddleOCR 非线程安全 + CPU 推理吃满核心，AGENTS §5）。
+  4. **超时**：ARQ `job_timeout=180`（既有）+ 流水线**协作式 deadline 165s**（阶段边界检查，超时抛 `TimeoutError` 走可重试）。
+     不引入 `asyncio.wait_for` 硬杀：`to_thread` 里的推理线程杀不掉，硬杀会留下"线程还在写、状态已失败"的竞态；
+     真正的兜底是 ARQ 超时 + `recover_stale_jobs`，论文"不足"如实写。
+  5. **僵尸线程覆写**：`job_service` 写终态前重读 `(status, retry_count)`，不等则回滚业务写入并返回 `superseded`。
+- **代价**：单页超过约 160s 的极端大图会被 ARQ 直接杀（作业留 `running`，30min 后由 `recover_stale_jobs` 收口）。
+- **验证**：`tests/test_ocr_pipeline.py`（cipher/对象缺失/契约错误/deadline/superseded/临时目录）；
+  `tests/test_jobs.py::test_execute_job_attempt_superseded_does_not_commit`；
+  真实验收 20 张 20/20 成功、P95 1.68s（见 PROGRESS S3-1）。
