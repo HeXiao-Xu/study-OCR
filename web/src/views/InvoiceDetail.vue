@@ -270,16 +270,33 @@ async function rereadField(field: InvoiceField): Promise<void> {
 async function confirmField(field: InvoiceField): Promise<void> {
   const invoice = detail.value?.invoice
   if (!invoice) return
-  const value = field.normalized_value ?? field.field_value ?? ''
+  // 确认 ≠ 改值：优先提交票面原文，服务端归一化后仍保留 displayValue
+  const value = field.field_value ?? field.normalized_value ?? ''
   const isAmount = AMOUNT_FIELDS.has(field.field_name)
   try {
-    await updateInvoiceFields(invoice.id, {
+    const result = await updateInvoiceFields(invoice.id, {
       version: invoice.version,
       fields: [{ field_name: field.field_name, value, confirm: true }],
       confirm_amount: isAmount ? true : undefined,
     })
+    // 就地更新：只重算这一行 + 版本，不重载详情/影像/行框（避免整页刷新与滚动跳位）
+    const row = detail.value?.fields.find((item) => item.field_name === field.field_name)
+    const after = result.updated.find((item) => item.field_name === field.field_name)?.after
+    if (row) {
+      row.confirmed = true
+      row.need_review = false
+      row.conflict = false
+      row.conflict_value = null
+      row.confidence = 1
+      row.source = 'manual'
+      row.review_level = 'auto'
+      row.normalized_value = after ?? row.normalized_value
+    }
+    if (detail.value) detail.value.invoice.version = result.version
+    confirmErrors.value = confirmErrors.value.filter(
+      (item) => item.field_name !== field.field_name,
+    )
     ElMessage.success(`已确认「${fieldLabel(field.field_name)}」`)
-    await load()
   } catch (cause) {
     if (cause instanceof ApiError && cause.code === 40900) {
       ElMessage.error('版本冲突：票据已被修改，已为你刷新')
@@ -688,7 +705,8 @@ onBeforeUnmount(revokeImage)
 }
 .detail-grid {
   display: grid;
-  grid-template-columns: minmax(380px, 1.05fr) minmax(460px, 1fr);
+  /* 影像约占 1/3，字段占 2/3（用户反馈：两块等宽太挤） */
+  grid-template-columns: minmax(300px, 1fr) minmax(0, 2fr);
   gap: 16px;
   align-items: start;
 }
