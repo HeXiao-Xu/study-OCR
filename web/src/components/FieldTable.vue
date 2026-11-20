@@ -25,12 +25,14 @@ const props = defineProps<{
   activeField: string | null
   hoveredField: string | null
   rereadAllowed: boolean
+  canConfirm: boolean
 }>()
 
 const emit = defineEmits<{
   'hover-field': [fieldName: string | null]
   'select-field': [fieldName: string]
   reread: [field: InvoiceField]
+  'confirm-field': [field: InvoiceField]
   'update:editable': [payload: { field: string; value: string }]
 }>()
 
@@ -143,6 +145,13 @@ defineExpose({ scrollToField, amountEditable })
     </el-table-column>
     <el-table-column label="操作" width="110">
       <template #default="{ row }">
+        <el-button
+          v-if="canConfirm && row.need_review && !row.confirmed"
+          size="small"
+          text
+          type="success"
+          @click.stop="emit('confirm-field', row)"
+        >确认</el-button>
         <el-button
           v-if="rereadAllowed && row.source_line_no !== null && row.source !== 'manual' && !row.confirmed && row.source !== 'ocr_retry'"
           size="small"

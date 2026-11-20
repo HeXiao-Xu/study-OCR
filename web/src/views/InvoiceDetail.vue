@@ -241,6 +241,29 @@ async function rereadField(field: InvoiceField): Promise<void> {
   }
 }
 
+async function confirmField(field: InvoiceField): Promise<void> {
+  const invoice = detail.value?.invoice
+  if (!invoice) return
+  const value = field.normalized_value ?? field.field_value ?? ''
+  const isAmount = AMOUNT_FIELDS.has(field.field_name)
+  try {
+    await updateInvoiceFields(invoice.id, {
+      version: invoice.version,
+      fields: [{ field_name: field.field_name, value, confirm: true }],
+      confirm_amount: isAmount ? true : undefined,
+    })
+    ElMessage.success(`已确认「${fieldLabel(field.field_name)}」`)
+    await load()
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.code === 40900) {
+      ElMessage.error('版本冲突：票据已被修改，已为你刷新')
+      await load()
+    } else {
+      ElMessage.error(cause instanceof ApiError ? cause.message : '确认失败，请重试')
+    }
+  }
+}
+
 async function confirmAll(): Promise<void> {
   const invoice = detail.value?.invoice
   if (!invoice || confirming.value) return
@@ -514,9 +537,11 @@ onBeforeUnmount(revokeImage)
             :active-field="activeField"
             :hovered-field="hoveredField"
             :reread-allowed="rereadAllowed"
+            :can-confirm="canEdit"
             @hover-field="hoveredField = $event"
             @select-field="selectField"
             @reread="rereadField"
+            @confirm-field="confirmField"
             @update:editable="onEditableUpdate"
           />
         </el-card>
