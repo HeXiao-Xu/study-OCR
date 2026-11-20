@@ -3,5 +3,6 @@ import type { UserRole } from '../types/api'
 
 export function landingFor(role: UserRole | null): string {
   if (role === 'admin') return '/templates'
+  if (role === 'reviewer') return '/review'
   return '/invoices'
 }

@@ -113,6 +113,8 @@ export interface InvoiceField {
   confirmed: boolean
   updated_by: number | null
   updated_at: string
+  /** 服务端派生的三档（S3-2）：auto >=0.90 / review 0.60–0.90 / manual <0.60 */
+  review_level?: 'auto' | 'review' | 'manual' | null
 }
 
 export interface InvoiceDetail {

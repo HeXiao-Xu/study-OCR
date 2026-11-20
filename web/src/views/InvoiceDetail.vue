@@ -90,11 +90,15 @@ function displayValue(field: InvoiceField): string {
   return field.field_value ?? field.normalized_value ?? ''
 }
 
-function confidenceTag(value: string | number | null): 'success' | 'warning' | 'danger' | 'info' {
-  const number = confidenceNumber(value)
+function confidenceTag(row: InvoiceField): 'success' | 'warning' | 'danger' | 'info' {
+  // 优先用后端派生的 review_level：阈值只在 confidence.py 一处，前端不重复抄
+  if (row.review_level === 'manual') return 'danger'
+  if (row.review_level === 'review') return 'warning'
+  if (row.review_level === 'auto') return 'success'
+  const number = confidenceNumber(row.confidence)
   if (number === null) return 'info'
-  if (number < 0.85) return 'danger'
-  if (number < 0.95) return 'warning'
+  if (number < 0.6) return 'danger'
+  if (number < 0.9) return 'warning'
   return 'success'
 }
 
@@ -308,7 +312,7 @@ watch(invoiceId, () => {
           <template #header>
             <div class="card-header">
               <span>识别字段（{{ sortedFields.length }}）</span>
-              <span class="card-sub">置信度低于 85% 标红；冲突字段不自动覆盖</span>
+              <span class="card-sub">置信度低于 90% 标黄、低于 60% 标红并必须人工核对；冲突字段不自动覆盖</span>
             </div>
           </template>
           <el-table :data="sortedFields" size="small" row-key="id">
@@ -328,7 +332,7 @@ watch(invoiceId, () => {
             </el-table-column>
             <el-table-column label="置信度" width="90">
               <template #default="{ row }">
-                <el-tag :type="confidenceTag(row.confidence)" effect="plain" size="small">
+                <el-tag :type="confidenceTag(row)" effect="plain" size="small">
                   {{ formatPercent(row.confidence) }}
                 </el-tag>
               </template>
