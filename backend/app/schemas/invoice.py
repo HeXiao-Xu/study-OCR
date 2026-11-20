@@ -81,6 +81,8 @@ class InvoiceFieldOut(BaseModel):
     confirmed: bool
     updated_by: int | None
     updated_at: datetime
+    # 派生字段（不落库）：auto/review/manual，前端颜色与文案以它为准（S3-2）
+    review_level: Literal["auto", "review", "manual"] | None = None
 
 
 class LatestJobOut(BaseModel):

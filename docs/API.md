@@ -134,7 +134,9 @@
 - 入参：路径参数 `id`（int）
 - 出参：**200**，`data` = `{invoice: InvoiceOut, fields: InvoiceFieldOut[], latest_job: {job_id, stage, status, elapsed_ms, retry_count, error}}`
 - 错误：`404/40400` 不存在或无权访问（**不区分**）
-- 备注：详情不返回影像二进制；预览走 `GET /invoices/{id}/image`
+- 备注：详情不返回影像二进制；预览走 `GET /invoices/{id}/image`。
+  `fields[].review_level` 为服务端派生（`auto`≥0.90 / `review` 0.60–0.90 / `manual`<0.60），**不落库**；
+  前端颜色与文案以它为准，不要自己硬编码阈值（S3-2/D-058）。
 
 ### GET /api/v1/invoices/{id}/ocr-status
 - 权限：本人，或 `reviewer`；`admin` → 404 ｜ 类型：同步（轮询）｜ 幂等：是 ｜ 实现：S3-1 ✅（S2-7 提供作业框架）

@@ -620,3 +620,20 @@ def test_create_patch_detail_chain(client, session_factory, actors) -> None:
         "buyer_name",
         "check_code",
     }
+
+def test_detail_field_exposes_review_level(client, session_factory, actors) -> None:
+    """S3-2：详情字段带派生 `review_level`，前端不再自己硬编码置信度阈值。"""
+    invoice_id = _make_invoice(session_factory, actors["alice"].id)
+    with session_factory() as db:
+        db.add(InvoiceField(invoice_id=invoice_id, field_name="total_amount",
+                            field_value="100.00", normalized_value="100.00",
+                            source="ocr", confidence=Decimal("0.700")))
+        db.add(InvoiceField(invoice_id=invoice_id, field_name="buyer_name",
+                            field_value="张三", normalized_value="张三",
+                            source="ocr", confidence=Decimal("0.950")))
+        db.commit()
+
+    data = client.get(f"{BASE}/{invoice_id}", headers=_auth(actors["alice"])).json()["data"]
+
+    levels = {row["field_name"]: row["review_level"] for row in data["fields"]}
+    assert levels == {"buyer_name": "auto", "total_amount": "review"}

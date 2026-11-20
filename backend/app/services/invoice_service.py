@@ -49,6 +49,7 @@ from app.schemas.invoice import (
     InvoiceOut,
     LatestJobOut,
 )
+from app.services.confidence import level_for
 from app.services.pagination import paginate
 from app.services.repository import filter_visible, get_visible_or_404
 from app.utils.text import escape_like
@@ -412,6 +413,10 @@ def _invoice_out_from_row(row) -> InvoiceOut:
 
 
 def _field_out(field: InvoiceField) -> InvoiceFieldOut:
+    # 派生档位（S3-2）：阈值只在 services/confidence.py，前端不要自己再抄一份
+    review_level = (
+        level_for(float(field.confidence)) if field.confidence is not None else None
+    )
     return InvoiceFieldOut(
         id=field.id,
         invoice_id=field.invoice_id,
@@ -431,6 +436,7 @@ def _field_out(field: InvoiceField) -> InvoiceFieldOut:
         confirmed=field.confirmed,
         updated_by=field.updated_by,
         updated_at=field.updated_at,
+        review_level=review_level,
     )
 
 
