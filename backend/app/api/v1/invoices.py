@@ -8,12 +8,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_task_queue
+from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.core.exceptions import ServiceUnavailableError, ok
 from app.models.users import User
@@ -29,7 +30,14 @@ from app.schemas.invoice import (
     ReocrData,
     ReocrRequest,
 )
-from app.services import invoice_service, job_service, ocr_status_service, reocr_service
+from app.services import (
+    image_service,
+    invoice_service,
+    job_service,
+    ocr_status_service,
+    reocr_service,
+)
+from app.services.storage import StorageService, get_storage
 from app.tasks.queue import OcrTaskQueue
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
@@ -102,6 +110,34 @@ async def reocr_invoice(
         await asyncio.to_thread(job_service.mark_enqueue_failed, data.job_id, db=db)
         raise ServiceUnavailableError("任务队列不可用") from None
     return ok(data, "accepted")
+
+
+@router.get(
+    "/{invoice_id}/image",
+    summary="票据影像（原图/预处理图；PDF 按 250 DPI 渲染）",
+    response_class=Response,
+)
+def get_invoice_image(
+    invoice_id: int,
+    page: int = Query(1, ge=1),
+    variant: Literal["original", "preprocessed"] = "original",
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    storage: StorageService = Depends(get_storage),
+) -> Response:
+    rendered = image_service.get_invoice_image(
+        db, user, invoice_id, page=page, variant=variant, settings=settings, storage=storage
+    )
+    return Response(
+        content=rendered.content,
+        media_type=rendered.media_type,
+        headers={
+            "ETag": f'"{rendered.etag}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.patch(
