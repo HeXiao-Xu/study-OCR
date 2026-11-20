@@ -1231,3 +1231,45 @@
   这是契约期望行为（编辑回写仍走 `_normalize_field`）。
 - **验证**：`tests/test_ocr_schema.py` 7+4 条（模型/防漂移/白名单）；`GET /fields` 实测原文/归一值/档位/冲突；
   `export_ocr_schema.py --check` 通过；单元 415 / 集成 198 全绿；`alembic check` 零差异（head 0005）。
+
+---
+
+## D-063 影像接口按契约实现：明文仅本地、PDF 固定 250 DPI、前端 blob 取图
+
+- **日期**：2026-11-20（S3-5，用户确认）
+- **背景**：`GET /invoices/{id}/image` 契约早已定义，但影像解密依赖 S4 信封；本地 MinIO 是明文调试存储（D-044）。
+  详情页要"左图右表"，必须把影像送到浏览器——这是本项目**第一次把明文影像送出服务端**的边界决策。
+- **决策**：
+  1. **按契约实现**，但明文闸门写死：仅 `STORAGE_ALLOW_PLAINTEXT=true` **且** `invoice_files.is_cipher=false`
+     才返回；密文/生产一律 `409/40900`"加密影像解密尚未接入（S4）"，**不做明文回退**。
+  2. 照片返回原字节（`Content-Type` 沿用文件 mime）；PDF 按 `page` 以 **250 DPI** 渲染 PNG ——
+     与 S3-1 识别时的渲染 DPI 一致，否则字段框会按比例全偏。`variant=preprocessed` 走同一套 `prepare_input` 预处理。
+  3. 响应头 `ETag=<sha256(response bytes)>`、`Cache-Control: private, no-store`、`X-Content-Type-Options: nosniff`；
+     不返回 `storage_key`/MinIO 路径/预签名 URL。
+  4. 前端 **带 Bearer 取 blob**（`http.getBlob`）再 `objectURL`，不用 `<img src>` 直链，避免临时 URL 被复制/缓存；
+     组件卸载与翻页时 `revokeObjectURL`。
+- **代价**：演示/答辩时只有本地明文模式能看影像；S4 接入后需在此处替换为"内存解密→渲染→释放"。
+- **验证**：`tests/test_image_service.py` 7 条；`tests/test_invoice_media.py` 7 条（权限/409/422/ETag）；
+  真实冒烟：`image/jpeg`、260403B、`Cache-Control: private, no-store`。
+
+---
+
+## D-064 行框接口新增（服务端映射原图坐标、不含文本）；canvas 字段/行框分级 + culling；缩放改 CSS 尺寸而非 transform
+
+- **日期**：2026-11-20（S3-5，用户确认"字段框 + 行框"）
+- **决策**：
+  1. **新增** `GET /invoices/{id}/lines?page=`（API.md 原先没有行级读取接口）：返回
+     `{line_no, bbox:[x1,y1,x2,y2], score, field_name}`；`bbox` 由 `ocr_lines` 的**校正图**四点经
+     `to_original` 映射成**原图**外接框（PDF 恒等），`field_name` 为命中该行的字段（无则 null）。
+     **不返回行文本**——票面原文只经字段 `raw_text`/`field_value` 暴露，缩小明文面；畸形框直接跳过，不造假框。
+  2. **绘制**：字段框按档位着色（auto 绿 / review 黄 / manual 或冲突红，冲突虚线），行框灰蓝细线；
+     `active/hovered` 字段的框与所属行框加粗高亮；只画与可视矩形相交的框（culling）。
+  3. **缩放/平移**：缩放通过改 `<img>` 的 CSS 宽高（`displayWidth = baseWidth × zoom`）+ canvas 按 DPR 重绘实现，
+     **不用 CSS transform**（transform 会让框线发虚、且坐标换算容易错）；平移用外层容器 `scrollLeft/Top`；
+     缩放以光标为锚点。坐标换算只在 `utils/bbox.ts` 一处。
+  4. **性能与验证**：绘制耗时滚动平均暴露在 `data-draw-ms`；`ui_smoke --eval` 做数值断言
+     （`data-image-size`/`data-scale`/`data-field-boxes`/`data-visible-lines`），截图交用户目视抽查。
+- **代价**：`GET /lines` 对照片类票据每次请求需重跑一次预处理（拿 `to_original`，约 100–200ms）；
+  行框与字段框在视觉上可能重叠，命中测试优先字段框。
+- **验证**：`tests/test_lines_service.py` 4 条；`tests/test_invoice_media.py` 行框 3 条；
+  冒烟：`scale 0.338854 → 0.487898`（×1.44）、框坐标按比例一致、`visibleLines 40→35`、`drawMs 0.39/0.48ms`。

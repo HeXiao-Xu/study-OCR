@@ -6,10 +6,10 @@
 
 ## 当前状态
 
-- 阶段：**阶段 3（识别流水线上线，M2）进行中**（S3-1 ~ S3-4 已完成）
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、**S3-1 ~ S3-4**（共 29 张卡，全部 ✅ 通过）
-- 最近完成：**S3-4 识别产物契约**（`schemas/ocr.py` 唯一来源、JSON Schema 入库、`GET /fields`、票面原文落库）
-- 下一步：**S3-5 票据详情页：图像与字段并排 + 框选高亮**
+- 阶段：**阶段 3（识别流水线上线，M2）进行中**（S3-1 ~ S3-5 已完成）
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、**S3-1 ~ S3-5**（共 30 张卡，全部 ✅ 通过）
+- 最近完成：**S3-5 详情页左图右表 + 框选高亮**（image/lines 接口、canvas 画字段框与行框、缩放/平移后数值对齐）
+- 下一步：**S3-6 字段修正与确认 API**
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
@@ -55,7 +55,7 @@
 [x] S3-2 字段级置信度聚合与低置信度确认队列 ★关键
 [x] S3-3 局部二次识别（crop 放大重识别）
 [x] S3-4 识别结果 JSON Schema 与落库
-[ ] S3-5 票据详情页：图像与字段并排 + 框选高亮 ★关键
+[x] S3-5 票据详情页：图像与字段并排 + 框选高亮 ★关键
 [ ] S3-6 字段修正与确认 API
 [ ] S3-7 重复报销检测
 [ ] S3-8 批量上传与进度
@@ -99,6 +99,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S3-5 | `backend/app/services/image_service.py`（新：照片原字节 / PDF 250DPI / preprocessed；明文闸门）、`backend/app/services/line_service.py`（新：ocr_lines 四点→原图外接框、不含文本）、`schemas/invoice.py`（`OcrLineBoxOut/InvoiceLinesData`）、`api/v1/invoices.py`（`GET /{id}/image`、`GET /{id}/lines`）、`backend/tests/{test_image_service,test_lines_service,test_invoice_media}.py`、`web/src/utils/bbox.ts`、`web/src/components/{ImageCanvas,FieldTable}.vue`、`web/src/views/InvoiceDetail.vue`（左图右表）、`web/src/api/{http,invoices}.ts`、`web/src/types/invoice.ts`、`docs/{spec,plan}/s3-5-detail-canvas.md` | ① `GET /image`：本人/reviewer 200、他人/admin 404、密文/明文关闭 409、页码越界 422；响应头 `ETag/Cache-Control: private,no-store/nosniff`；PDF 按 250 DPI（A4 实测 2066±3×2924±3）；② `GET /lines`：行框经 `to_original` 映射（假 0.5× 断言 `[10,20,300,60]→[5,10,150,30]`），**响应不含 text**，字段归属正确，畸形框跳过；③ 真实冒烟（vat_general）：图片 260403B JPEG、40 行框、12 字段框；显示 532px 时 `scale=0.338854`，`amount` 框 `[841,772,946,795]→[285,262,321,270]`、`total_amount` 同理；④ 点两次放大后 `scale=0.487898`（=×1.44）、框坐标按新比例重算仍落在图片范围内、`visibleLines` 40→35（culling 生效）、`drawMs` 0.39/0.48ms（<16）；截图 `/tmp/s35-normal.png`、`/tmp/s35-zoom.png`（需用户目视抽查）；⑤ 单元 422 / 集成 211 passed，`typecheck`/`build` 通过，`alembic check` 零差异（head 0005，本卡无迁移）；⑥ 冒烟票据/对象/账号已清理 | ✅ 通过（明文影像仅本地；校验失败文案待 S3-6；行框接口为本卡新增契约） |
 | S3-4 | `backend/app/schemas/ocr.py`（新：唯一契约，含 `FieldError`/`raw_value`）、`backend/app/ocr/types.py`（转 re-export）、`backend/app/ocr/extractor.py`（`_extract_matched` 保留票面原文）、`backend/app/services/ocr_pipeline.py`（`field_value=raw`、`normalized_value=归一`）、`backend/app/services/invoice_service.py` + `schemas/invoice.py` + `api/v1/invoices.py`（`GET /{id}/fields`）、`scripts/export_ocr_schema.py` + `docs/schemas/ocr_result.schema.json`、`web/src/types/ocr.ts`、`backend/tests/test_ocr_schema.py` + 补 `test_extractor/test_ocr_pipeline/test_invoices`、`docs/{spec,plan}/s3-4-ocr-contract.md` | ① 契约单一来源：5 个模型 + `raw_value`；`ocr/types.py` 只是 re-export（同一类对象断言）；② JSON Schema 入库并由 `--check` + 单测深度比对；前端 `types/ocr.ts` 与模型字段**完全一致**（自动比对）；③ 字段名白名单测试发现并修正 `total_amount_upper` 不在可编辑白名单（详情页会永远无法确认）；④ `GET /fields` 实测：`field_value`=`￥1,796.37`（票面原文）、`normalized_value`=`1796.37`、`review_level` 三档齐全、`conflicts` 只回 `candidate_conflict`、`overall_confidence=0.900`；⑤ `ocr_lines` 单条 executemany 断言通过；⑥ 本卡**无迁移**（head 仍 0005，造空迁移属假动作）；⑦ 单元 415 / 集成 198 passed，`typecheck`/`build` 通过；冒烟数据与账号已清理 | ✅ 通过（旧 `field_value=归一值` 的历史数据不迁移，见遗留 #58；`secrets/` 未动） |
 | S3-3 | `backend/app/ocr/refine.py`（新：外扩/clamp/2×放大/四点→外接框 + 坐标映射）、`backend/app/services/reocr_service.py`（新：`submit_reocr` 校验 + `run_reocr` 写回）、`backend/app/api/v1/invoices.py`（`POST /{id}/reocr` 202）、`backend/app/schemas/invoice.py`（`ReocrRequest/ReocrData`）、`backend/app/tasks/{ocr_task,queue,worker}.py`（`reocr_task` + `enqueue_reocr`）、`backend/app/models/enums.py` + `alembic/versions/0005_audit_action_field_reread.py`（`field_reread` 枚举）、`backend/app/core/config.py` + `.env.example`（4 个 `REREAD_*`）、`backend/app/services/ocr_pipeline.py`（bbox 改原图坐标）、`backend/tests/{test_refine,test_reocr}.py` + 补 `test_ocr_pipeline/test_config/test_models`、`web/src/{api/invoices.ts,types/invoice.ts,views/InvoiceDetail.vue}`、`scripts/reread_eval.py`（新）、`docs/{spec,plan}/s3-3-reread.md` | ① 契约按 API.md 的异步 `reocr`（202+job_id），审核 403/他人 404/非 draft 409/字段非法 422/重复作业 409/入队失败 503；② worker：按 `ocr_lines` 四点裁剪（外扩 max(8px,10%行高) → 2× INTER_CUBIC，长边 1024）→ `recognize_line`，**只改 raw_text/confidence/source=ocr_retry，`field_value` 不变**；整单 `overall_confidence/extract_status` 重算；1.5s 预算、空文本/超预算记 skipped；③ 40 张离线验收：112 个低置信字段中 **109 个提升（97.3%）**，平均 Δ **+0.180**（total_amount 38/38、seller_name 22/22、amount/tax 各 10/10、invoice_date 20/21）；④ HTTP 冒烟：amount 0.743→**0.952**、tax 0.690→**0.946**，`source=ocr_retry`、值未变、整单 0.899；⑤ 坐标修正：`invoice_fields.bbox_json` 写原图坐标（`ocr_lines` 保持校正图）；⑥ 迁移 0005 只放开 `field_reread` CHECK（审计行留 S4-7）；单元 396 / 集成 194 passed；⑦ 冒烟数据、对象与临时账号已清理 | ✅ 通过（候选选择/改值归 S3-6；D-060/D-061） |
 | S3-2 | `backend/app/services/confidence.py`（新：公式/三档/封顶/聚合 + 纯函数单测）、`backend/app/ocr/{types,extractor}.py`（证据成分 `anchor_score/value_score/agreement`，校验失败封顶 0.45）、`backend/app/services/ocr_pipeline.py`（写 `need_review/overall_confidence/extract_status` + metrics 三档分布）、`backend/app/services/invoice_service.py` + `schemas/invoice.py`（派生 `review_level`）、`backend/app/core/config.py` + `.env.example`（5 个配置）、`web/src/{router/index.ts,utils/landing.ts,views/InvoiceDetail.vue,types/invoice.ts}`、`scripts/confidence_eval.py`（新）、`docs/{spec,plan}/s3-2-confidence.md` | ① 阈值口径定为任务卡三档（0.90/0.60）+ 校验封顶 0.45，SCHEMA 同步；② 置信度验收 40 张 / 213 字段：**auto 101、review 110、manual 2**；阈值扫描（0.50→0.95）字段需人工数 **2/2/23/90/112/152**、整单需核对数 **25/25/33/40/40/40**（单调不减）；不变量全过（校验失败必 ≤0.45、auto 必 ≥0.90、review 必 <0.90 或冲突）；③ 真实链路两张（train/vat_digital）：`extract_status=need_confirm`、`overall_confidence` 0.879/0.881、字段档位逐条正确；④ reviewer 登录落 `/review` → `extract_status=need_confirm` 过滤后 **共 2 张**（UI 冒烟）；⑤ 详情字段带 `review_level`（前端不再硬编码阈值）；⑥ 单元 379 passed、集成 173 passed、`alembic check` 零差异；⑦ 冒烟数据与临时账号已清理 | ✅ 通过（队列用既有 `extract_status` 筛选，不新增状态/接口；D-058/D-059） |
@@ -195,8 +196,8 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 41 | access/refresh 存 localStorage（XSS 可读） | D-021 已接受的取舍 | 全项目禁止 `v-html` 渲染用户内容；S6 安全测试里验证 CSP/转义 |
 | 42 | ✅ 已闭合（S3-1）：上传页 `waitForOcr` 已改调 `GET /invoices/{id}/ocr-status` 并显示进度百分比 | — | — |
 | 43 | 批量上传完不自动跳详情 | 任务卡写"上传完成跳 /invoices/{id}"；20 个文件跳走会丢进度 | 逐行给"查看详情"链接；单文件也不强制跳，S2-11 详情页可用后再评估 |
-| 44 | `GET /invoices/{id}/image` 预览接口未实现 | API 备注指向它（详情不返回影像二进制） | S2-11 已用占位卡片"待 S3-5"；S3-5/S5-4 落地后替换预览组件 |
-| 45 | 详情页影像不可见 | 预览依赖 S4 信封/解密；临时明文接口会绕过安全边界 | 等 S3-5；答辩/演示时明确说明这是加密链路的前置依赖 |
+| 44 | ✅ 已闭合（S3-5）：`GET /invoices/{id}/image` 已实现（明文仅本地，密文/prod 409 待 S4） | — | — |
+| 45 | 详情页影像可见，但**仅限本地明文调试**（`STORAGE_ALLOW_PLAINTEXT=true` 且 `is_cipher=false`） | S4 信封未接入；生产/密文下接口返回 409，页面显示"待 S4" | S4-4/S4-6 接入后在此处解密；论文如实写"影像加密链路未完成前仅本地演示" |
 | 46 | 字段编辑只改值，不提供冲突候选选择/批量确认 | S2-11 范围限定；S3-2 已让冲突字段强制 `review_level=review`，但候选选择 UI 仍未做 | S3-5 做候选交互，S3-6 做批量确认 |
 | 47 | 字段中文标签/票种/状态文案维护在前端 | 后端没有字典接口（API.md 未定义） | 新增字段时同步 `web/src/utils/format.ts` 与后端 `INVOICE_FIELD_NAMES` |
 | 48 | `anchor_audit_task` 仍是占位（只日志） | 审计哈希链在 S4-7 | S4-7 替换实现，调度骨架不动；现在不得伪造审计行 |
@@ -208,6 +209,8 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 56 | 任务卡的"整块区域重识别"接口未做 | API.md 没有对应入口，`reocr` 只覆盖按字段 | S3-5 画框时若需要再补契约（bbox 入参 + 候选返回） |
 | 57 | 旧版本写入的 `invoice_fields.bbox_json` 是校正图坐标 | 本卡起新识别写原图坐标；本地旧测试票无字段行，不受影响 | 生产若已有旧数据，需一次性重跑识别或写脚本按 `to_original` 迁移（当前无旧数据，不写脚本） |
 | 58 | S3-3 之前写入的 `invoice_fields.field_value` 是归一值而非票面原文 | 本卡起新识别按契约写原文；旧行不自动迁移（本地无字段行） | 生产如有旧数据需重跑识别；如需保留人工修正值则需逐行迁移脚本（当前无需求） |
+| 59 | 详情页红底只覆盖"冲突候选 / manual 档"，**没有校验器错误文案**（如金额≠金额+税额） | 校验错误在确认动作（S3-6）才算，避免两处规则漂移 | S3-6 confirmation 接口返回 `FieldError{field,code,message}` 后接到详情页 |
+| 60 | 行框接口 `GET /invoices/{id}/lines` 是本卡**新增契约** | API.md 原先没有行级读取接口；"点字定位字段"需要它 | 已写入 API.md §2；若评审认为多余可只保留字段框（前端失败自动降级） |
 | 50 | API.md 仍保留 S3/S4/S5 未实现接口的标注 | 对账只保证"已实现 → 有文档"这一个方向 | 后续任务把对应接口实现后，更新 API.md 的实现标记与测试覆盖 |
 | 51 | 界面仍是第一版视觉，没有设计稿/完整设计系统 | 任务卡没有美化项，先保证主流程与角色落地 | S3-5 会重做详情工作区；其余页面按反馈继续打磨（颜色/密度/品牌素材） |
 | 52 | 登录页品牌区是文字 + 字母 S 占位 | 没有校徽/系统 Logo 素材 | 答辩前可替换为学校/项目 Logo；布局不需要改 |
