@@ -23,11 +23,12 @@ from app.services.ocr_pipeline import (
 # 单元：合并 / 回填 / 行构造
 # --------------------------------------------------------------------------- #
 def _field(name: str, value: str, *, confidence: float = 0.9,
-           candidates: list[str] | None = None) -> ExtractedField:
+           candidates: list[str] | None = None,
+           raw_value: str | None = None) -> ExtractedField:
     return ExtractedField(
-        name=name, value=value, raw_text=f"{name}:{value}", source_line_no=3,
-        confidence=confidence, rule_id=f"{name}:text", bbox=(1, 2, 3, 4),
-        candidates=candidates or [],
+        name=name, value=value, raw_value=raw_value, raw_text=f"{name}:{value}",
+        source_line_no=3, confidence=confidence, rule_id=f"{name}:text",
+        bbox=(1, 2, 3, 4), candidates=candidates or [],
     )
 
 
@@ -98,6 +99,34 @@ def test_line_rows_use_four_point_box_and_page_no() -> None:
     assert rows[0]["score"] == Decimal("0.912")
     assert rows[0]["box_json"][0] == [1.0, 2.0]      # 四点原样保留（字段层才取外接框）
     assert rows[0]["block_id"] == "b2-1"
+
+
+def test_field_rows_writes_raw_value_and_normalized_value() -> None:
+    from app.services.confidence import FieldConfidence
+
+    merged = {"total_amount": MergedField(
+        _field("total_amount", "1234.56", confidence=0.95, raw_value="￥1,234.56"), 1)}
+
+    rows = field_rows(
+        merged, invoice_id=5, rule_ids={},
+        confidences={"total_amount": FieldConfidence("total_amount", 0.95, "auto")},
+    )
+
+    assert rows[0]["field_value"] == "￥1,234.56"      # 票面原文
+    assert rows[0]["normalized_value"] == "1234.56"   # 归一值
+
+
+def test_field_rows_falls_back_when_raw_value_missing() -> None:
+    from app.services.confidence import FieldConfidence
+
+    merged = {"buyer_name": MergedField(_field("buyer_name", "张三", confidence=0.95), 1)}
+
+    rows = field_rows(
+        merged, invoice_id=5, rule_ids={},
+        confidences={"buyer_name": FieldConfidence("buyer_name", 0.95, "auto")},
+    )
+
+    assert rows[0]["field_value"] == rows[0]["normalized_value"] == "张三"
 
 
 def test_field_rows_uses_resolved_confidence_for_need_review() -> None:
@@ -647,6 +676,46 @@ def test_run_pipeline_extract_status_matches_needs(session_factory, owner) -> No
         assert invoice.extract_status == ("need_confirm" if needs else "raw")
         assert float(invoice.overall_confidence) == pytest.approx(
             job.metrics["counts"]["overall_confidence"], abs=1e-3)
+
+
+@pytest.mark.integration
+def test_run_pipeline_inserts_ocr_lines_in_one_statement(session_factory, owner, engine) -> None:
+    from sqlalchemy import event
+
+    statements: list[bool] = []
+
+    def _before(conn, cursor, statement, parameters, context, executemany):
+        if "insert into ocr_lines" in statement.lower():
+            statements.append(bool(executemany))
+
+    event.listen(engine, "before_cursor_execute", _before)
+    try:
+        invoice_id, job_id = _create_invoice(session_factory, owner.id)
+        outcome, _ = _execute(
+            session_factory, invoice_id, _deps(FakeEngine({0: _vat_digital_lines()}))
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", _before)
+
+    assert outcome == "succeeded", _job_error(session_factory, job_id)
+    assert statements == [True]      # 一次 executemany，不逐条 execute/commit
+
+
+@pytest.mark.integration
+def test_run_pipeline_stores_raw_value_in_field_value(session_factory, owner) -> None:
+    invoice_id, job_id = _create_invoice(session_factory, owner.id)
+    outcome, _ = _execute(
+        session_factory, invoice_id, _deps(FakeEngine({0: _vat_digital_lines()}))
+    )
+
+    assert outcome == "succeeded", _job_error(session_factory, job_id)
+    with session_factory() as db:
+        row = db.scalar(select(InvoiceField).where(
+            InvoiceField.invoice_id == invoice_id,
+            InvoiceField.field_name == "total_amount",
+        ))
+        assert row.field_value == "￥1,234.56"          # 假引擎行里的票面原文
+        assert row.normalized_value == "1234.56"
 
 
 @pytest.mark.integration

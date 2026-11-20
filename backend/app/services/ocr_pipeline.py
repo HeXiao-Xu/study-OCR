@@ -217,7 +217,9 @@ def field_rows(
             {
                 "invoice_id": invoice_id,
                 "field_name": name,
-                "field_value": extracted.value,
+                # 契约（SCHEMA §3.3）：field_value 存票面原文，normalized_value 存归一值；
+                # 推导值没有单一原文，回退为归一值（S3-4/D-062）
+                "field_value": extracted.raw_value or extracted.value,
                 "normalized_value": extracted.value,
                 "raw_text": extracted.raw_text,
                 "confidence": Decimal(str(score)),
