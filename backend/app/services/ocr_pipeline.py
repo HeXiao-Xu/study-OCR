@@ -44,6 +44,7 @@ from app.ocr.extractor import (
     rules_from_specs,
 )
 from app.ocr.intake import PreparedPage, prepare_pages
+from app.ocr.refine import bbox_to_original
 from app.ocr.layout import (
     Classification,
     LayoutResult,
@@ -202,6 +203,7 @@ def field_rows(
     invoice_id: int,
     rule_ids: dict[str, int],
     confidences: dict[str, FieldConfidence],
+    original_bboxes: dict[str, list[int]] | None = None,
 ) -> list[dict[str, Any]]:
     """`invoice_fields` 行：冲突两个值都留；`need_review` 由 `confidence.resolve_field` 判（S3-2）。"""
     rows: list[dict[str, Any]] = []
@@ -219,7 +221,12 @@ def field_rows(
                 "normalized_value": extracted.value,
                 "raw_text": extracted.raw_text,
                 "confidence": Decimal(str(score)),
-                "bbox_json": list(extracted.bbox) if extracted.bbox is not None else None,
+                # bbox 存**原图**坐标（SCHEMA §3.3）：ocr_lines 的四点是校正图坐标，必须映射回去
+                "bbox_json": (
+                    original_bboxes[name]
+                    if original_bboxes is not None and name in original_bboxes
+                    else (list(extracted.bbox) if extracted.bbox is not None else None)
+                ),
                 "source": FieldSource.OCR.value,
                 "source_page_no": item.page_no,
                 "source_line_no": extracted.source_line_no,
@@ -413,6 +420,7 @@ def _persist(
     confidences: dict[str, FieldConfidence],
     invoice_confidence: InvoiceConfidence,
     missing_required: list[str],
+    original_bboxes: dict[str, list[int]],
     classification: Classification,
     template_id: int | None,
     metrics: dict[str, Any],
@@ -448,6 +456,7 @@ def _persist(
             invoice_id=invoice.id,
             rule_ids=_rule_ids(db, template_id, merged.keys()),
             confidences=confidences,
+            original_bboxes=original_bboxes,
         )
         if row["field_name"] not in preserved
     ]
@@ -643,6 +652,25 @@ def run_pipeline(db: Session, job: OcrJob, *, deps: PipelineDeps | None = None) 
         metrics["counts"]["review_levels"] = invoice_confidence.counts
         metrics["counts"]["overall_confidence"] = invoice_confidence.overall
 
+        # 字段 bbox 要写原图坐标：照片的校正图 → 原图有 to_original 矩阵，PDF 恒等
+        page_by_no = {page.page_no: page for page in pages}
+
+        def _original_bbox(name: str) -> list[int] | None:
+            item = merged.get(name)
+            if item is None or item.field.bbox is None:
+                return None
+            page = page_by_no.get(item.page_no)
+            matrix = (
+                page.prepared.preprocess.to_original
+                if page is not None and page.prepared.preprocess is not None
+                else None
+            )
+            return list(bbox_to_original(tuple(item.field.bbox), matrix))
+
+        original_bboxes = {
+            name: bbox for name in list(merged) if (bbox := _original_bbox(name)) is not None
+        }
+
         stage = OcrStage.EXTRACT.value
         persist_started = clock()
         _persist(
@@ -654,6 +682,7 @@ def run_pipeline(db: Session, job: OcrJob, *, deps: PipelineDeps | None = None) 
             confidences=confidences,
             invoice_confidence=invoice_confidence,
             missing_required=metrics["counts"]["missing_required"],
+            original_bboxes=original_bboxes,
             classification=classification,
             template_id=template_id,
             metrics=metrics,

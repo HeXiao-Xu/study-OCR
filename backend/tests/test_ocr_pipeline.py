@@ -134,6 +134,8 @@ def test_field_rows_uses_resolved_confidence_for_need_review() -> None:
 # --------------------------------------------------------------------------- #
 import secrets  # noqa: E402
 import tempfile  # noqa: E402
+
+import numpy as np  # noqa: E402
 import time  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -354,6 +356,46 @@ def test_run_pipeline_happy_path_writes_rows(session_factory, owner) -> None:
         assert job.metrics["timings_ms"]["total"] > 0
         assert job.engine_version == "2.7.3"           # 论文复现要记引擎版本
         assert job.params_json["lang"] == "ch"
+
+
+class _FakePreprocess:
+    """只带 to_original 的假预处理结果：校正图 → 原图 = 0.5× 放大 + 平移 (10,-5)。"""
+
+    to_original = np.array([[0.5, 0.0, 10.0], [0.0, 0.5, -5.0], [0.0, 0.0, 1.0]])
+
+
+def _page_with_preprocess(page_no: int = 1):
+    from app.ocr.intake import PreparedPage
+
+    return PreparedPage(
+        page_no=page_no,
+        image=np.zeros((600, 1000, 3), dtype=np.uint8),
+        kind="photo",
+        quality_flag="ok",
+        preprocess=_FakePreprocess(),
+    )
+
+
+@pytest.mark.integration
+def test_run_pipeline_maps_field_bbox_to_original(session_factory, owner) -> None:
+    """S3-3：`invoice_fields.bbox_json` 必须是**原图**坐标（ocr_lines 保持校正图坐标）。"""
+    invoice_id, job_id = _create_invoice(session_factory, owner.id)
+    deps = PipelineDeps(
+        engine=FakeEngine({0: _vat_digital_lines()}),
+        storage=FakeStorage(),
+        prepare_pages=lambda *args, **kwargs: [_page_with_preprocess()],
+        templates=None,
+    )
+    outcome, _ = _execute(session_factory, invoice_id, deps)
+
+    assert outcome == "succeeded", _job_error(session_factory, job_id)
+    with session_factory() as db:
+        row = db.scalar(select(InvoiceField).where(
+            InvoiceField.invoice_id == invoice_id,
+            InvoiceField.field_name == "invoice_no",
+        ))
+        # 行框 [10,120,600,150]（校正图）→ 0.5× + 平移(10,-5) → [15,55,310,70]
+        assert row.bbox_json == [15, 55, 310, 70]
 
 
 @pytest.mark.integration
