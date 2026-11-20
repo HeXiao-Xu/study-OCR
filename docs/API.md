@@ -137,19 +137,24 @@
 - 备注：详情不返回影像二进制；预览走 `GET /invoices/{id}/image`
 
 ### GET /api/v1/invoices/{id}/ocr-status
-- 权限：本人，或 `reviewer` ｜ 类型：同步（轮询）｜ 幂等：是 ｜ 实现：S3-1 / S2-7
+- 权限：本人，或 `reviewer`；`admin` → 404 ｜ 类型：同步（轮询）｜ 幂等：是 ｜ 实现：S3-1 ✅（S2-7 提供作业框架）
 - 入参：无
-- 出参：**200**，`data` = `{invoice_id, ocr_status, progress, stages: [{stage, status, elapsed_ms, engine, engine_version, retry_count, error}], started_at, finished_at}`
+- 出参：**200**，`data` = `{invoice_id, ocr_status, progress, stages: [{stage, status, elapsed_ms, note, engine, engine_version, retry_count, error}], started_at, finished_at}`
 
 ```json
-{"invoice_id": 101, "ocr_status": "running", "progress": 60,
- "stages": [{"stage": "preprocess", "status": "succeeded", "elapsed_ms": 420,
-             "engine": "paddleocr", "engine_version": "2.7.3", "retry_count": 0, "error": null}],
+{"invoice_id": 101, "ocr_status": "running", "progress": 80,
+ "stages": [{"stage": "preprocess", "status": "succeeded", "elapsed_ms": 420, "note": null,
+             "engine": "paddleocr", "engine_version": "2.7.3", "retry_count": 1, "error": null},
+            {"stage": "detect", "status": "succeeded", "elapsed_ms": null,
+             "note": "DBNet 与 SVTR 在同一次 PaddleOCR 调用内完成，无法单独计时", "...": "..."}],
  "started_at": "2026-11-18T08:30:01Z", "finished_at": null}
 ```
 
 - 错误：`404/40400` 不存在或无权访问
-- 备注：`stage ∈ {preprocess, detect, recognize, extract}`；`progress` 按阶段**固定权重**累加：`preprocess 10 / detect 30 / recognize 40 / extract 20`（与《完整方案》7.7 的耗时预算同比例，不做按图动态加权——前端只需要一个能解释的进度条）；失败重试上限 3 次；建议轮询间隔 1–2s、总时长 ≤5min
+- 备注：`stage ∈ {preprocess, detect, recognize, extract}`；`progress` 按阶段**固定权重**累加：`preprocess 10 / detect 30 / recognize 40 / extract 20`（与《完整方案》7.7 的耗时预算同比例，不做按图动态加权——前端只需要一个能解释的进度条），`succeeded` 即 100；
+  `detect` 与 `recognize` 是 PaddleOCR 的同一次调用，两者一起完成，故 `detect.elapsed_ms` 恒为 `null`；
+  `stages` 来自 `ocr_jobs.metrics.stages`，S3-1 之前的作业没有 metrics 时退化为单条（`stage/status/elapsed_ms` 取作业行）；
+  `error` 只挂在失败阶段；失败重试上限 3 次；建议轮询间隔 1–2s、总时长 ≤5min
 
 ### GET /api/v1/invoices/{id}/fields
 - 权限：本人，或 `reviewer` ｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S3-2 / S3-4

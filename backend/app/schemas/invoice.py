@@ -172,3 +172,25 @@ class UploadData(BaseModel):
     status: str
     ocr_status: str
     dedup: UploadDedup
+
+
+class OcrStageOut(BaseModel):
+    """一个识别阶段（API.md §2 `stages` 元素）：`detect` 与 `recognize` 合并计时，故可为 null。"""
+
+    stage: str
+    status: str
+    elapsed_ms: int | None = None
+    note: str | None = None
+    engine: str | None = None
+    engine_version: str | None = None
+    retry_count: int = 0
+    error: str | None = None
+
+
+class OcrStatusData(BaseModel):
+    invoice_id: int
+    ocr_status: str
+    progress: int = Field(ge=0, le=100)
+    stages: list[OcrStageOut] = Field(default_factory=list)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None

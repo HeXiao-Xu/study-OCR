@@ -23,8 +23,9 @@ from app.schemas.invoice import (
     InvoiceFieldsUpdateRequest,
     InvoiceListQuery,
     InvoiceOut,
+    OcrStatusData,
 )
-from app.services import invoice_service
+from app.services import invoice_service, ocr_status_service
 
 router = APIRouter(prefix="/invoices", tags=["invoices"])
 
@@ -45,6 +46,19 @@ def get_invoice(
     db: Session = Depends(get_db),
 ) -> dict:
     return ok(invoice_service.get_invoice_detail(db, user, invoice_id))
+
+
+@router.get(
+    "/{invoice_id}/ocr-status",
+    response_model=Envelope[OcrStatusData],
+    summary="识别进度（轮询：阶段/进度/起止时间）",
+)
+def get_invoice_ocr_status(
+    invoice_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return ok(ocr_status_service.get_ocr_status(db, user, invoice_id))
 
 
 @router.patch(
