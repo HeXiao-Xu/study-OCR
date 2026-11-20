@@ -236,6 +236,12 @@ export async function del<T>(url: string, config?: HttpRequestConfig): Promise<E
   return response.data
 }
 
+/** 二进制下载（影像）：不解包 JSON 壳，但仍走鉴权与 401 单飞。 */
+export async function getBlob(url: string, config?: HttpRequestConfig): Promise<Blob> {
+  const response = await http.get<Blob>(url, { ...config, responseType: 'blob' })
+  return response.data
+}
+
 /** 只要数据、不关心 code/trace_id 的场景用这个（仍然已做过错误处理） */
 export function unwrap<T>(envelope: Envelope<T>): T {
   if (envelope.data === null) {

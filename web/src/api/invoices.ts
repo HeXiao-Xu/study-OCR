@@ -1,9 +1,10 @@
 /** 票据读/写接口（S2-11；轮询在 S2-10 已加，S3-1 换用 ocr-status）。 */
-import { get, patch, post, unwrap } from './http'
+import { get, getBlob, patch, post, unwrap } from './http'
 import type {
   InvoiceDetail,
   InvoiceFieldsUpdateData,
   InvoiceFieldsUpdateRequest,
+  InvoiceLinesData,
   InvoiceListData,
   InvoiceListParams,
   OcrStatus,
@@ -39,6 +40,31 @@ export async function updateInvoiceFields(
   payload: InvoiceFieldsUpdateRequest,
 ): Promise<InvoiceFieldsUpdateData> {
   const envelope = await patch<InvoiceFieldsUpdateData>(`/invoices/${invoiceId}/fields`, payload, {
+    silent: true,
+  })
+  return unwrap(envelope)
+}
+
+/** 票据影像（S3-5）：带 Bearer 下载 blob，再转 objectURL 给 canvas，避免 <img src> 暴露直链。 */
+export async function fetchInvoiceImage(
+  invoiceId: number,
+  page = 1,
+  variant: 'original' | 'preprocessed' = 'original',
+): Promise<Blob> {
+  return getBlob(`/invoices/${invoiceId}/image`, {
+    params: { page, variant },
+    silent: true,
+    timeout: 60_000,
+  })
+}
+
+/** 行框（S3-5）：原图坐标、不含文本；失败时调用方降级为只画字段框。 */
+export async function fetchInvoiceLines(
+  invoiceId: number,
+  page = 1,
+): Promise<InvoiceLinesData> {
+  const envelope = await get<InvoiceLinesData>(`/invoices/${invoiceId}/lines`, {
+    params: { page },
     silent: true,
   })
   return unwrap(envelope)

@@ -48,6 +48,20 @@ export interface OcrStage {
   error: string | null
 }
 
+/** GET /invoices/{id}/lines 的行框（S3-5）：bbox 是原图坐标，不含文本。 */
+export interface OcrLineBox {
+  line_no: number
+  bbox: number[]
+  score: number | null
+  field_name: string | null
+}
+
+export interface InvoiceLinesData {
+  invoice_id: number
+  page_no: number
+  lines: OcrLineBox[]
+}
+
 /** POST /invoices/{id}/reocr 的 202 data（API.md §2）。 */
 export interface ReocrData {
   invoice_id: number
