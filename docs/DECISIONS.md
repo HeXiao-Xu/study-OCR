@@ -1304,3 +1304,26 @@
   冲突候选仍只能手工改值（候选选择 UI 未做，遗留 #46）。
 - **验证**：`tests/test_confirm.py` 9 条（happy/幂等/必填/冲突/低置信/校验失败/权限/状态与版本/并发 409）；
   `tests/test_rule_source.py` 2 条；真实冒烟：首次 confirm **422**（5 个字段）→ reviewer/submitter 修复 → **200 confirmed**（version 3）。
+
+---
+
+## D-066 重复检测：新增只读接口覆盖 D-013；强重复在 confirm 阻断；弱重复只提示
+
+- **日期**：2026-11-20（S3-7，用户确认）
+- **背景**：任务卡要 `GET /invoices/{id}/duplicate-check`，但 API.md 定稿 D-013"弱重复不做独立接口"，
+  只指向上传 `dedup` 与 `duplicate_of`。问题在于：上传发生在 OCR 之前，**弱重复需要的金额/日期/销方税号那时还不存在**，
+  D-013 给不出弱重复的展示面。
+- **决策**：
+  1. **新增** `GET /invoices/{id}/duplicate-check`（本人/reviewer；admin 404），返回
+     `{level: strong|weak|none, matches:[...]}`；**覆盖 D-013**（API.md §13 已改）。上传 `dedup` 与 `duplicate_of` 保留。
+  2. **强重复**：`duplicate_of`（流水线唯一冲突回退时写入已有票 id）优先；其次按 `(invoice_code, invoice_no)` 查；
+     影像同 sha256 作为纵深防御。`POST /confirm` 命中强重复 → `409/40900` + `data.invoice_id`，
+     **在字段闸门之前**（重复票改字段也报不了，先给硬结论）。
+  3. **弱重复**：同 `total_amount` + `invoice_date` + `seller_tax_no` 且票号不同；缺任一维不判（宁可漏报，不误伤连号票）；
+     **只提示、不阻断**，详情页黄色横幅。
+  4. **`duplicate_of` 由流水线写**：唯一冲突回退时查已有票 id 落到本票，`metrics.duplicate_of` 同步；作业仍 `succeeded`。
+  5. **匹配只给最小字段**（票号/日期/金额/状态/时间），不含姓名/税号明文；跨用户可见性沿用 repository 策略。
+- **代价**：影像重复受 `uq_invoice_files_sha256` 限制，正常路径不可能出现两张同 sha 票，`kind=image` 分支靠单测覆盖；
+  重复票没有合并/作废入口（遗留 #64），弱重复没有"标记为不重复"留痕（遗留 #65）。
+- **验证**：`tests/test_duplicate.py` 8 条（强/弱/void/缺维/权限/confirm 409/并发唯一索引/影像映射）；
+  真实冒烟：同图再传 409/40901；同票面重编码 B → `duplicate_of=49` → duplicate-check strong → confirm 409。

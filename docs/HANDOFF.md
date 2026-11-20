@@ -1,12 +1,13 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-20（S3-6 整单确认上线）
+> 最后更新：2026-11-20（S3-7 重复报销检测上线）
 
 ## 1. 一句话现状
 
-**阶段 3 已通六张卡**：S3-1（识别全链路）+ S3-2（置信度三档与队列）+ S3-3（局部二次识别）+
-S3-4（识别产物契约）+ S3-5（详情页左图右表）+ S3-6（整单确认）；**下一步 S3-7 重复报销检测**。
+**阶段 3 已通七张卡**：S3-1（识别全链路）+ S3-2（置信度三档与队列）+ S3-3（局部二次识别）+
+S3-4（识别产物契约）+ S3-5（详情页左图右表）+ S3-6（整单确认）+ S3-7（重复检测）；
+**下一步 S3-8 批量上传与进度**。
 
 当前浏览器可走通：登录（三角色）→ 按角色落地 → 上传（"识别中… N%"）→ 票据列表/详情
 （字段带 `review_level`；低置信字段可点"重识别"，`source=ocr_retry`）→ reviewer 的"待核对"=
@@ -115,6 +116,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S3-4 识别产物契约 | `docs/schemas/ocr_result.schema.json`（5 模型）；`GET /fields` 实测原文 `￥1,796.37` / 归一 `1796.37` | `scripts/export_ocr_schema.py --check`；`tests/test_ocr_schema.py` |
 | S3-5 详情页画框 | 532px 显示 `scale=0.338854`；放大两次 `0.487898`（×1.44）；`drawMs` 0.39/0.48ms；40 行框/12 字段框 | `ui_smoke --eval` 数值断言 + `tests/test_{image_service,lines_service,invoice_media}.py` |
 | S3-6 整单确认 | 真实票首次 confirm **422**（5 字段：冲突1+低置信4）→ 修复后 **200 confirmed**（version 0→3）；同 version 并发 PATCH 第二次 **409** | `tests/{test_confirm,test_rule_source}.py` + 冒烟脚本 |
+| S3-7 重复检测 | 同图再传 **409/40901**；同票面重编码 B → `duplicate_of=49`、duplicate-check **strong**、confirm **409/40900**（`data.invoice_id=49`） | `tests/test_duplicate.py`（8 条）+ 冒烟脚本 |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -150,6 +152,8 @@ curl -s "localhost:8000/api/v1/invoices/1/lines?page=1" -H "Authorization: Beare
 # S3-6 整单确认（失败 422/42201 + data.fields；成功 200 confirmed）
 curl -s -X POST "localhost:8000/api/v1/invoices/1/confirm" \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"version":1}'
+# S3-7 重复检测（strong 时 confirm 会 409）
+curl -s "localhost:8000/api/v1/invoices/1/duplicate-check" -H "Authorization: Bearer <token>"
 # 前端（Vite 5173 + 无头 Edge 9222）：类型检查/构建 + 真实登录冒烟（需要先起后端）
 (cd web && npm run typecheck && npm run build)
 # 无头 Edge（另起一个进程；bash 路径，PowerShell 用引号包住 exe）
@@ -228,33 +232,35 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-063 | `GET /image` 按契约实现；明文仅 `STORAGE_ALLOW_PLAINTEXT`（密文/prod 409 待 S4）；PDF 固定 250 DPI；前端 blob 取图 |
 | D-064 | 新增 `GET /lines`（服务端映射原图坐标、不返回文本）；canvas 字段/行框分级 + culling；缩放改 CSS 尺寸而非 transform |
 | D-065 | 整单确认闸门顺序 必填→冲突→低置信未确认→validators；本人权限（reviewer 403）；幂等 + `version+1`；审计行留 S4-7；PATCH 不重写 |
+| D-066 | 新增 `GET /duplicate-check` 覆盖 D-013；强重复 confirm 409；弱重复只提示；`duplicate_of` 由流水线写；影像重复纵深防御 |
 
-## 7. 下一步：S3-7 重复报销检测
+## 7. 下一步：S3-8 批量上传与进度
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S3-7；
-- 流程（AGENTS §11）：spec（`docs/spec/s3-7-*.md`）→ plan → 用户确认 → 写码；
-- **先报契约冲突（必须先拍板）**：任务卡要求 `GET /invoices/{id}/duplicate-check` 返回
-  `{level: strong|weak|none, matches:[...]}`；但 `docs/API.md` 已定稿 **D-013：弱重复不做独立接口**，
-  结果只体现在上传响应 `dedup` 与详情 `invoices.duplicate_of`。要么扩 API.md 新增该接口，要么按 D-013
-  用 `duplicate_of` + 上传 `dedup` 表达——**不要直接二选一，先报用户**；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S3-8；
+- 流程（AGENTS §11）：spec（`docs/spec/s3-8-*.md`）→ plan → 用户确认 → 写码；
+- **必须先对账的契约点**（API.md 目前**没有** batch 接口）：
+  1. `POST /invoices/batch` 与 `GET /invoices/batch/{batch_id}` 都不在 API.md，需先补契约再写码；
+  2. 批量返回体（`batch_id` + 逐项状态）与统一响应壳/分页风格要一致；逐项状态机要与 `ocr_jobs` 对齐，
+     不能另造一套"处理中"枚举；
+  3. `batch` 是**新表**还是复用 `ocr_jobs`（`invoice_id` 已有）？若要新表必须加迁移（0006）并同步 SCHEMA——
+     这是本卡唯一可能的迁移，先定；
 - 已就绪、不要重复实现：
-  1. **强重复**：`invoices (invoice_code, invoice_no) WHERE status <> 'void'` 部分唯一索引已在 0001；
-     流水线 `_persist` 用 savepoint 捕获唯一冲突并回退（metric `duplicate_invoice_no`，S3-1）；
-  2. **影像重复**：上传按分块 `sha256` 去重 → `409/40901` + 已有 `invoice_id`（S2-6）；
-  3. `invoices.duplicate_of` 列与 `InvoiceOut.duplicate_of` 已存在（**当前从未被赋值**）；
+  - 单文件上传与 sha256 去重（S2-6）、任务框架与幂等（S2-7）、识别流水线（S3-1）；
+  - 前端上传页已支持**多选 ≤20 + 串行上传 + 单文件/总进度 + 120s 轮询**（S2-10）——S3-8 是把它
+    升级为**真批量**（30 张、逐项状态、失败单条重试），不是从零写；
+  - worker 并发 1（D-057）与 ARQ 队列已就位；
 - **本卡要补**：
-  1. `services/duplicate.py`：三维度检测（强/影像/弱），返回结构化 matches；
-  2. 弱重复口径：同金额 + 同开票日期 + 同销方税号，**发票号不同** → warning 列表，**不阻断**
-     （任务卡明确：硬阻断会误伤连号票）；`level` 优先级 strong > weak > none；
-  3. 提交报销前再查一次影像 sha256（上传已拦，但库可能被外部导入/旧数据绕过）；
-  4. 并发测试：两个请求同时建同号单，只能成功一个（应用层预检 + 唯一索引兜底）；
-- **坑**：唯一索引是最后一道闸，应用层预检不能省（并发窗口）；弱重复不能做成硬阻断；
-  同号第二张的 409 响应要带已有 `invoice_id`（与上传 409 同形状，前端好跳转）；
-- 验收（任务卡）：同发票号第二张单 409；同图换发票号上传被拦；弱重复给出 warning 列表。
+  1. `POST /invoices/batch`：多文件逐个建 `invoice + invoice_file` 并投递 ARQ，返回 `batch_id` 与逐项状态；
+  2. `GET /invoices/batch/{batch_id}`：汇总（总数/成功/失败/处理中）+ 逐项 job 状态；
+  3. 失败项**单条重试**：用原 `file_id` 重投，**不得重复建单**（任务卡坑）；
+  4. 限流：单用户并发识别任务 ≤3（Redis 计数器），超出排队并返回明确文案；
+  5. 前端 Upload.vue 批量模式：总进度 + 逐项状态 + 失败重试；
+- **坑**：同步识别会超 Nginx 60s，必须全异步；并发限制不做会把 CPU 打满导致全部超时；
+- 验收（任务卡）：一次传 30 文件进度到 100%；失败项重试不产生重复单据。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：S3-1 ~ S3-6 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
+1. **push**：S3-1 ~ S3-7 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：S3-3 已试过低置信二次识别（整体 97.3% 提升，但出租车票字太少，提升有限）；
    论文如实写"出租车票是已知短板"，不要在 S1 继续调；
