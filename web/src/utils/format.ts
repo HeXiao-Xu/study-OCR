@@ -1,5 +1,5 @@
 /** 票据展示层格式化：金额、时间、票种/状态标签。组件里不各写一套。 */
-import type { ExtractStatus, InvoiceStatus, InvoiceType, OcrStatus } from '../types/invoice'
+import type { ExtractStatus, InvoiceOut, InvoiceStatus, InvoiceType, OcrStatus } from '../types/invoice'
 
 export const INVOICE_TYPE_LABEL: Record<InvoiceType, string> = {
   vat_general: '增值税电子普通发票',
@@ -33,6 +33,35 @@ export const EXTRACT_STATUS_LABEL: Record<ExtractStatus, string> = {
   raw: '未抽取',
   need_confirm: '待确认',
   confirmed: '已确认',
+}
+
+/** 业务状态（派生，S3-9/D-068）：提交人看到的"待确认 → 待复核 → 已复核"，
+ * 不新增数据库枚举；`void`/`in_report`/`archived` 仍按原语义。 */
+export type DisplayStatusKey =
+  | 'pending_confirm'
+  | 'pending_review'
+  | 'reviewed'
+  | 'in_report'
+  | 'archived'
+  | 'void'
+
+export interface DisplayStatus {
+  key: DisplayStatusKey
+  label: string
+  tag: 'info' | 'success' | 'primary' | 'warning' | 'danger'
+}
+
+export function invoiceDisplayStatus(
+  invoice: Pick<InvoiceOut, 'status' | 'extract_status' | 'reviewed_at'>,
+): DisplayStatus {
+  if (invoice.status === 'void') return { key: 'void', label: '已作废', tag: 'danger' }
+  if (invoice.status === 'in_report') {
+    return { key: 'in_report', label: '已入报销单', tag: 'primary' }
+  }
+  if (invoice.status === 'archived') return { key: 'archived', label: '已归档', tag: 'info' }
+  if (invoice.status === 'draft') return { key: 'pending_confirm', label: '待确认', tag: 'warning' }
+  if (invoice.reviewed_at) return { key: 'reviewed', label: '已复核', tag: 'success' }
+  return { key: 'pending_review', label: '待复核', tag: 'warning' }
 }
 
 export const OCR_STATUS_LABEL: Record<OcrStatus, string> = {

@@ -28,16 +28,12 @@ import type {
   DuplicateCheckData,
   InvoiceDetail,
   InvoiceField,
-  InvoiceStatus,
   InvoiceType,
   OcrLineBox,
   OcrStatus,
 } from '../types/invoice'
 import {
   AMOUNT_FIELDS,
-  EXTRACT_STATUS_LABEL,
-  INVOICE_STATUS_LABEL,
-  INVOICE_STATUS_TAG,
   INVOICE_TYPE_LABEL,
   OCR_STATUS_LABEL,
   OCR_STATUS_TAG,
@@ -46,6 +42,7 @@ import {
   formatMoney,
   formatPercent,
   formatSize,
+  invoiceDisplayStatus,
 } from '../utils/format'
 
 const route = useRoute()
@@ -101,11 +98,9 @@ const canEdit = computed(() => {
   return store.role === 'reviewer' && invoice.status === 'confirmed'
 })
 
-const reviewLabel = computed(() => {
-  const invoice = detail.value?.invoice
-  if (!invoice || invoice.status !== 'confirmed') return ''
-  return invoice.reviewed_at ? '已复核' : '待复核'
-})
+const displayStatus = computed(() =>
+  detail.value ? invoiceDisplayStatus(detail.value.invoice) : null,
+)
 
 const canDelete = computed(() => {
   const invoice = detail.value?.invoice
@@ -446,14 +441,15 @@ onBeforeUnmount(revokeImage)
           <div class="card-header">
             <div class="title-group">
               <span>票据详情</span>
-              <el-tag :type="INVOICE_STATUS_TAG[detail.invoice.status as InvoiceStatus]" effect="plain">
-                {{ INVOICE_STATUS_LABEL[detail.invoice.status as InvoiceStatus] }}
+              <el-tag v-if="displayStatus" :type="displayStatus.tag" effect="plain">
+                {{ displayStatus.label }}
               </el-tag>
-              <el-tag :type="OCR_STATUS_TAG[detail.invoice.ocr_status as OcrStatus]" effect="plain">
+              <el-tag
+                v-if="detail.invoice.ocr_status !== 'succeeded'"
+                :type="OCR_STATUS_TAG[detail.invoice.ocr_status as OcrStatus]"
+                effect="plain"
+              >
                 {{ OCR_STATUS_LABEL[detail.invoice.ocr_status as OcrStatus] }}
-              </el-tag>
-              <el-tag v-if="reviewLabel" :type="reviewLabel === '已复核' ? 'success' : 'warning'" effect="plain">
-                {{ reviewLabel }}
               </el-tag>
             </div>
             <div class="actions">
@@ -505,9 +501,6 @@ onBeforeUnmount(revokeImage)
           </el-descriptions-item>
           <el-descriptions-item label="发票代码 / 号码">
             {{ detail.invoice.invoice_code ?? '—' }} / {{ detail.invoice.invoice_no ?? '—' }}
-          </el-descriptions-item>
-          <el-descriptions-item label="抽取状态">
-            {{ EXTRACT_STATUS_LABEL[detail.invoice.extract_status] }}
           </el-descriptions-item>
           <el-descriptions-item label="整体置信度">
             {{ formatPercent(detail.invoice.overall_confidence) }}

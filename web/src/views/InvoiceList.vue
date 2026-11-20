@@ -21,12 +21,12 @@ import type {
 import {
   EXTRACT_STATUS_LABEL,
   INVOICE_STATUS_LABEL,
-  INVOICE_STATUS_TAG,
   INVOICE_TYPE_LABEL,
   OCR_STATUS_LABEL,
   OCR_STATUS_TAG,
   formatDateTime,
   formatMoney,
+  invoiceDisplayStatus,
 } from '../utils/format'
 
 const route = useRoute()
@@ -317,8 +317,8 @@ watch(
         </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
-            <el-tag :type="INVOICE_STATUS_TAG[row.status as InvoiceStatus]" effect="plain">
-              {{ INVOICE_STATUS_LABEL[row.status as InvoiceStatus] }}
+            <el-tag :type="invoiceDisplayStatus(row).tag" effect="plain">
+              {{ invoiceDisplayStatus(row).label }}
             </el-tag>
           </template>
         </el-table-column>
