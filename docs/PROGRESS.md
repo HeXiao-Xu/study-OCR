@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-- 阶段：**阶段 3 已完成**（S3-1 ~ S3-8）；下一阶段 **S4 密码模块**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、**S3-1 ~ S3-8**（共 33 张卡，全部 ✅ 通过）
-- 最近完成：**S3-8 批量上传与进度**（30 文件 1.17s 建单、48.6s 全部识别完、单用户并发 3 + 自动补位、失败重试不建新单）
+- 阶段：**阶段 3 已完成**（S3-1 ~ S3-8 + 补充卡 S3-9）；下一阶段 **S4 密码模块**
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、**S3-1 ~ S3-9**（共 34 张卡，全部 ✅ 通过）
+- 最近完成：**S3-9 双人复核**（提交人可改全部字段含金额；审核人二审 `POST /review`；复核锁定）
 - 下一步：**S4-1 SM3 摘要与 canonical JSON 规范化 ★关键**
 - 已知阻塞：无
 - 环境提醒：
@@ -59,6 +59,7 @@
 [x] S3-6 字段修正与确认 API
 [x] S3-7 重复报销检测
 [x] S3-8 批量上传与进度
+[x] S3-9 双人复核（补充卡：提交人全字段 + 审核人二审）
 
 ## 阶段 4：密码模块（M3）
 [ ] S4-1 SM3 摘要与 canonical JSON 规范化 ★关键
@@ -99,6 +100,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S3-9（补充卡） | `alembic/versions/0007_invoice_review.py`（`reviewed_by` FK users、`reviewed_at` + 索引）、`models/invoices.py`、`schemas/invoice.py`（`InvoiceOut` 两字段、`review_status` 过滤）、`services/invoice_service.py`（`update_fields` 删除金额角色限制 + 复核锁定、`review_invoice`、列表过滤）、`api/v1/invoices.py`（`POST /{id}/review`）、`web/src/{types,invoices api,InvoiceDetail,InvoiceList}`、`backend/tests/test_review.py`（新）+ 改 `test_invoices`、`docs/{spec,plan}/s3-9-two-level-review.md` | ① 提交人改金额：不勾选 **422/42202**、勾选 **200**（原 403 删除）；② 提交人确认 113 → v4；审核人 review → **200**，`reviewed_by=15`、`reviewed_at` 落库、v5；③ 列表 `review_status=pending` 空、`reviewed=[113]`；④ 复核后提交人改字段 → **409/40900**；重复复核 → **200 且 v 不变**（幂等）；⑤ 迁移 0007 upgrade/downgrade/upgrade，`alembic check` 零差异；⑥ 单元 422 / 集成 245 passed，`typecheck`/`build` 通过；⑦ UI 断言 reviewer 详情“已复核”通过，截图 `backend/eval/results/s39-reviewed.png` | ✅ 通过（D-068 取代 D-017 金额限制；复核即锁定，无反复核） |
 | S3-8 | `alembic/versions/0006_batch_upload.py`（`invoices.batch_id` + 索引、`ocr_jobs.dispatched`）、`models/{invoices,ocr_jobs}.py`、`core/config.py` + `.env.example`（`OCR_MAX_ACTIVE_PER_USER=3`）、`services/batch_service.py`（新：`create_batch`/`dispatch_pending`/`dispatch_for_job`/`batch_summary`/`retry_item`）、`tasks/worker.py`（`after_job_end` 补位，ARQ 0.28 只传 ctx → `Job.info()` 回查参数）、`api/v1/invoices.py` + `schemas/invoice.py`（3 个 batch 接口）、`web/src/{api/files.ts,api/invoices.ts,types/invoice.ts,views/Upload.vue}`（批量模式）、`backend/tests/test_batch.py`、`docs/{spec,plan}/s3-8-batch.md` | ① 迁移 0006 可 upgrade/downgrade/upgrade，`alembic check` 零差异；② 真实 30 文件：POST **202 / created=30 / 1.17s**，轮询 **48.6s** 全部 `succeeded`，逐项 `progress` 全 100；③ 并发：批内 5 文件只有 **3** 个 `dispatched=true`（其余 `false` 排队），GET 轮询/`after_job_end` 补位后依次入队；④ 去重/非法按项返回（`duplicates/rejected`），不拖垮整批；⑤ 重试：**202 + 新 job**，`invoices` 数不变（30→30，job 81 有 2 条），重试后识别成功；⑥ 权限/404/422/409 全覆盖；⑦ 单元 422 / 集成 237 passed，`typecheck`/`build` 通过；⑧ 冒烟 30 票/对象/账号已清理 | ✅ 通过（唯一新增迁移 0006；前端批量 UI 仅 typecheck/build，未做 30 文件浏览器点击自动化） |
 | S3-7 | `backend/app/services/duplicate.py`（新：`check_duplicates` 强/弱、只读）、`schemas/invoice.py`（`DuplicateMatchOut/DuplicateCheckData`）、`api/v1/invoices.py`（`GET /{id}/duplicate-check`）、`services/ocr_pipeline.py`（唯一冲突回退写 `duplicate_of` + metric）、`services/invoice_service.py`（confirm 强重复闸门 409）、`web/src/{api/invoices.ts,types/invoice.ts,views/InvoiceDetail.vue}`（重复横幅）、`backend/tests/test_duplicate.py`、`docs/{spec,plan}/s3-7-duplicate.md` | ① 真实冒烟：A 票 id49（票号 05975405）；同图再传 **409/40901 + invoice_id=49**；同票面重编码（不同 sha）为 B id50 → 流水线写 `duplicate_of=49`、`invoice_no=None`（作业 succeeded）；② `GET /duplicate-check` B → **strong**, kind=invoice_no, match=49；③ `POST /confirm` B → **409/40900**, `data={invoice_id:49, kind:invoice_no}`；④ 弱重复（同金额+日期+销方、不同票号）单测为 weak、缺维/void 为 none；⑤ 并发：两 session 同写 (code,no) → 第二个 `IntegrityError`（唯一索引兜底）；⑥ 详情页红色横幅断言“疑似重复票据”通过，截图 `backend/eval/results/s37-dup.png`；⑦ 单元 422 / 集成 230 passed，`typecheck`/`build` 通过，`alembic check` 零差异（head 0005，无迁移）；⑧ 冒烟票据/对象/账号已清理 | ✅ 通过（新增 duplicate-check 覆盖 D-013；弱重复只提示不阻断） |
 | S3-6 | `backend/app/services/{rule_source,invoice_service}.py`（`resolve_rules` 共享；`collect_confirm_errors` 四类闸门；`confirm_invoice` 幂等/版本/落库）、`api/v1/invoices.py` + `schemas/invoice.py`（`POST /{id}/confirm`、`ConfirmRequest`）、`web/src/{api/invoices.ts,types/invoice.ts,views/InvoiceDetail.vue,components/FieldTable.vue}`（确认整单/逐字段确认/422 列表）、`backend/tests/{test_rule_source,test_confirm}.py`、`docs/{spec,plan}/s3-6-confirm.md` | ① 闸门顺序 必填→冲突→低置信未确认→validators，同字段只留第一条，`422/42201` + `data.fields`；② 真实冒烟（vat_general）：首次确认 **422**，fields=amount(冲突)/invoice_no/tax_amount/total_amount/total_amount_upper(低置信)；reviewer 修金额 200、submitter 逐字段确认 200 → 再确认 **200**，`status/extract_status=confirmed`、version 3（0→1→2→3）；③ 幂等：已确认再调 200 且版本不再增加；权限：他人 404 / reviewer 403 / admin 404；旧 version 409；④ 并发验收：同 `version=0` 连发两次 PATCH → 200 + 409/40900；⑤ 详情页新增“确认整单”与逐字段“确认”按钮 + 422 字段列表；截图 `backend/eval/results/s36-confirmed.png`（页面显示“已确认”）；⑥ 单元 422 / 集成 222 passed，`typecheck`/`build` 通过，`alembic check` 零差异（head 0005，无迁移）；⑦ 冒烟票据/对象/账号已清理 | ✅ 通过（审计行留 S4-7；PATCH 未重写） |
@@ -221,6 +223,8 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 65 | 弱重复只提示，没有"标记为不重复"的留痕 | 任务卡要求不阻断；reviewer 需人工判断 | S5 报销审核时加"忽略弱重复"审计动作（需扩展 `audit_action` 枚举） |
 | 66 | 批量上传页的 30 文件浏览器点击未自动化 | 接口与服务层已测（30 文件验收）；前端只做 typecheck/build + 单文件路径沿用 S2-10 冒烟 | 若引入前端测试框架（#40），补一条 30 文件批量用例 |
 | 67 | 排队作业靠 `after_job_end` + GET 轮询补位 | worker 崩溃时排队项会等下一次轮询/重启；无独立调度器 | 若将来上多 worker/更高并发，改为 Redis 队列 + 独立 dispatcher |
+| 68 | 复核后不可退回（刻意） | 要改只能走 S5 报销单驳回/作废；无 `unreview` 接口 | S5 设计驳回时再定是否允许票据回到 draft |
+| 69 | 审核人二审前改字段会触发 `extract_status=need_confirm` | 状态机仍是 confirmed；复核闸门按库内值重跑 | 若希望"二审前修改自动回到待确认列表"，需另定状态语义（当前不混用） |
 | 50 | API.md 仍保留 S3/S4/S5 未实现接口的标注 | 对账只保证"已实现 → 有文档"这一个方向 | 后续任务把对应接口实现后，更新 API.md 的实现标记与测试覆盖 |
 | 51 | 界面仍是第一版视觉，没有设计稿/完整设计系统 | 任务卡没有美化项，先保证主流程与角色落地 | S3-5 会重做详情工作区；其余页面按反馈继续打磨（颜色/密度/品牌素材） |
 | 52 | 登录页品牌区是文字 + 字母 S 占位 | 没有校徽/系统 Logo 素材 | 答辩前可替换为学校/项目 Logo；布局不需要改 |

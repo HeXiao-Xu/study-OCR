@@ -1,12 +1,12 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-20（S3-8 批量上传上线，阶段 3 收尾）
+> 最后更新：2026-11-20（S3-9 双人复核上线，提交人可改金额、审核人二审）
 
 ## 1. 一句话现状
 
-**阶段 3 已完成（S3-1 ~ S3-8 全通）**：识别链路 + 置信度/重识别 + 契约 + 详情画框 + 确认 + 重复检测 + 批量上传；
-**下一步 S4-1 SM3 摘要与 canonical JSON 规范化（★关键，密码链路起点）**。
+**阶段 3 已完成（S3-1 ~ S3-8 + 补充卡 S3-9）**：识别链路 + 置信度/重识别 + 契约 + 详情画框 + 确认 + 重复检测 +
+批量上传 + **双人复核（提交人全字段、审核人二审）**；**下一步 S4-1 SM3 摘要与 canonical JSON 规范化（★关键）**。
 
 当前浏览器可走通：登录（三角色）→ 按角色落地 → 上传（"识别中… N%"）→ 票据列表/详情
 （字段带 `review_level`；低置信字段可点"重识别"，`source=ocr_retry`）→ reviewer 的"待核对"=
@@ -117,6 +117,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S3-6 整单确认 | 真实票首次 confirm **422**（5 字段：冲突1+低置信4）→ 修复后 **200 confirmed**（version 0→3）；同 version 并发 PATCH 第二次 **409** | `tests/{test_confirm,test_rule_source}.py` + 冒烟脚本 |
 | S3-7 重复检测 | 同图再传 **409/40901**；同票面重编码 B → `duplicate_of=49`、duplicate-check **strong**、confirm **409/40900**（`data.invoice_id=49`） | `tests/test_duplicate.py`（8 条）+ 冒烟脚本 |
 | S3-8 批量上传 | 30 文件 POST **1.17s** 建单；**48.6s** 全部 succeeded、progress 全 100；批内仅 3 个入队；重试后 invoice 30→30、job 2 条且重跑成功 | `tests/test_batch.py`（7 条）+ 冒烟脚本 |
+| S3-9 双人复核 | 提交人改金额（勾选）→ 整单确认 v4；审核人复核 **200**（`reviewed_by=15`、`reviewed_at` 落库、v5）；复核后改字段 **409**、重复复核 **200 且版本不变** | `tests/test_review.py`（8 条）+ 冒烟脚本 |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -158,6 +159,11 @@ curl -s "localhost:8000/api/v1/invoices/1/duplicate-check" -H "Authorization: Be
 curl -s -F "files=@a.jpg" -F "files=@b.jpg" localhost:8000/api/v1/invoices/batch -H "Authorization: Bearer <token>"
 curl -s "localhost:8000/api/v1/invoices/batch/<uuid>" -H "Authorization: Bearer <token>"
 curl -s -X POST "localhost:8000/api/v1/invoices/batch/<uuid>/items/1/retry" -H "Authorization: Bearer <token>"
+# S3-9 审核人复核（替换为 reviewer token；复核后字段修改会 409）
+curl -s -X POST "localhost:8000/api/v1/invoices/1/review" \
+  -H "Authorization: Bearer <reviewer-token>" -H "Content-Type: application/json" -d '{}'
+# 待复核 / 已复核筛选
+curl -s "localhost:8000/api/v1/invoices?review_status=pending" -H "Authorization: Bearer <token>"
 # 前端（Vite 5173 + 无头 Edge 9222）：类型检查/构建 + 真实登录冒烟（需要先起后端）
 (cd web && npm run typecheck && npm run build)
 # 无头 Edge（另起一个进程；bash 路径，PowerShell 用引号包住 exe）
@@ -238,6 +244,7 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-065 | 整单确认闸门顺序 必填→冲突→低置信未确认→validators；本人权限（reviewer 403）；幂等 + `version+1`；审计行留 S4-7；PATCH 不重写 |
 | D-066 | 新增 `GET /duplicate-check` 覆盖 D-013；强重复 confirm 409；弱重复只提示；`duplicate_of` 由流水线写；影像重复纵深防御 |
 | D-067 | 批量：迁移 0006（`invoices.batch_id`/`ocr_jobs.dispatched`）；服务端排队 ≤3 + `after_job_end` 补位；重试只建新 job；去重项只在 POST 响应 |
+| D-068 | 双人复核（取代 D-017 金额限制）：提交人可改全部字段（金额须勾选）；审核人 `POST /review` 二审；`reviewed_at` 锁定修改；不加 status 枚举 |
 
 ## 7. 下一步：S4-1 SM3 摘要与 canonical JSON 规范化（★关键）
 
@@ -266,7 +273,7 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：S3-1 ~ S3-8 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
+1. **push**：S3-1 ~ S3-9 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：S3-3 已试过低置信二次识别（整体 97.3% 提升，但出租车票字太少，提升有限）；
    论文如实写"出租车票是已知短板"，不要在 S1 继续调；

@@ -1349,3 +1349,29 @@
 - **代价**：排队依赖 worker 存活（崩溃期间排队项等下一次轮询/重启，遗留 #67）；批量页 30 文件点击未自动化（#66）。
 - **验证**：30 文件实测 POST 1.17s、轮询 48.6s 全 succeeded、progress 全 100、批内仅 3 个 dispatched；
   重试后 invoice 数 30→30、job 变 2 且重新识别成功；`tests/test_batch.py` 7 条；迁移 upgrade/downgrade 通过。
+
+---
+
+## D-068 双人复核：提交人可改全部字段（含金额），审核人二审，复核即锁定
+
+- **日期**：2026-11-20（S3-9，用户直接需求）
+- **背景**：D-017 规定"提交人不能改金额、金额仅 reviewer 可改"，但整单确认又只能"本人"；
+  结果低置信金额字段提交人点"确认"就 403，票据无法由一人闭环，体验与角色边界都别扭。
+  用户决定改成更接近真实报销的**两级确认**。
+- **决策**：
+  1. **权限（取代 D-017 的金额限制）**：`submitter` 可改**全部字段**；`reviewer` 可改全部字段；
+     **任何人改金额都必须 `confirm_amount=true`**（留痕语义保留），否则 `422/42202`；`admin` 仍 404。
+  2. **一审**：提交人 `POST /confirm`（不变：本人、幂等、422 逐字段）。
+  3. **二审**：新增 `POST /invoices/{id}/review`（仅 reviewer；要求 `status=confirmed` 且未复核；
+     重跑 `collect_confirm_errors`；通过后 `reviewed_by/reviewed_at`、`extract_status=confirmed`、`version+1`；
+     已复核再调幂等 200，不再加版本）。
+  4. **数据**：迁移 0007 加 `invoices.reviewed_by`（FK users）与 `reviewed_at`（索引）；
+     **不新增 status 枚举值**——"待复核" = `status='confirmed' AND reviewed_at IS NULL`。
+  5. **复核即锁定**：`reviewed_at` 非空后 `PATCH /fields` 一律 409；不提供反复核接口（要改走 S5 驳回/作废）。
+  6. **二审前修正**：reviewer 在 `confirmed` 且未复核时仍可 PATCH 字段（避免"审核人发现问题却改不了"）。
+  7. 审计行仍留 S4-7（D-065 同口径）。
+- **代价**：金额的最后一道控制从"提交人不能碰"变成"必须过二审"，演示需两个账号配合；
+  复核后不可退回（遗留 #68）。
+- **验证**：`tests/test_review.py` 8 条；`test_invoices` 金额用例改为"需勾选、勾选后 200"；
+  冒烟：提交人改金额→确认（v4）→审核人复核（v5、reviewed_by/at）→列表 pending 空/reviewed 含 113 →
+  复核后改字段 409 → 重复复核 200 版本不变。
