@@ -185,7 +185,7 @@ def test_uscc_charset_excludes_confusing_letters() -> None:
 # ---------------------------------------------------------------------------
 # 汇总
 # ---------------------------------------------------------------------------
-def test_run_validators_halves_confidence_for_failed_fields() -> None:
+def test_run_validators_reports_failed_fields() -> None:
     from app.ocr.types import ExtractedField
 
     fields = {

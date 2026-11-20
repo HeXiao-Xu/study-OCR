@@ -3,9 +3,11 @@
 锁三件事：
 ① 锚点优先级与取值位置（合计行的"金额/税额"两列）；
 ② **冲突不静默替换**（同优先级证据矛盾时保留 candidates）；
-③ 缺失必填字段必须进 `missing_required`，校验失败必须把置信度折半。
+③ 缺失必填字段必须进 `missing_required`，校验失败必须把置信度封顶到 0.45（S3-2）。
 """
 from __future__ import annotations
+
+import pytest
 
 from app.ocr.extractor import extract_fields, load_field_rules
 from app.ocr.types import OcrLine
@@ -99,7 +101,7 @@ def test_missing_required_fields_are_reported() -> None:
     assert "total_amount" in result.missing_required
 
 
-def test_invalid_uscc_halves_confidence() -> None:
+def test_invalid_uscc_caps_confidence_below_half() -> None:
     broken = VALID_USCC[:10] + ("0" if VALID_USCC[10] != "0" else "1") + VALID_USCC[11:]
     lines = [
         _line("发票号码：12345678", 90, 0),
@@ -109,8 +111,51 @@ def test_invalid_uscc_halves_confidence() -> None:
     ]
     result = extract_fields(lines, (1200, 800), "vat_general")
     field = result.fields["buyer_tax_no"]
-    assert field.confidence < 0.98 * 0.95      # 被折半
+    assert field.confidence <= 0.45            # 校验失败封顶（任务卡"直接 <0.5"）
     assert any("invalid_uscc" in warning for warning in result.warnings)
+
+
+def test_anchor_hit_records_confidence_components() -> None:
+    """S3-2：抽取器只记录证据，档位由 confidence.py 统一判。"""
+    from app.services.confidence import level_for
+
+    result = extract_fields(_digital_lines(), (1200, 800), "vat_digital")
+    field = result.fields["invoice_no"]
+
+    assert field.anchor_score is not None and field.value_score is not None
+    assert field.anchor_score == pytest.approx(0.98)
+    assert field.value_score == pytest.approx(0.98)
+    assert field.agreement == 1.0                      # 同行取值
+    assert level_for(field.confidence) in {"auto", "review", "manual"}
+
+
+def test_derived_field_has_no_ocr_components() -> None:
+    """推导值没有锚点行/值行，不能假装有 OCR 证据。
+
+    触发方式：把 total_amount 的锚点改成一个必然不存在的词，强制走"amount + tax = total"推导分支
+    （真实票面上 total 的锚点与 amount/tax 重叠，正常样本不会走到这里）。
+    """
+    from dataclasses import replace
+
+    lines = [
+        _line("电子发票（普通发票）", 50, 0),
+        _line("发票号码：12345678", 90, 1),
+        _line("开票日期：2025年11月04日", 120, 2),
+        _line("金额  ¥184.80", 480, 3),
+        _line("税额  ¥11.09", 520, 4),
+    ]
+    rules = [
+        replace(rule, anchors=["不存在的锚点"]) if rule.name == "total_amount" else rule
+        for rule in load_field_rules()
+        if rule.name in {"amount", "tax_amount", "total_amount"}
+    ]
+
+    result = extract_fields(lines, (1200, 800), "vat_digital", rules=rules)
+
+    derived = result.fields["total_amount"]
+    assert derived.rule_id == "derived:total_amount"
+    assert derived.value == "195.89"
+    assert derived.anchor_score is None and derived.value_score is None
 
 
 def test_ticket_specific_rules_are_skipped() -> None:

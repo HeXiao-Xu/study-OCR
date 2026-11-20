@@ -22,6 +22,9 @@ import yaml
 from app.ocr.layout import LayoutResult
 from app.ocr.types import ExtractedField, ExtractionResult, OcrLine
 from app.ocr.validators import parse_date, parse_money, parse_upper_amount, run_validators
+# 置信度公式集中在 services/confidence.py（AGENTS §10.3 把"置信度聚合"列在 OCR 细则里），
+# 抽取器只负责收集证据并调用它，不自己决定三档。
+from app.services.confidence import apply_validator_cap, compute_field_confidence
 
 __all__ = ["FieldRule", "load_field_rules", "rules_from_specs", "extract_fields"]
 
@@ -340,6 +343,7 @@ def extract_fields(lines: list[OcrLine], image_size: tuple[int, int],
                 value = _extract_value(rule, anchor_line.text, anchor)
                 source_line = anchor_line
                 strength = base_strength
+                used_neighbour = False
                 if value is None:
                     neighbour = _neighbour_value(rule, anchor_line, ordered, image_height)
                     if neighbour is None:
@@ -347,15 +351,23 @@ def extract_fields(lines: list[OcrLine], image_size: tuple[int, int],
                     value, source_line_no = neighbour
                     source_line = next((line for line in ordered if line.line_no == source_line_no), anchor_line)
                     strength = base_strength * _FUZZY_PENALTY
+                    used_neighbour = True
+                agreement = _FUZZY_PENALTY if used_neighbour else 1.0
                 hits.append(ExtractedField(
                     name=rule.name,
                     value=value,
                     raw_text=source_line.text,
                     source_line_no=source_line.line_no,
-                    confidence=round(min(1.0, source_line.score * strength), 4),
+                    confidence=compute_field_confidence(
+                        anchor_line.score, source_line.score,
+                        agreement=agreement, rule_factor=base_strength,
+                    ),
                     rule_id=rule.rule_id,
                     rule_strength=round(strength, 3),
                     bbox=source_line.bbox(),
+                    anchor_score=anchor_line.score,
+                    value_score=source_line.score,
+                    agreement=agreement,
                 ))
             if hits:
                 break      # 高优先级锚点命中就不再往低优先级找
@@ -451,6 +463,7 @@ def extract_fields(lines: list[OcrLine], image_size: tuple[int, int],
     for issue in validation.issues:
         if issue.severity == "error" and issue.field in result.fields:
             field = result.fields[issue.field]
-            field.confidence = round(field.confidence * 0.5, 4)
+            # 校验判错 = 这条值不可信，直接压进"必须人工"区（任务卡要求 <0.5）
+            field.confidence = apply_validator_cap(field.confidence)
     result.warnings.extend(f"{issue.field}:{issue.code}" for issue in validation.issues)
     return result

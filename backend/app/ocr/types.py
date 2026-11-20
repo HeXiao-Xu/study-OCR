@@ -65,6 +65,10 @@ class ExtractedField(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     rule_id: str = ""
     rule_strength: float = 1.0
+    # 置信度成分（S3-2）：锚点行 / 值行的 OCR score 与取值一致性，供 confidence.py 复算与追溯
+    anchor_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    value_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    agreement: float = Field(default=1.0, ge=0.0, le=1.0)
     bbox: tuple[int, int, int, int] | None = None
     candidates: list[str] = Field(default_factory=list, description="同分候选（有冲突时不自动替换）")
 
