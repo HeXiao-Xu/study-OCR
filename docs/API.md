@@ -213,6 +213,23 @@
   随后重算 `overall_confidence` 与 `extract_status`；单张总增量 ≤1.5s，超预算字段记 `skipped`；
   逐字段 old/new 明细写 `ocr_jobs.metrics.fields[]`；识别为空（非文本区域）记 `skipped:no_text`，不使整单失败
 
+### GET /api/v1/invoices/{id}/duplicate-check
+- 权限：本人或 `reviewer`；`admin` → 404 ｜ 类型：同步（只读）｜ 幂等：是 ｜ 实现：S3-7 ✅
+- 入参：无
+- 出参：**200**，`data` = `{invoice_id, level: "strong"|"weak"|"none", matches: [{invoice_id, kind, invoice_code, invoice_no, invoice_date, total_amount, status, created_at}]}`
+
+```json
+{"invoice_id": 102, "level": "weak",
+ "matches": [{"invoice_id": 87, "kind": "weak", "invoice_code": null, "invoice_no": "05975405",
+              "invoice_date": "2025-01-02", "total_amount": "1850.26",
+              "status": "confirmed", "created_at": "2026-11-20T06:30:00Z"}]}
+```
+
+- 错误：`404/40400`
+- 备注：`kind`：`invoice_no`（`duplicate_of` 或同票号）/ `image`（同 sha256，纵深防御）/ `weak`
+  （同 `total_amount`+`invoice_date`+`seller_tax_no`，票号不同）；强重复时 `POST /confirm` 返回 `409`；
+  `matches` 只给最小字段（不含姓名/税号明文）；弱重复**只提示不阻断**（D-066 覆盖 D-013）
+
 ### POST /api/v1/invoices/{id}/confirm
 - 权限：本人（`reviewer` → 403，`admin` → 404）｜ 类型：同步 ｜ 幂等：是（已 `confirmed` 重复调用返回当前状态）｜ 实现：S3-6 ✅
 - 入参：无（可选 `version`，见备注）
@@ -660,7 +677,7 @@
 | 登录 | 并发会话策略 | 允许多端登录，各自独立 `jti`；不做单端互踢 |
 | 票据上传 | 单文件 10MB 还是 20MB | **20MB**，配置 `MAX_UPLOAD_MB=20`（D-018） |
 | 票据上传 | 是否保留 `POST /invoices/{id}/files`、批量上传接口 | **都不新增**：批量 = 前端串行队列复用单文件接口，进度在前端展示（D-013） |
-| 票据 | 弱重复检测是否单独接口 | **不做独立接口**：结果体现在上传响应的 `dedup` 与详情里的 `duplicate_of`（D-013） |
+| 票据 | 弱重复检测是否单独接口 | **S3-7 已覆盖 D-013**：新增只读 `GET /invoices/{id}/duplicate-check`（`{level, matches}`）；上传 `dedup` 与 `duplicate_of` 保留 |
 | 模板 | `GET /templates/{code}/rules` 别名、`field_rules` 独立 CRUD | **都不做**：规则随模板 `PUT` 的 `rules` 数组同步维护，`GET /templates/{id}` 已含（D-013） |
 | 字段修正 | 金额字段修改权限 | **仅 `reviewer` 且需 `confirm_amount=true`**；`admin` 404（D-017） |
 | 并发控制 | 乐观锁缺列、冲突码 | **已加 `version` 列**，冲突一律 **409**（D-011） |

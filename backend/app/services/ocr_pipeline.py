@@ -480,13 +480,31 @@ def _persist(
                 .values(**values, **final)
             )
     except IntegrityError:
-        # 同票号两张图：强重复的判定与返回是 S3-7 的职责；这里只保住本次识别结果
+        # 同票号两张图：这里只保住本次识别结果并把"已有票 id"记下来（S3-7），
+        # 阻断发生在整单确认（confirm → 409）；作业不能跟着失败。
         metrics["duplicate_invoice_no"] = True
         metrics["warnings"].append("duplicate_invoice_no")
+        duplicate_of = None
+        attempted_code, attempted_no = values.get("invoice_code"), values.get("invoice_no")
+        if attempted_code and attempted_no:
+            duplicate_of = db.scalar(
+                select(Invoice.id).where(
+                    Invoice.invoice_code == attempted_code,
+                    Invoice.invoice_no == attempted_no,
+                    Invoice.id != invoice.id,
+                    Invoice.status != InvoiceStatus.VOID.value,
+                )
+            )
+        metrics["duplicate_of"] = duplicate_of
         db.execute(
             update(Invoice)
             .where(Invoice.id == invoice.id, Invoice.ocr_status.in_(_STATUS_OPEN))
-            .values(invoice_type=classification.ticket_type, template_id=template_id, **final)
+            .values(
+                invoice_type=classification.ticket_type,
+                template_id=template_id,
+                duplicate_of=duplicate_of,
+                **final,
+            )
         )
 
     metrics["quality"] = {

@@ -601,6 +601,8 @@ def test_run_pipeline_duplicate_invoice_no_is_warning(session_factory, owner) ->
         job = db.get(OcrJob, job_id)
         assert job.metrics["duplicate_invoice_no"] is True
         assert invoice.invoice_no is None            # 冲突时整批 invoices 回填被放弃
+        assert invoice.duplicate_of == existing_id   # S3-7：记住已有票，confirm 时 409
+        assert job.metrics["duplicate_of"] == existing_id
         assert invoice.ocr_status == "succeeded"     # 但作业/状态不能跟着失败
         fields = db.scalars(select(InvoiceField).where(InvoiceField.invoice_id == invoice_id)).all()
         assert any(row.field_name == "invoice_no" for row in fields)   # 字段照样留给人工看

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Response, status
@@ -26,6 +27,7 @@ from app.schemas.invoice import (
     InvoiceListQuery,
     InvoiceOut,
     ConfirmRequest,
+    DuplicateCheckData,
     InvoiceFieldsData,
     InvoiceLinesData,
     OcrStatusData,
@@ -33,6 +35,7 @@ from app.schemas.invoice import (
     ReocrRequest,
 )
 from app.services import (
+    duplicate,
     image_service,
     invoice_service,
     job_service,
@@ -175,6 +178,26 @@ def update_invoice_fields(
     db: Session = Depends(get_db),
 ) -> dict:
     return ok(invoice_service.update_fields(db, user, invoice_id, payload))
+
+
+@router.get(
+    "/{invoice_id}/duplicate-check",
+    response_model=Envelope[DuplicateCheckData],
+    summary="重复检测（强：同票号/同影像；弱：同金额+日期+销方）",
+)
+def duplicate_check(
+    invoice_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    report = duplicate.get_duplicate_report(db, user, invoice_id)
+    return ok(
+        {
+            "invoice_id": report.invoice_id,
+            "level": report.level,
+            "matches": [asdict(match) for match in report.matches],
+        }
+    )
 
 
 @router.post(

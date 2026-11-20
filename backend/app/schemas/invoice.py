@@ -191,6 +191,25 @@ class InvoiceLinesData(BaseModel):
     lines: list[OcrLineBoxOut] = Field(default_factory=list)
 
 
+class DuplicateMatchOut(BaseModel):
+    """重复检测匹配（S3-7）：只给最小字段，不含姓名/税号明文。"""
+
+    invoice_id: int
+    kind: Literal["invoice_no", "image", "weak"]
+    invoice_code: str | None = None
+    invoice_no: str | None = None
+    invoice_date: date | None = None
+    total_amount: Decimal | None = None
+    status: str
+    created_at: datetime
+
+
+class DuplicateCheckData(BaseModel):
+    invoice_id: int
+    level: Literal["strong", "weak", "none"]
+    matches: list[DuplicateMatchOut] = Field(default_factory=list)
+
+
 class ConfirmRequest(BaseModel):
     """整单确认入参（API.md §2）：可选乐观锁版本。"""
 

@@ -53,6 +53,7 @@ from app.schemas.invoice import (
 from app.ocr.extractor import FieldRule
 from app.ocr.validators import run_validators
 from app.services.confidence import level_for
+from app.services.duplicate import check_duplicates
 from app.services.rule_source import resolve_rules
 from app.services.pagination import paginate
 from app.services.repository import filter_visible, get_visible_or_404
@@ -450,6 +451,15 @@ def confirm_invoice(
         raise ConflictError(f"当前状态（{invoice.status}）不允许确认")
     if version is not None and version != invoice.version:
         raise ConflictError(f"版本冲突：当前 version={invoice.version}")
+
+    # 强重复是硬阻断：先 409，不必先列 422（重复票改字段也报不了）
+    report = check_duplicates(db, invoice)
+    strong = [match for match in report.matches if match.kind in ("invoice_no", "image")]
+    if strong:
+        raise ConflictError(
+            "该票据与已有票据重复",
+            detail={"invoice_id": strong[0].invoice_id, "kind": strong[0].kind},
+        )
 
     rows = {
         row.field_name: row
