@@ -251,6 +251,10 @@ erDiagram
 
 > 人工修正的审计要求：确认时把"改前值 / 改后值 / 操作人"写进 `audit_logs.detail_json`（方案 6.6 "确认"一行），本表只保留最终值。
 >
+> **两个值列的写入来源（S3-4/D-062）**：`field_value` 取 `ExtractedField.raw_value`（票面原文，如 `￥1,234.56`），
+> `normalized_value` 取 `ExtractedField.value`（归一值，如 `1234.56`）；推导值（`derived:*` / `paired:*`）没有单一原文，
+> `field_value` 回退为归一值。
+>
 > **置信度三档与待确认状态（S3-2，D-058/D-059）**：`auto ≥0.90` 免人工、`review 0.60–0.90` 待核对、
 > `manual <0.60` 必须人工；`need_review = level != auto`，未决冲突（同优先级多候选）不允许 `auto`。
 > `invoices.extract_status`：全部 `auto` 且无缺失/冲突保持 `raw`；否则置 `need_confirm`；

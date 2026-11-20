@@ -77,3 +77,54 @@ def test_types_module_reexports_canonical_models() -> None:
     assert ocr_types.OcrLine is OcrLine
     assert ocr_types.ExtractedField is ExtractedField
     assert ocr_types.FieldError is FieldError
+
+# --------------------------------------------------------------------------- #
+# S3-4：导出物与前端类型的防漂移
+# --------------------------------------------------------------------------- #
+import json  # noqa: E402
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+MODELS = {
+    "OcrLine": OcrLine,
+    "OcrResult": OcrResult,
+    "ExtractedField": ExtractedField,
+    "FieldError": FieldError,
+    "ExtractionResult": ExtractionResult,
+}
+ROOT = Path(__file__).resolve().parents[2]
+SCHEMA_PATH = ROOT / "docs" / "schemas" / "ocr_result.schema.json"
+TS_PATH = ROOT / "web" / "src" / "types" / "ocr.ts"
+
+
+def test_committed_json_schema_matches_models() -> None:
+    from export_ocr_schema import build_schema
+
+    committed = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert committed == build_schema(), "docs/schemas/ocr_result.schema.json 过期，请重跑导出脚本"
+
+
+def _ts_interface_fields(name: str) -> set[str]:
+    text = TS_PATH.read_text(encoding="utf-8")
+    body = re.search(rf"export interface {name} \{{(.*?)\n\}}", text, re.S)
+    assert body is not None, f"types/ocr.ts 缺少 interface {name}"
+    return set(re.findall(r"^\s{2}([a-z_][a-z0-9_]*)\??:", body.group(1), re.M))
+
+
+def test_frontend_types_match_contract() -> None:
+    for name, model in MODELS.items():
+        assert _ts_interface_fields(name) == set(model.model_fields), (
+            f"web/src/types/ocr.ts 的 {name} 与后端契约不一致："
+            f"TS={sorted(_ts_interface_fields(name))} model={sorted(model.model_fields)}"
+        )
+
+
+def test_template_field_names_are_in_whitelist() -> None:
+    from app.services.invoice_service import INVOICE_FIELD_NAMES
+    from app.services.template_seed import build_seed_templates
+
+    names = {name for template in build_seed_templates() for name in template.field_specs_json}
+    assert names, "seed 模板没有字段规格"
+    assert names <= set(INVOICE_FIELD_NAMES), (
+        f"模板里出现白名单外字段：{sorted(names - set(INVOICE_FIELD_NAMES))}"
+    )

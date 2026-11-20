@@ -68,12 +68,16 @@ INVOICE_FIELD_NAMES: tuple[str, ...] = (
     "amount",
     "tax_amount",
     "total_amount",
+    # 大写金额只用于"大写 vs 小写"交叉校验（S1-5）；它也是可编辑字段，
+    # 否则详情页会显示一个永远无法消除的"待确认"（S3-4 由字段名白名单测试发现）
+    "total_amount_upper",
     "check_code",
     "passenger_name",
 )
 AMOUNT_FIELDS = frozenset({"amount", "tax_amount", "total_amount"})
 # passenger_name 只存 invoice_fields（invoices 表没有该列，SCHEMA 原文如此）
-_COLUMN_FIELDS = frozenset(INVOICE_FIELD_NAMES) - {"passenger_name"}
+# invoices 表没有这两列：passenger_name（SCHEMA 原文）与大写金额（只在 invoice_fields）
+_COLUMN_FIELDS = frozenset(INVOICE_FIELD_NAMES) - {"passenger_name", "total_amount_upper"}
 
 SORT_MAP = {
     "created_at": Invoice.created_at,

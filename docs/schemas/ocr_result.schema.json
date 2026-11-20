@@ -1,0 +1,332 @@
+{
+  "$defs": {
+    "ExtractedField": {
+      "description": "一个抽取出来的字段。保留来源行号、规则 id 与置信度成分，便于追溯与重算。",
+      "properties": {
+        "agreement": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Agreement",
+          "type": "number"
+        },
+        "anchor_score": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor Score"
+        },
+        "bbox": {
+          "anyOf": [
+            {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bbox"
+        },
+        "candidates": {
+          "description": "同分候选（有冲突时不自动替换）",
+          "items": {
+            "type": "string"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "raw_text": {
+          "description": "命中的原始文本行，便于前端并排对照",
+          "title": "Raw Text",
+          "type": "string"
+        },
+        "raw_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "票面原文形态（如 ￥1,234.56）；推导值没有单一原文 → None",
+          "title": "Raw Value"
+        },
+        "rule_id": {
+          "default": "",
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "rule_strength": {
+          "default": 1.0,
+          "title": "Rule Strength",
+          "type": "number"
+        },
+        "source_line_no": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Line No"
+        },
+        "value": {
+          "description": "归一值（金额 Decimal 字符串 / 日期 ISO / 纯数字码）",
+          "title": "Value",
+          "type": "string"
+        },
+        "value_score": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value Score"
+        }
+      },
+      "required": [
+        "name",
+        "value",
+        "raw_text",
+        "confidence"
+      ],
+      "title": "ExtractedField",
+      "type": "object"
+    },
+    "ExtractionResult": {
+      "description": "整张票的抽取结果。",
+      "properties": {
+        "conflicts": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "fields": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ExtractedField"
+          },
+          "title": "Fields",
+          "type": "object"
+        },
+        "missing_required": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Required",
+          "type": "array"
+        },
+        "ticket_type": {
+          "default": "unknown",
+          "title": "Ticket Type",
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "title": "ExtractionResult",
+      "type": "object"
+    },
+    "FieldError": {
+      "description": "校验器/确认动作给字段的错误（S3-6 的 422 明细也用它）。",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "error",
+            "warning"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "code",
+        "message"
+      ],
+      "title": "FieldError",
+      "type": "object"
+    },
+    "OcrLine": {
+      "description": "一行文本：内容 + 置信度 + 四点坐标（**校正图**坐标系）。",
+      "properties": {
+        "box": {
+          "description": "四点坐标 [[x,y]×4]，顺时针，校正图坐标系",
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "title": "Box",
+          "type": "array"
+        },
+        "height": {
+          "description": "四点框的高度，用于字号估计与分桶",
+          "title": "Height",
+          "type": "number"
+        },
+        "line_no": {
+          "description": "排序后的行号：从上到下、从左到右",
+          "minimum": 0,
+          "title": "Line No",
+          "type": "integer"
+        },
+        "score": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "x_left": {
+          "description": "四点框的最小 x，用于行内排序",
+          "title": "X Left",
+          "type": "number"
+        },
+        "y_center": {
+          "description": "四点框的 y 中心，用于版面分块",
+          "title": "Y Center",
+          "type": "number"
+        }
+      },
+      "required": [
+        "text",
+        "score",
+        "box",
+        "line_no",
+        "y_center",
+        "x_left",
+        "height"
+      ],
+      "title": "OcrLine",
+      "type": "object"
+    },
+    "OcrResult": {
+      "description": "一次识别的完整结果。",
+      "properties": {
+        "det_params": {
+          "additionalProperties": true,
+          "description": "实际使用的检测参数，写进 ocr_jobs.params_json",
+          "title": "Det Params",
+          "type": "object"
+        },
+        "elapsed_ms": {
+          "default": 0.0,
+          "title": "Elapsed Ms",
+          "type": "number"
+        },
+        "engine": {
+          "default": "paddleocr",
+          "title": "Engine",
+          "type": "string"
+        },
+        "engine_version": {
+          "default": "2.7.3",
+          "title": "Engine Version",
+          "type": "string"
+        },
+        "image_size": {
+          "description": "(宽, 高)，校正图尺寸",
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Image Size",
+          "type": "array"
+        },
+        "lines": {
+          "items": {
+            "$ref": "#/$defs/OcrLine"
+          },
+          "title": "Lines",
+          "type": "array"
+        }
+      },
+      "required": [
+        "image_size"
+      ],
+      "title": "OcrResult",
+      "type": "object"
+    }
+  },
+  "$id": "https://study-ocr.local/schemas/ocr_result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "OcrLine.box 为四点（校正图坐标）；ExtractedField.bbox 为 [x1,y1,x2,y2]（原图坐标）",
+  "title": "OCR 识别产物契约（S3-4）"
+}

@@ -174,7 +174,7 @@
 ```
 
 - 错误：`404/40400`
-- 备注：`items` 含 12 个核心字段；`field_value` 是**票面原文**（如 `￥1,234.56`）、`normalized_value` 是**归一值**（如 `1234.56`）；
+- 备注：`items` 为本次抽到的字段（白名单 13 个，含大写金额 `total_amount_upper`）；`field_value` 是**票面原文**（如 `￥1,234.56`）、`normalized_value` 是**归一值**（如 `1234.56`）；
   `need_review = level != auto`（S3-2 三档），`review_level` 由服务端派生；冲突**不静默修正**，`conflict=true` 且保留 `conflict_value`；
   `conflicts[].reason` 当前只有 `candidate_conflict`（抽取阶段的同优先级多候选）——`money_sum_mismatch` 等校验原因
   在确认接口（S3-6）返回，避免两处规则各算一套
@@ -660,3 +660,21 @@
 | 审计列表的筛选字段白名单（是否支持按 `trace_id` 精确查） | S4-7 |
 
 > 维护规则：接口变化必须先同步本文件；前后端字段命名以本文件为准（`snake_case`）；与本文件冲突的实现视为 bug。文档内不得残留 `TODO 待定`：要么当场拍板并记 `DECISIONS.md`，要么挂进 §12.2 并写明收口任务号。
+
+## 13. 识别产物契约（S3-4）
+
+- **唯一来源**：`backend/app/schemas/ocr.py`；导出的 JSON Schema 见 `docs/schemas/ocr_result.schema.json`
+  （生成/校验：`python scripts/export_ocr_schema.py [--check]`）；前端类型见 `web/src/types/ocr.ts`。
+- 模型：`OcrLine`（一行文本）、`OcrResult`（一次识别）、`ExtractedField`（一个字段，含归一值与票面原文）、
+  `FieldError`（校验/确认错误）、`ExtractionResult`（整票抽取结果）。
+- **坐标口径写死**：
+  - `OcrLine.box` = 四点 `[[x,y]×4]`，顺时针，**校正图**坐标系；
+  - `ExtractedField.bbox` = `[x1,y1,x2,y2]` 外接框，**原图**坐标系（前端画框只认这一种）。
+- **字段名白名单**：凡出现 `field_name` / `ExtractedField.name` 的地方，取值只能是
+  `invoice_service.INVOICE_FIELD_NAMES`（13 个，含大写金额 `total_amount_upper`）；
+  `tests/test_ocr_schema.py` 防漂移。
+- **落库口径**：`invoice_fields.field_value` = 票面原文（`raw_value`，如 `￥1,234.56`），
+  `normalized_value` = 归一值（如 `1234.56`）；推导值没有单一原文，`field_value` 回退为归一值。
+- `GET /invoices/{id}/fields` 的 `items` 即 `invoice_fields` 行（含派生 `review_level`）；
+  `ocr_lines` 每次运行**一次 executemany 批量写入**，不逐条 commit。
+- 已知限制：本契约只覆盖识别产物；确认/签名域契约见 §4/§6（S5/S4）。
