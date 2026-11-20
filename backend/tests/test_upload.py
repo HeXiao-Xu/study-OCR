@@ -78,6 +78,7 @@ def actors(session_factory, clean_db) -> dict[str, User]:
     with session_factory() as db:
         users = {
             "alice": User(username="alice", real_name="A", role="submitter", status="active"),
+            "bob": User(username="bob", real_name="B", role="submitter", status="active"),
             "rita": User(username="rita", real_name="R", role="reviewer", status="active"),
             "ada": User(username="ada", real_name="Admin", role="admin", status="active"),
         }
@@ -298,6 +299,22 @@ def test_duplicate_upload_returns_409_without_second_object(upload_env, actors) 
 
     assert len(upload_env.storage.put_calls) == 1
     assert len(upload_env.storage.objects) == 1
+    assert _counts(upload_env) == (1, 1, 1)
+
+
+@pytest.mark.integration
+def test_duplicate_across_users_hides_invoice_id(upload_env, actors) -> None:
+    """S3-7 补充：同一影像被别人传过 → 409，但不把别人的 invoice_id 给当前用户。"""
+    content = _jpeg_bytes()
+    first = _upload(upload_env, actors["alice"], content)
+    assert first.status_code == 202
+
+    second = _upload(upload_env, actors["bob"], content)
+    assert second.status_code == 409
+    body = second.json()
+    assert body["code"] == 40901
+    assert body["data"]["invoice_id"] is None
+    assert "其他账号" in body["message"]
     assert _counts(upload_env) == (1, 1, 1)
 
 

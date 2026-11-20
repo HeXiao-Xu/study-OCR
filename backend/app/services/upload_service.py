@@ -75,7 +75,7 @@ def upload_invoice(
     # 去重必须在写 MinIO 之前
     existing = db.scalar(select(InvoiceFile).where(InvoiceFile.sha256 == scanned.sha256))
     if existing is not None:
-        raise _duplicate_error(db, existing)
+        raise _duplicate_error(db, existing, user)
 
     if not settings.storage_allow_plaintext:
         # 安全闸门：S4 的 SM4 信封未接入时，绝不静默落明文
@@ -106,7 +106,7 @@ def upload_invoice(
             select(InvoiceFile).where(InvoiceFile.sha256 == scanned.sha256)
         )
         if existing is not None:
-            raise _duplicate_error(db, existing) from None
+            raise _duplicate_error(db, existing, user) from None
         raise
     except Exception:
         db.rollback()
@@ -251,10 +251,19 @@ def _safe_filename(name: str | None) -> str:
     return (cleaned or "upload")[:255]
 
 
-def _duplicate_error(db: Session, file_row: InvoiceFile) -> DuplicateInvoiceError:
+def _duplicate_error(
+    db: Session, file_row: InvoiceFile, user: User
+) -> DuplicateInvoiceError:
     invoice = db.scalar(select(Invoice).where(Invoice.file_id == file_row.id))
+    # 跨账号去重是刻意的（同一张票不能报两次），但不能把别人的 invoice_id 泄露给当前用户：
+    # 前端拿它拼详情链接会 404，还会暴露"这张票在别人名下"。可见才给 id。
+    visible = invoice is not None and (
+        invoice.uploader_id == user.id or user.role == UserRole.REVIEWER.value
+    )
+    if visible and invoice is not None:
+        return DuplicateInvoiceError("该影像已上传", detail={"invoice_id": invoice.id})
     return DuplicateInvoiceError(
-        "该影像已上传", detail={"invoice_id": invoice.id if invoice is not None else None}
+        "该影像已被其他账号上传，不能重复提交", detail={"invoice_id": None}
     )
 
 

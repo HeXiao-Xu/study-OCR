@@ -175,7 +175,10 @@ async function runUpload(task: UploadTask): Promise<void> {
       task.invoiceId = payload?.invoice_id ?? null
       task.progress = 100
       task.status = 'duplicate'
-      task.message = '该票据已上传'
+      // 跨账号重复时后端不给 invoice_id，直接用后端文案（不拼一个会 404 的详情链接）
+      task.message = task.invoiceId
+        ? '该票据已上传'
+        : error.message || '该影像已被其他账号上传，不能重复提交'
       return
     }
     task.status = 'failed'
