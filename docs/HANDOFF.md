@@ -1,18 +1,26 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-20（S3-9 + 抽取修复 D-069 + 确认简化 D-070 + 硬删除 D-071）
+> 最后更新：2026-11-20 19:40（阶段 3 完成 + 真实联调收口；开新会话用）
 
 ## 1. 一句话现状
 
-**阶段 3 已完成（S3-1 ~ S3-8 + 补充卡 S3-9）**：识别链路 + 置信度/重识别 + 契约 + 详情画框 + 确认 + 重复检测 +
-批量上传 + **双人复核（提交人全字段、审核人二审）**；**下一步 S4-1 SM3 摘要与 canonical JSON 规范化（★关键）**。
+**阶段 3 已完成**：S3-1 ~ S3-8 + 补充卡 S3-9（双人复核）；之后真实票据联调又做了 **D-069 ~ D-071** 与 UI 收口。
+**下一步：S4-1 SM3 摘要与 canonical JSON 规范化（★关键，密码链路起点）**。
 
-当前浏览器可走通：登录（三角色）→ 按角色落地 → 上传（"识别中… N%"）→ 票据列表/详情
-（字段带 `review_level`；低置信字段可点"重识别"，`source=ocr_retry`）→ reviewer 的"待核对"=
-`extract_status=need_confirm` 列表 → 管理端模板查看/升版本/试跑；`GET /invoices/{id}/ocr-status` 可轮询阶段与进度；
-`GET /invoices/{id}/fields` 返回票面原文/归一值/三档，`docs/schemas/ocr_result.schema.json` 是识别产物契约；
-详情页已是左图右表：字段框/行框可 hover/点击联动，滚轮缩放、拖拽平移后框仍对齐（明文影像仅本地）。
+当前浏览器可走通（`http://127.0.0.1:5173`）：
+
+- 登录三角色 → 落地：submitter `/invoices`、reviewer `/review`（= `review_status=pending` 的**待复核**）、admin `/templates`；
+- 上传：单文件/批量；同图去重（同账号给"查看"链接，跨账号只提示"已被其他账号上传"，不泄露对方 invoice_id）；
+- 列表：业务状态统一显示 **待确认 / 待复核 / 已复核**（另：已入报销单 / 已归档 / 已作废）；
+  筛选仍用数据库语义 `status` / `extract_status` / `review_status`；
+- 详情：左图（约 1/3 宽）右表；hover 行高亮框、点框定位行；滚轮缩放/拖拽平移；
+  字段表**没有"操作"列**（重识别/逐字段确认已移除）；
+- 确认：提交人点"确认整单"→ 弹"已仔细核对所有字段"提示 → 一次把全部字段置 confirmed → **待复核**；
+  审核人点"复核通过"→ **已复核** 并锁定字段；
+- 删除：仅**草稿**、仅本人、**硬删除**（票据/字段/行/作业/文件/MinIO 对象），删除后可重新上传同一影像；
+- 管理端模板查看/升版本/试跑；影像明文仅本地调试（S4 接入信封后替换）；
+- 人工走查清单：`docs/UI_TEST_FLOW.md`。
 
 ## 2. 仓库与环境
 
@@ -23,31 +31,33 @@
 | 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**、python-multipart **0.0.34**、ARQ **0.28.0**、redis-py **5.3.1**（ARQ 要求 `redis<6`，D-045）、APScheduler **3.11.1** + tzlocal **5.4.5**（S2-12） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
 | OCR 模型 | 已缓存在 `~/.paddleocr/whl/{det,rec,cls}`（约 18MB），离线可用 |
-| Docker | `study-ocr-{postgres,redis,minio}` 三个容器（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0004`（16 业务表 + alembic_version）** |
+| Docker | `study-ocr-{postgres,redis,minio}` 三个容器（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0007`（16 业务表 + alembic_version）** |
 | 依赖锁 | `backend/requirements.txt`（手写锁）+ `requirements.lock.txt`（pip freeze） |
 
 > ⚠️ `gmssl` **还没装**——那是 S4 密码链路才需要的，别提前装（会打乱 numpy 版本）。
 
-### 2.1 本地开发库现状（今天交接时）
+### 2.1 本地开发库现状（2026-11-20 19:40）
 
-- 账号：`alice`（submitter）、`bob`（reviewer）、`root`（admin）；口令是本地开发口令，未写进仓库。
-  新会话做登录冒烟时，若不知道口令，用 `scripts/create_user.py` 新建一个用户并用自己的口令；reviewer/admin 只能脚本建。
-- 数据：**5 个 seed 模板**（vat_general / vat_digital / train / flight / taxi）、**1 张测试票据**（之前本地上传的合成样本）、0 条审计行；
-  如需干净演示，先清理测试用户/票据/MinIO 对象再跑 seed（不要直接删库）。
+- 账号：老账号 `alice` / `bob` / `root`；联调账号 **`test_sub`（submitter）、`test_rev`（reviewer）、`test_admin`（admin）**。
+  口令未写进仓库（避免提交 secret）；新会话冒烟若不知道口令，用 `scripts/create_user.py` 新建用户并自设口令。
+- 数据：5 个 seed 模板；**5 张票据**：`111`（待复核）、`112`（待复核）、`122`（待复核，干净草稿已确认）、
+  `113` / `117`（已复核）；`117` 是真实 PDF（金额 1057.43 / 税额 10.57 / 合计 1068.00）。
+  `invoice_fields` 47 行、`ocr_lines` 174 行、`ocr_jobs` 7 行、`invoice_files` 5 行；审计行为 0（S4-7 才写）。
 - 端口：后端 8000、Vite 5173、MinIO 控制台 9003；无头冒烟 Edge 用 9222（临时 profile）。
+- **本次会话结束时** API/worker/Vite 都在跑（后台进程）；新会话请按 §5 命令重新启动（或用 `netstat -ano | findstr :8000` 找到残留进程）。
 
 ## 3. 目录与关键文件（认路用）
 
 ```
 backend/app/models/      ← S2-1：16 张表模型（一表一文件）+ base.py（命名约定/CHECK 助手）+ enums.py
 backend/app/core/database.py  ← S2-1：`postgresql://` → `postgresql+psycopg://` 方言映射 + 引擎/会话工厂
-backend/alembic/         ← 0001_init / 0002_audit_action_login_logout / 0003_ticket_type_vat_digital.py
+backend/alembic/         ← 0001_init / 0002_audit_action / 0003_ticket_type / 0004_ocr_jobs / 0005_field_reread / 0006_batch / 0007_review（head=0007）
 backend/app/core/{security,redis}.py  ← S2-2：Argon2id + HS256 JWT；Redis 单例
 backend/app/services/{auth_service,token_store}.py  ← S2-2：注册/认证/签发/轮换/吊销；refresh 白名单
 backend/app/api/{deps.py,v1/auth.py}  ← S2-2：Bearer 解析、get_current_user、require_roles、5 条 auth 路由
 backend/app/services/repository.py  ← S2-3：行级隔离（策略表 + filter_visible + get_visible_or_404，deny-by-default）
 backend/app/services/pagination.py  ← S2-4：分页/排序协议（PageParams/PageResult、白名单排序、同一 stmt 求 total）
-backend/app/services/invoice_service.py  ← S2-5：票据建草稿/状态机/列表/详情/软删/字段修改
+backend/app/services/invoice_service.py  ← S2-5/S3-9：建草稿/状态机/列表/详情/**硬删**/字段修改/复核
 backend/app/services/{storage,upload_service}.py  ← S2-6：MinIO 封装 + 上传校验/去重/补偿
 backend/app/services/job_service.py  ← S2-7：作业状态机/幂等锁/重试/僵尸恢复
 backend/app/tasks/scheduler.py  ← S2-12：APScheduler + 按时段 Redis 锁（每日锚定）
@@ -55,10 +65,13 @@ backend/app/services/{template_service,template_registry,template_seed}.py  ← 
 backend/app/tasks/{worker,ocr_task,queue}.py  ← S2-7：ARQ WorkerSettings、任务函数、入队协议（S3-1 起接真实流水线，max_jobs 默认 1）
 backend/app/services/ocr_pipeline.py  ← S3-1：流水线唯一编排（下载→渲染/预处理→识别→票种→抽取→校验→落库）
 backend/app/services/ocr_status_service.py  ← S3-1：GET /invoices/{id}/ocr-status 读模型（stages/progress）
-backend/app/api/v1/{invoices,files,templates}.py + schemas/{invoice,template}.py  ← 票据/上传/模板接口
+backend/app/services/{batch_service,duplicate,rule_source,reocr_service,image_service,line_service}.py
+                         ← S3-1~S3-9：批量排队/重复检测/规则来源/局部重识别/影像/行框
+backend/app/api/v1/{invoices,files,templates}.py + schemas/{invoice,template,ocr}.py  ← 票据/上传/模板/字段接口
 web/src/api/{http,auth,files,invoices,templates}.ts + stores/user.ts + router + layout/MainLayout.vue  ← 会话/刷新/上传/轮询
-web/src/views/{Login,Forbidden,Placeholder,Upload,InvoiceList,InvoiceDetail}.vue  ← 登录/403/占位/上传/列表/详情
-web/src/utils/format.ts + types/invoice.ts  ← 金额/时间/标签 + 完整票据类型
+web/src/views/{Login,Forbidden,Placeholder,Upload,InvoiceList,InvoiceDetail,TemplateAdmin}.vue  ← 登录/403/占位/上传/列表/详情/模板
+web/src/utils/{format,bbox,landing}.ts + types/{invoice,ocr}.ts + components/{ImageCanvas,FieldTable}.vue
+                         ← 金额/时间标签/业务状态派生 + 坐标换算 + 完整类型 + 影像画布/字段表
 web/src/styles/theme.css + utils/landing.ts  ← 全局视觉基线 + 登录后角色落地
 web/src/views/TemplateAdmin.vue + api/templates.ts + types/template.ts  ← 管理端模板/规则/升版本/试跑
 scripts/bench_list.py               ← S2-4：5 万行 p50/p95 + EXPLAIN ANALYZE（临时库，跑完自删）
@@ -127,7 +140,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 
 ```bash
 cd /e/BiSheXZY/study-OCR
-(cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表，head=0004
+(cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)          # 16 表，head=0007
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
 (cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 365 passed（默认跳过集成）
 (cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 169 passed（需 Docker）
@@ -236,7 +249,7 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-056 | `ocr_jobs` 加 `metrics/started_at/finished_at`（0004），推翻 S2-7 的"不加列"——`ocr-status` 契约要真时间 |
 | D-057 | PDF 复用 PyMuPDF（不引 pypdfium2，前 3 页）；抽取规格 DB 优先/YAML 回退；worker 并发 1；协作式 deadline 165s 不硬杀线程 |
 | D-058 | 置信度 = (0.35×锚点行 + 0.65×值行) × agreement × rule_factor；三档 0.90/0.60；校验失败封顶 0.45；整单分只展示不判定 |
-| D-059 | 队列用 `extract_status=need_confirm`（不加 `needs_review` 状态、不加 `low_confidence` 作业态）；auto ≠ confirmed；`/review` 重定向 |
+| D-059 | 队列用 `extract_status=need_confirm`（S3-2 时的定义）；**S3-9 起 reviewer 入口改为 `review_status=pending`（待复核）**；auto ≠ confirmed |
 | D-060 | 重识别按契约异步 `reocr`（202）；只改 raw_text/confidence/source=ocr_retry，值不动；字段 bbox 改原图坐标 |
 | D-061 | 外扩 max(8px,10%行高)、2× 放大（长边 1024）、1.5s 预算；审计只加 `field_reread` 枚举不写行 |
 | D-062 | 识别产物契约唯一来源 `schemas/ocr.py`（types 转 re-export）；`field_value=raw_value`、`normalized_value=归一`；`GET /fields` conflicts 只回候选冲突；本卡无迁移 |
@@ -249,6 +262,7 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-069 | 横版票金额规则排除"价税合计"、税号 O→0/I→1 纠偏（`field_value` 用纠正值、`raw_text` 留原样）、重识别只刷新详情不重拉影像 |
 | D-070 | 字段表去掉"操作"列（无重识别/逐字段确认）；整单确认弹窗核对，服务端把全部字段置 confirmed；reocr API 保留但无前端入口 |
 | D-071 | DELETE 改硬删除（仅 draft）：级联字段/行/作业/文件 + MinIO 对象，释放 sha256 可重传；删除后 404 不幂等 |
+| D-072 | 业务状态前端派生：待确认(draft)/待复核(confirmed 未复核)/已复核(confirmed 已复核)；不加 DB 枚举；reviewer `/review` 入口同步 |
 
 ## 7. 下一步：S4-1 SM3 摘要与 canonical JSON 规范化（★关键）
 
@@ -264,32 +278,40 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
      内部转 bytes；业务禁止直接调 gmssl）、`sm3_hex` 仅供日志；
   3. `tests/test_crypto/{test_canonical,test_sm3}.py`：键序不同同摘要、中文/负数/嵌套 list、`100` vs `100.00`、
      float 被拒、SM3 国标测试向量（`abc` → `66c7f0f462eeedd9...`）、空输入、1 bit 篡改；
+- **开工前必须先解决的环境缺口**：
+  1. `gmssl` **尚未安装**，`backend/requirements.txt` / `requirements.lock.txt` 里**没有** gmssl；
+     S4-1 第一步要先征得用户同意后 `../.venv/Scripts/python.exe -m pip install gmssl==3.2.2`，
+     再把它写进 requirements 与 lock（AGENTS §2.1/§2.2：新增/升级依赖必须确认并记录）。
+     不要提前装（会打乱当前已验证的 numpy/paddle 组合的复现性）；
+  2. `backend/app/crypto/` 已有空骨架（`__init__.py` + `sm/__init__.py`，无实现），
+     首个落地者负责补实现并回填 AGENTS §10.8 "密码封装"锚点；
 - **必须先定的口径**（spec 里要写死）：
   1. `Decimal` 是否允许进 `canonical_json`？任务卡说"金额先格式化成字符串"，建议**只接受 str/int/bool/None/list/dict**，
      `Decimal`/`float` 一律拒绝（防 100 vs 100.00 两种字节）；
   2. dict 键必须是 `str`（非 str 键拒绝，不隐式 `str()`，防 "1" 与 1 撞车）；
   3. 空 dict/list 输出 `{}`/`[]`；字符串不转义非 ASCII；控制字符按 JSON 标准转义；
   4. `sm3_digest` 入参只收 `bytes`（`bytearray` 拒绝或转换要定）；
-- 已就绪：`gmssl==3.2.2` 已装（`requirements.txt` 锁定）；`backend/app/crypto/` 目录可能仍为空，
-  首个落地者负责建 `__init__.py` 并回填 §10.8 "密码封装"锚点；
 - 验收（任务卡）：`pytest backend/tests/test_crypto -q` 全绿且含 SM3 国标向量；键序不同摘要相同、
   含中文/负数/嵌套用例通过；`100` 与 `100.00` 不同/被拒的用例明确。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：S3-1 ~ S3-9 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
-2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
-3. `taxi_ticket` 整单 0.200：S3-3 已试过低置信二次识别（整体 97.3% 提升，但出租车票字太少，提升有限）；
+1. **push**：本地领先 origin **68 个 commit**（S3-1 ~ S3-9 + D-069~D-072 的修复/收口），AI 不推，由用户 `git push`；
+2. **gmssl 未装**（见 §7）：S4-1 开工前需要用户确认安装 `gmssl==3.2.2` 并锁版本；
+3. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`、
+   `s37-dup.png`、`ui-111-new.png` 等；真实 PDF 的框选对齐需要人眼确认；
+4. `taxi_ticket` 整单 0.200：S3-3 已试过低置信二次识别（整体 97.3% 提升，但出租车票字太少，提升有限）；
    论文如实写"出租车票是已知短板"，不要在 S1 继续调；
-4. `total_amount` 80%：下轮可用 `amount+tax` 与候选交叉校验择优（已在 PROGRESS 遗留）；
-5. ✅ S3-1 已把 `intake.prepare_pages` 接进 Worker（PDF 前 3 页 + 照片重拍提示）；
-6. 真实样本只剩 1 份（数电票 PDF，仅本地）：论文需如实写"合成集为主 + 1 份真实件定性校验"；
-7. 审计动作：`login_failed`/`logout`/`forbidden` 枚举已加（0002），但 S2-2 **未写审计行**（哈希链在 S4-7）；
-   `template_create` 仍缺（S2-8 已完成但未写审计），`report_create`/`issue_cert` 也未加；S4-7 前一起补。
-8. `GET /invoices/{id}/image` 已实现（S3-5），但**明文仅本地**（`STORAGE_ALLOW_PLAINTEXT=true` 且 `is_cipher=false`）；
-   密文/生产返回 `409/40900`，页面显示"待 S4"——S4 接入信封后在此处解密，不做明文后门。
-9. 管理端模板页已补（D-052），但**新建票种入口已按用户要求移除**（D-054）：票种固定 5 类 + unknown；
-   新增票种必须改 SCHEMA/迁移/模板/样本并发版，不能从管理端新建。
+5. 真实样本：`E:\BiSheXZY\发票样本集` 有 1 份 PDF（数电票）+ 1 张 PNG；论文写"合成集为主 + 真实件定性校验"；
+6. 审计动作：`login_failed`/`logout`/`forbidden`/`field_reread` 枚举已在迁移里，但**都没有写审计行**（S4-7 哈希链）；
+   `template_create`/`report_create`/`issue_cert` 也缺；S4-7 前一起补；
+7. `GET /invoices/{id}/image` 已实现（S3-5），但**明文仅本地**（`STORAGE_ALLOW_PLAINTEXT=true` 且 `is_cipher=false`）；
+   密文/生产返回 `409/40900`，页面显示"待 S4"——S4 接入信封后在此处解密，不做明文后门；
+8. **D-071 硬删除是不可恢复的**（仅草稿可删）：原影像/识别结果/作业都删；论文需写明取舍；
+9. `POST /reocr` 接口还在但**前端已无入口**（D-070）；`PATCH /fields` 的 `confirm` 参数保留（API 兼容）；
+10. 管理端模板页已补（D-052），但**新建票种入口已按用户要求移除**（D-054）：票种固定 5 类 + unknown；
+    新增票种必须改 SCHEMA/迁移/模板/样本并发版，不能从管理端新建；
+11. 前端联调/回归走查：`docs/UI_TEST_FLOW.md`（含 test_sub/test_rev/test_admin 账号与种子数据状态）。
 
 ## 9. 工作方式约定（用户偏好，新会话请沿用）
 

@@ -1445,3 +1445,22 @@
   论文需写明"草稿可硬删、已确认票据不可删"。
 - **验证**：`test_invoices` 硬删用例（关联行清零、对象删除、404、状态 409、进行中 409、duplicate_of 清空）；
   `test_upload` 硬删后同图重新上传 202；UI 删除后回列表且不再出现。
+
+---
+
+## D-072 业务状态统一为"待确认 / 待复核 / 已复核"（前端派生，不加 DB 枚举）
+
+- **日期**：2026-11-20（用户确认命名）
+- **背景**：详情页同时显示"草稿/已确认"+"待复核/已复核"，列表又分"票据状态/识别状态"，
+  用户看不出"提交人确认后是否到了审核人那里"；且 `/review` 入口仍用 S3-2 的 `extract_status=need_confirm`。
+- **决策**：
+  1. 前端新增 `invoiceDisplayStatus(invoice)`（`web/src/utils/format.ts`）：`draft`→**待确认**；
+     `confirmed` 未复核→**待复核**；`confirmed` 已复核→**已复核**；`in_report/archived/void` 沿用原名；
+  2. 列表"状态"列与详情页只显示这一个业务状态；"识别中/失败"只作为辅助提示（成功时不重复显示）；
+  3. reviewer 的 `/review` 重定向到 `/invoices?review_status=pending`，菜单文案"待复核"，
+     与 S5 报销单的"待审核"区分；
+  4. **不改数据库状态机**（仍是 5 个 status），不新增枚举值/迁移。
+- **代价**：业务状态是派生值，数据库里查不到"待复核"这个枚举；筛选仍需组合
+  `status=confirmed` + `review_status=pending`。
+- **验证**：`test_sub` 列表 5 行状态分别为 待确认/待复核/已复核；`test_rev` `/review` 只显示 `review_status=pending` 的票；
+  详情页 112 显示"待复核"。
