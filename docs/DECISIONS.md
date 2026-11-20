@@ -1205,3 +1205,29 @@
 - **代价**：`field_reread` 审计行缺失（遗留 #54）；重识别预算下多字段请求可能只处理一部分（如实记 skipped）。
 - **验证**：`scripts/reread_eval.py --samples 40`：112 个低置信字段 **109 个提升（97.3%）**、平均 Δ +0.180；
   HTTP 冒烟 amount 0.743→0.952、tax 0.690→0.946，值与人工语义未被改写。
+
+---
+
+## D-062 识别产物契约单一来源 `schemas/ocr.py`；`raw_value`/两个值列口径；`GET /fields`；本卡不加迁移
+
+- **日期**：2026-11-20（S3-4，用户确认）
+- **决策**：
+  1. **唯一来源**：`OcrLine/OcrResult/ExtractedField/FieldError/ExtractionResult` 定义在 `app/schemas/ocr.py`；
+     `app/ocr/types.py` 改为 re-export（兼容旧 import）。新增 `FieldError` 与 `ExtractedField.raw_value`。
+  2. **两个值列**：`invoice_fields.field_value` = `raw_value`（票面原文，如 `￥1,234.56`）、
+     `normalized_value` = `value`（归一值，如 `1234.56`）；推导值（`derived:*`/`paired:*`）没有单一原文，
+     `field_value` 回退归一值。这纠正了 S3-1 起"两个值列都写归一值"的偏差（遗留 #52 关闭）。
+  3. **`GET /invoices/{id}/fields`** 按契约实现；`conflicts` 只回已落库的候选冲突（`reason=candidate_conflict`），
+     校验类冲突（`money_sum_mismatch` 等）留给确认动作 S3-6——两处各算一套规则必然漂移。
+  4. **本卡不加迁移**：任务卡写"新增字段走新 revision"，但本次没有表变更（列 S2-1 已建、S3-1 已落库）；
+     造一个空迁移属于假动作。head 保持 `0005`。
+  5. **防漂移三件套**：`docs/schemas/ocr_result.schema.json`（脚本生成、`--check` 比对）、
+     `tests/test_ocr_schema.py` 深度比较、前端 `web/src/types/ocr.ts` 字段名与 Pydantic 模型**完全一致**的自动比对。
+  6. **坐标口径**写死在模型注释与 API §13：`OcrLine.box` 四点（校正图）、`ExtractedField.bbox` 外接框（原图）。
+- **副产品（测试发现）**：`total_amount_upper`（大写金额）一直在抽取并落库，却不在
+  `INVOICE_FIELD_NAMES` 白名单 → 详情页永远无法人工确认它。已加入白名单，并从 `_COLUMN_FIELDS` 排除
+  （`invoices` 表没有该列）。
+- **代价**：旧数据 `field_value` 仍是归一值（不自动迁移，遗留 #58）；前端显示 `field_value` 会带 `￥`/千分位，
+  这是契约期望行为（编辑回写仍走 `_normalize_field`）。
+- **验证**：`tests/test_ocr_schema.py` 7+4 条（模型/防漂移/白名单）；`GET /fields` 实测原文/归一值/档位/冲突；
+  `export_ocr_schema.py --check` 通过；单元 415 / 集成 198 全绿；`alembic check` 零差异（head 0005）。
