@@ -7,7 +7,7 @@
  */
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import {
   confirmInvoice,
@@ -48,6 +48,7 @@ import {
 } from '../utils/format'
 
 const route = useRoute()
+const router = useRouter()
 const store = useUserStore()
 
 const detail = ref<InvoiceDetail | null>(null)
@@ -272,6 +273,12 @@ async function confirmField(field: InvoiceField): Promise<void> {
   }
 }
 
+function goBack(): void {
+  // 优先回浏览器上一页（保留列表筛选）；直接打开详情时退回列表
+  if (window.history.length > 1) router.back()
+  else void router.push('/invoices')
+}
+
 async function confirmAll(): Promise<void> {
   const invoice = detail.value?.invoice
   if (!invoice || confirming.value) return
@@ -392,6 +399,7 @@ onBeforeUnmount(revokeImage)
           <h2>票据详情</h2>
           <p>左图右表核对：hover 字段高亮图上框、点框定位字段；草稿态可修改，金额字段仅审核人可改并留痕。</p>
         </div>
+        <el-button class="back-button" @click="goBack">返回列表</el-button>
       </div>
 
       <el-card shadow="never">
@@ -578,6 +586,9 @@ onBeforeUnmount(revokeImage)
 </template>
 
 <style scoped>
+.back-button {
+  flex: none;
+}
 .detail-page {
   width: 100%;
   max-width: none;
