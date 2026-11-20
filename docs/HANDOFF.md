@@ -1,13 +1,12 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-20（S3-7 重复报销检测上线）
+> 最后更新：2026-11-20（S3-8 批量上传上线，阶段 3 收尾）
 
 ## 1. 一句话现状
 
-**阶段 3 已通七张卡**：S3-1（识别全链路）+ S3-2（置信度三档与队列）+ S3-3（局部二次识别）+
-S3-4（识别产物契约）+ S3-5（详情页左图右表）+ S3-6（整单确认）+ S3-7（重复检测）；
-**下一步 S3-8 批量上传与进度**。
+**阶段 3 已完成（S3-1 ~ S3-8 全通）**：识别链路 + 置信度/重识别 + 契约 + 详情画框 + 确认 + 重复检测 + 批量上传；
+**下一步 S4-1 SM3 摘要与 canonical JSON 规范化（★关键，密码链路起点）**。
 
 当前浏览器可走通：登录（三角色）→ 按角色落地 → 上传（"识别中… N%"）→ 票据列表/详情
 （字段带 `review_level`；低置信字段可点"重识别"，`source=ocr_retry`）→ reviewer 的"待核对"=
@@ -117,6 +116,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S3-5 详情页画框 | 532px 显示 `scale=0.338854`；放大两次 `0.487898`（×1.44）；`drawMs` 0.39/0.48ms；40 行框/12 字段框 | `ui_smoke --eval` 数值断言 + `tests/test_{image_service,lines_service,invoice_media}.py` |
 | S3-6 整单确认 | 真实票首次 confirm **422**（5 字段：冲突1+低置信4）→ 修复后 **200 confirmed**（version 0→3）；同 version 并发 PATCH 第二次 **409** | `tests/{test_confirm,test_rule_source}.py` + 冒烟脚本 |
 | S3-7 重复检测 | 同图再传 **409/40901**；同票面重编码 B → `duplicate_of=49`、duplicate-check **strong**、confirm **409/40900**（`data.invoice_id=49`） | `tests/test_duplicate.py`（8 条）+ 冒烟脚本 |
+| S3-8 批量上传 | 30 文件 POST **1.17s** 建单；**48.6s** 全部 succeeded、progress 全 100；批内仅 3 个入队；重试后 invoice 30→30、job 2 条且重跑成功 | `tests/test_batch.py`（7 条）+ 冒烟脚本 |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -154,6 +154,10 @@ curl -s -X POST "localhost:8000/api/v1/invoices/1/confirm" \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"version":1}'
 # S3-7 重复检测（strong 时 confirm 会 409）
 curl -s "localhost:8000/api/v1/invoices/1/duplicate-check" -H "Authorization: Bearer <token>"
+# S3-8 批量上传 / 汇总 / 重试（<id> 换成 batch_id）
+curl -s -F "files=@a.jpg" -F "files=@b.jpg" localhost:8000/api/v1/invoices/batch -H "Authorization: Bearer <token>"
+curl -s "localhost:8000/api/v1/invoices/batch/<uuid>" -H "Authorization: Bearer <token>"
+curl -s -X POST "localhost:8000/api/v1/invoices/batch/<uuid>/items/1/retry" -H "Authorization: Bearer <token>"
 # 前端（Vite 5173 + 无头 Edge 9222）：类型检查/构建 + 真实登录冒烟（需要先起后端）
 (cd web && npm run typecheck && npm run build)
 # 无头 Edge（另起一个进程；bash 路径，PowerShell 用引号包住 exe）
@@ -233,34 +237,36 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-064 | 新增 `GET /lines`（服务端映射原图坐标、不返回文本）；canvas 字段/行框分级 + culling；缩放改 CSS 尺寸而非 transform |
 | D-065 | 整单确认闸门顺序 必填→冲突→低置信未确认→validators；本人权限（reviewer 403）；幂等 + `version+1`；审计行留 S4-7；PATCH 不重写 |
 | D-066 | 新增 `GET /duplicate-check` 覆盖 D-013；强重复 confirm 409；弱重复只提示；`duplicate_of` 由流水线写；影像重复纵深防御 |
+| D-067 | 批量：迁移 0006（`invoices.batch_id`/`ocr_jobs.dispatched`）；服务端排队 ≤3 + `after_job_end` 补位；重试只建新 job；去重项只在 POST 响应 |
 
-## 7. 下一步：S3-8 批量上传与进度
+## 7. 下一步：S4-1 SM3 摘要与 canonical JSON 规范化（★关键）
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 的 S3-8；
-- 流程（AGENTS §11）：spec（`docs/spec/s3-8-*.md`）→ plan → 用户确认 → 写码；
-- **必须先对账的契约点**（API.md 目前**没有** batch 接口）：
-  1. `POST /invoices/batch` 与 `GET /invoices/batch/{batch_id}` 都不在 API.md，需先补契约再写码；
-  2. 批量返回体（`batch_id` + 逐项状态）与统一响应壳/分页风格要一致；逐项状态机要与 `ocr_jobs` 对齐，
-     不能另造一套"处理中"枚举；
-  3. `batch` 是**新表**还是复用 `ocr_jobs`（`invoice_id` 已有）？若要新表必须加迁移（0006）并同步 SCHEMA——
-     这是本卡唯一可能的迁移，先定；
-- 已就绪、不要重复实现：
-  - 单文件上传与 sha256 去重（S2-6）、任务框架与幂等（S2-7）、识别流水线（S3-1）；
-  - 前端上传页已支持**多选 ≤20 + 串行上传 + 单文件/总进度 + 120s 轮询**（S2-10）——S3-8 是把它
-    升级为**真批量**（30 张、逐项状态、失败单条重试），不是从零写；
-  - worker 并发 1（D-057）与 ARQ 队列已就位；
-- **本卡要补**：
-  1. `POST /invoices/batch`：多文件逐个建 `invoice + invoice_file` 并投递 ARQ，返回 `batch_id` 与逐项状态；
-  2. `GET /invoices/batch/{batch_id}`：汇总（总数/成功/失败/处理中）+ 逐项 job 状态；
-  3. 失败项**单条重试**：用原 `file_id` 重投，**不得重复建单**（任务卡坑）；
-  4. 限流：单用户并发识别任务 ≤3（Redis 计数器），超出排队并返回明确文案；
-  5. 前端 Upload.vue 批量模式：总进度 + 逐项状态 + 失败重试；
-- **坑**：同步识别会超 Nginx 60s，必须全异步；并发限制不做会把 CPU 打满导致全部超时；
-- 验收（任务卡）：一次传 30 文件进度到 100%；失败项重试不产生重复单据。
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章的 S4-1；
+- 流程（AGENTS §11）：spec（`docs/spec/s4-1-*.md`）→ plan → 用户确认 → 写码；
+- **阶段 4 规则**（任务卡开头）：只写 `backend/app/crypto/` 与 `backend/tests/test_crypto/`，**不碰业务接口**；
+  全部能力用 pytest + 命令行脚本验证；算法参数、密钥格式、载荷结构在这里定死，S5 只调用不修改；
+- **本卡范围**：
+  1. `crypto/canonical.py`：`canonical_json(obj) -> bytes`，键按 Unicode 码点升序、分隔符 `(",", ":")` 无空格、
+     `ensure_ascii=False` + UTF-8、`None` 保留 null、**拒绝 float/NaN/Infinity**（金额由调用方先格式化成字符串）、
+     另给 `canonical_sha256` 对照；
+  2. `crypto/sm/sm3.py`：`sm3_digest(bytes) -> bytes(32)`（`gmssl.sm3.sm3_hash` 返回 hex 且**会原地改入参**，
+     内部转 bytes；业务禁止直接调 gmssl）、`sm3_hex` 仅供日志；
+  3. `tests/test_crypto/{test_canonical,test_sm3}.py`：键序不同同摘要、中文/负数/嵌套 list、`100` vs `100.00`、
+     float 被拒、SM3 国标测试向量（`abc` → `66c7f0f462eeedd9...`）、空输入、1 bit 篡改；
+- **必须先定的口径**（spec 里要写死）：
+  1. `Decimal` 是否允许进 `canonical_json`？任务卡说"金额先格式化成字符串"，建议**只接受 str/int/bool/None/list/dict**，
+     `Decimal`/`float` 一律拒绝（防 100 vs 100.00 两种字节）；
+  2. dict 键必须是 `str`（非 str 键拒绝，不隐式 `str()`，防 "1" 与 1 撞车）；
+  3. 空 dict/list 输出 `{}`/`[]`；字符串不转义非 ASCII；控制字符按 JSON 标准转义；
+  4. `sm3_digest` 入参只收 `bytes`（`bytearray` 拒绝或转换要定）；
+- 已就绪：`gmssl==3.2.2` 已装（`requirements.txt` 锁定）；`backend/app/crypto/` 目录可能仍为空，
+  首个落地者负责建 `__init__.py` 并回填 §10.8 "密码封装"锚点；
+- 验收（任务卡）：`pytest backend/tests/test_crypto -q` 全绿且含 SM3 国标向量；键序不同摘要相同、
+  含中文/负数/嵌套用例通过；`100` 与 `100.00` 不同/被拒的用例明确。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：S3-1 ~ S3-7 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
+1. **push**：S3-1 ~ S3-8 的提交仍在本地（AI 不推），由用户执行 `git push`（数量以 `git rev-list --count origin/main..HEAD` 为准）；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`；
 3. `taxi_ticket` 整单 0.200：S3-3 已试过低置信二次识别（整体 97.3% 提升，但出租车票字太少，提升有限）；
    论文如实写"出租车票是已知短板"，不要在 S1 继续调；

@@ -1327,3 +1327,25 @@
   重复票没有合并/作废入口（遗留 #64），弱重复没有"标记为不重复"留痕（遗留 #65）。
 - **验证**：`tests/test_duplicate.py` 8 条（强/弱/void/缺维/权限/confirm 409/并发唯一索引/影像映射）；
   真实冒烟：同图再传 409/40901；同票面重编码 B → `duplicate_of=49` → duplicate-check strong → confirm 409。
+
+---
+
+## D-067 批量上传：加两列（迁移 0006）、服务端排队 ≤3 + after_job_end 补位、重试不建新单
+
+- **日期**：2026-11-20（S3-8，用户确认）
+- **背景**：任务卡要求 30 文件批量、逐项状态、失败单条重试、单用户并发 ≤3；API.md 原先没有 batch 接口。
+- **决策**：
+  1. **存储**：`invoices.batch_id UUID NULL` + `ix_invoices_batch_id`；`ocr_jobs.dispatched BOOLEAN NOT NULL DEFAULT true`。
+     批次是弱聚合（不落表、不建外键）；`dispatched=false` 表示"服务端排队中"，历史行默认 true 保持原语义。
+  2. **接口**：`POST /invoices/batch`（1–30 文件，multipart）、`GET /invoices/batch/{id}`、`POST /invoices/batch/{id}/items/{invoice_id}/retry`；
+     接口**不做同步识别**（Nginx 60s 坑），只建单/写对象/建 job/入队。
+  3. **并发**：单用户"已入队"识别任务 ≤ `OCR_MAX_ACTIVE_PER_USER`（默认 3）；超出部分留在 `dispatched=false`，
+     由 worker `after_job_end` 与 `GET batch` 轮询补位（`dispatch_pending` 按槽位取最老的排队 job）。
+  4. **重试**：用原 `invoice_files` 新建一个 `ocr_job` 并重投，**绝不新建 invoice/file**；已有活动 job → 409。
+  5. **去重项**：没有 invoice 行，无法按 batch 聚合，只在 POST 响应返回 `status=duplicate` + 既有 `invoice_id`；
+     `GET batch` 只聚合真正建出的票据。
+  6. **ARQ 0.28 钩子**：`after_job_end` 只传 `ctx`，函数参数里的数据库 job_id 必须用 `Job(ctx["job_id"], ctx["redis"]).info()`
+     回查；查不到就跳过，补位失败只告警、不影响 worker 主循环。
+- **代价**：排队依赖 worker 存活（崩溃期间排队项等下一次轮询/重启，遗留 #67）；批量页 30 文件点击未自动化（#66）。
+- **验证**：30 文件实测 POST 1.17s、轮询 48.6s 全 succeeded、progress 全 100、批内仅 3 个 dispatched；
+  重试后 invoice 数 30→30、job 变 2 且重新识别成功；`tests/test_batch.py` 7 条；迁移 upgrade/downgrade 通过。
