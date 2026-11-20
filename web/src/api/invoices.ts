@@ -1,4 +1,4 @@
-/** 票据读/写接口（S2-11；轮询在 S2-10 已加）。 */
+/** 票据读/写接口（S2-11；轮询在 S2-10 已加，S3-1 换用 ocr-status）。 */
 import { get, patch, unwrap } from './http'
 import type {
   InvoiceDetail,
@@ -7,6 +7,7 @@ import type {
   InvoiceListData,
   InvoiceListParams,
   OcrStatus,
+  OcrStatusData,
 } from '../types/invoice'
 
 const TERMINAL_STATUSES = new Set<OcrStatus>(['succeeded', 'failed'])
@@ -46,12 +47,12 @@ export type PollOutcome = 'done' | 'timeout' | 'aborted'
 
 /**
  * 轮询识别状态：3s 起、指数退避（上限 15s）、总时长 120s。
- * 终态判定看 `invoice.ocr_status` 或 `latest_job.status`——S3-1 的 ocr-status 接口上线后
- * 只需要换掉这个函数，页面不用动。
+ * S3-1 起走专属接口 `GET /invoices/{id}/ocr-status`：能拿到阶段明细与 progress，
+ * 终态只看 `ocr_status`（不再同时猜 `latest_job.status`）。
  */
 export async function waitForOcr(
   invoiceId: number,
-  onUpdate?: (detail: InvoiceDetail) => void,
+  onUpdate?: (status: OcrStatusData) => void,
   signal?: AbortSignal,
   totalTimeoutMs: number = TOTAL_TIMEOUT_MS,
 ): Promise<PollOutcome> {
@@ -62,14 +63,13 @@ export async function waitForOcr(
     await sleep(delay)
     if (signal?.aborted) return 'aborted'
     try {
-      const detail = await getInvoiceDetail(invoiceId)
+      const envelope = await get<OcrStatusData>(`/invoices/${invoiceId}/ocr-status`, {
+        silent: true,
+      })
+      const status = unwrap(envelope)
       if (signal?.aborted) return 'aborted'
-      onUpdate?.(detail)
-      const jobStatus = detail.latest_job?.status
-      if (
-        TERMINAL_STATUSES.has(detail.invoice.ocr_status) ||
-        (jobStatus !== undefined && TERMINAL_STATUSES.has(jobStatus))
-      ) {
+      onUpdate?.(status)
+      if (TERMINAL_STATUSES.has(status.ocr_status)) {
         return 'done'
       }
     } catch {

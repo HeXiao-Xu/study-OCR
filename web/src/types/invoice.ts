@@ -36,6 +36,28 @@ export interface LatestJob {
   error: string | null
 }
 
+/** GET /invoices/{id}/ocr-status 的阶段元素（S3-1；detect 与 recognize 合并计时，可为 null）。 */
+export interface OcrStage {
+  stage: string
+  status: OcrStatus
+  elapsed_ms: number | null
+  note?: string | null
+  engine?: string | null
+  engine_version?: string | null
+  retry_count: number
+  error: string | null
+}
+
+/** GET /invoices/{id}/ocr-status 的 data（API.md §2）。 */
+export interface OcrStatusData {
+  invoice_id: number
+  ocr_status: OcrStatus
+  progress: number
+  stages: OcrStage[]
+  started_at: string | null
+  finished_at: string | null
+}
+
 /** GET /invoices/{id} 的 invoice 部分（含 join 出来的文件元数据）。 */
 export interface InvoiceOut {
   id: number

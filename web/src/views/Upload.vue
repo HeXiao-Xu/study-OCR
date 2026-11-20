@@ -5,8 +5,7 @@
  * 三个刻意的取舍：
  * - **串行上传**：一次 20 个同时打队列会把 OCR worker 压爆，逐文件更能看清失败原因；
  * - **409 是绿色提示**：重复影像是正常业务（同一张票传了两次），给"查看已上传票据"链接；
- * - **轮询用详情接口**（`GET /invoices/{id}` 的 `ocr_status`/`latest_job`）：`ocr-status` 专属接口
- *   要到 S3-1 才有，这里不改后端（D-048）。
+ * - **轮询用 `GET /invoices/{id}/ocr-status`**（S3-1）：拿阶段明细与 progress，上传页直接显示百分比。
  */
 import { ElMessage, type UploadFile, type UploadInstance, type UploadRawFile } from 'element-plus'
 import { computed, onBeforeUnmount, ref } from 'vue'
@@ -188,10 +187,11 @@ function startPolling(task: UploadTask): void {
   task.controller = controller
   void waitForOcr(
     task.invoiceId,
-    (detail) => {
-      task.ocrStatus = detail.invoice.ocr_status
-      task.jobStatus = detail.latest_job?.status ?? null
-      task.jobError = detail.latest_job?.error ?? null
+    (status) => {
+      task.ocrStatus = status.ocr_status
+      task.jobStatus = status.ocr_status
+      task.jobError = status.stages.find((stage) => stage.error)?.error ?? null
+      task.message = `识别中… ${status.progress}%`
     },
     controller.signal,
   ).then((outcome) => {
