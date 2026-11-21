@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import secrets
+from datetime import datetime, timezone
 from collections.abc import Iterator
 
 import pytest
@@ -154,6 +155,8 @@ def _report(session_factory, applicant_id: int, status: str) -> int:
             applicant_id=applicant_id,
             title="测试报销单",
             status=status,
+            archive_no=f"AR-TEST-{secrets.token_hex(4)}" if status == "archived" else None,
+            archive_at=datetime.now(timezone.utc) if status == "archived" else None,
         )
         db.add(report)
         db.commit()

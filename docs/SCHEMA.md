@@ -366,10 +366,12 @@ erDiagram
 | submitted_at | TIMESTAMPTZ | 是 | — | 首次提交财务的时间 ✅ | — |
 | idempotency_key | TEXT | 是 | — | 幂等键（前端生成 UUID，重复点击返回已有单号）✅ | **UNIQUE** ✅ |
 | version | INTEGER | 否 | `0` | **乐观锁计数器**（审核决策、驳回重提都带它，防并发覆盖）⚠ 见「定稿清单」第 19 项 | — |
+| archive_no | TEXT | 是 | — | **归档号** `AR-YYYY-NNNN`（S5-6 补：归档不可逆，归档后只读）；未归档为 NULL | **UNIQUE** ✅（`uq_report_forms_archive_no`） |
+| archive_at | TIMESTAMPTZ | 是 | — | 归档时间（UTC）；与 `archive_no` **同进同出**（`ck_report_forms_archive_pair`）；`status='archived'` 时必须有归档号（`ck_report_forms_archived_fields`） | idx(archive_at) ⚠ |
 | created_at | TIMESTAMPTZ | 否 | `now()` | 创建时间 ✅ | — |
 | updated_at | TIMESTAMPTZ | 否 | `now()` | 应用层 onupdate ⚠ | — |
 
-**存什么**：报销单主体（申请人、事由、合计、明细数）、**签名域快照**（`canonical_json` + 摘要）、幂等键与状态机。**谁写**：报销单接口（草稿）、签名接口（写 `canonical_json`/`digest_hex`/`status='signed'`）、封装接口（`encrypted`）、提交接口（`submitted`）、审核接口（`approved`/`rejected`）、归档任务（`archived`）。**关键不变式**：`idempotency_key` 唯一（重复提交由数据库兜底，不靠前端防抖）；`canonical_json` 一经签名即**不可变**（改内容必须重签、`version+1`、旧签名置 `void`）；`status in ('submitted','approved','archived')` 时必须恰好有一条 `active` 签名且有对应信封（方案 7.5，写成单测）。
+**存什么**：报销单主体（申请人、事由、合计、明细数）、**签名域快照**（`canonical_json` + 摘要）、幂等键与状态机、**归档号/归档时间**（S5-6）。**谁写**：报销单接口（草稿）、签名接口（写 `canonical_json`/`digest_hex`/`status='signed'`）、封装接口（`encrypted`）、提交接口（`submitted`）、审核接口（`approved`/`rejected`）、归档接口（`archived` + `archive_no`/`archive_at`）。**关键不变式**：`idempotency_key` 唯一（重复提交由数据库兜底，不靠前端防抖）；`canonical_json` 一经签名即**不可变**（改内容必须重签、`version+1`、旧签名置 `void`）；`status in ('submitted','approved','archived')` 时必须恰好有一条 `active` 签名且有对应信封（方案 7.5，写成单测）；**归档不可逆**：`archive_no`/`archive_at` 成对、归档号唯一、`archived` 必有归档号（库里 CHECK 兜底）。
 
 > 两个 `version` 不要混：本表 `version` 是**并发控制计数器**（应用层乐观锁）；签名域里的 `nonce` / 载荷版本随 `canonical_json` 一起保存；"第几次签名"的权威记录是 `signatures.version`（方案 6.6 "驳回重提"一行）。
 
@@ -623,7 +625,7 @@ CREATE INDEX ix_invoices_draft ON invoices (uploader_id) WHERE status = 'draft';
 | 9.17 | `envelopes.key_algo`；`envelopes.cipher_algo` | `SM2` / `RSA-OAEP`；`SM4-CBC-HMAC-SM3` / `AES-256-GCM` | 方案 5.2 + 6.5.3 ✅ |
 | 9.18 | `review_logs.decision` | `approve` / `reject` | 方案 5.2 ✅ |
 | 9.19 | `audit_logs.actor_role` | `submitter` / `reviewer` / `admin` / `system` | 方案 5.2 三角色 ✅ + `system` ⚠（定时锚定任务） |
-| 9.19b | `audit_logs.action` | `upload` / `confirm_field` / `sign` / `seal` / `submit` / `verify` / `decrypt` / `review` / `revoke_cert` / `login_failed` / `logout` / `forbidden` / `field_reread` / **`report_create`** | 方案 5.2 ✅ + 前 3 值由 S2-2 拍板补（D-040）+ `field_reread` 由 S3-3 补（D-061；迁移 0005 只放开 CHECK，审计行仍留 S4-7）+ `report_create` 由 S5-1 补（D-084；迁移 0008 放开 CHECK，建单时同事务写审计行） |
+| 9.19b | `audit_logs.action` | `upload` / `confirm_field` / `sign` / `seal` / `submit` / `verify` / `decrypt` / `review` / `revoke_cert` / `login_failed` / `logout` / `forbidden` / `field_reread` / **`report_create`** / **`archive`** | 方案 5.2 ✅ + 前 3 值由 S2-2 拍板补（D-040）+ `field_reread` 由 S3-3 补（D-061）+ `report_create` 由 S5-1 补（D-084）+ `archive` 由 S5-6 补（D-089；迁移 0009 放开 CHECK，归档时同事务写审计行） |
 | 9.19c | `audit_logs.target_type` | `invoice` / `invoice_field` / `form` / `report_item` / `signature` / `envelope` / `certificate` / `key` / `user` / `template` / `eval_run` ✅ 定稿 | 方案只给"多态引用"语义；值集需覆盖全部受审计对象，否则新动作会写出脏值 |
 
 > **常量落点**：以上枚举在代码侧只允许定义为 `backend/app/models/enums.py` 的 `StrEnum`，CHECK 文本由同一份常量生成，禁止在迁移里手抄字符串（AGENTS.md §4.2）。

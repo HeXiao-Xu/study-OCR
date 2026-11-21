@@ -6,11 +6,11 @@
 
 ## 当前状态
 
-- 阶段：**阶段 5 进行中**（S5-1 ~ S5-5 完成）；下一张卡 **S5-6 归档与检索**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、S4-1 ~ S4-9、**S5-1 ~ S5-5**（共 48 张卡，全部 ✅ 通过）
-- 最近完成：**S5-5 审核决策与驳回**（verify_token 一次性 + 行锁防重 + review_logs + 驳回置 void）
+- 阶段：**阶段 5 进行中**（S5-1 ~ S5-6 完成）；下一张卡 **S5-7 端到端联调与异常场景**
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、S4-1 ~ S4-9、**S5-1 ~ S5-6**（共 49 张卡，全部 ✅ 通过）
+- 最近完成：**S5-6 归档与检索**（归档号 + 不可逆 + 归档检索 + 口令加密归档包）
 - 附加改动（2026-11-20）：D-069 真实横版票抽取修复、D-070 确认流程简化（去重识别/逐字段操作）、D-071 删除改硬删（仅 draft，可重传）；业务状态统一显示为 待确认/待复核/已复核（前端派生）
-- 下一步：**S5-6 归档与检索**（approved → archived、归档号、检索、ZIP 导出）
+- 下一步：**S5-7 端到端联调与异常场景**（test_e2e_flow + scripts/e2e_demo.py）
 - 测试期新增依赖：`pytest-cov==7.1.0` + `coverage==7.17.4`（仅测试，已锁）
 - 已知阻塞：无
 - 环境提醒：
@@ -20,7 +20,7 @@
   - **本机没有 openssl CLI**：统一用 `scripts/openssl.sh` / `scripts/openssl.ps1`（Docker 内 OpenSSL 3.5.9，D-078）
   - **必填配置 `AUDIT_HMAC_KEY`**（≥32 字符，D-081）；**`FINANCE_KEY_PASSPHRASE`（S5-4，本地 .env 为演示口令，不入库）**
   - **S5-2 起 `ALGO_PROVIDER=sm`（默认）/ `KEY_STORAGE_ROOT=`（空 = 仓库根）**；本地库已登记 2 张证书 + 2 条密钥记录
-  - 本地领先 origin **86 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **87 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -84,7 +84,7 @@
 [x] S5-3 财务端待审列表
 [x] S5-4 验签与解密 ★关键
 [x] S5-5 审核决策与驳回
-[ ] S5-6 归档与检索
+[x] S5-6 归档与检索
 [ ] S5-7 端到端联调与异常场景
 
 ## 阶段 6：实验与评测（M5）
@@ -106,6 +106,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S5-6 | `backend/alembic/versions/0009_report_archive.py`（`report_forms.archive_no/archive_at` + `archive_no_seq` + 两条 CHECK + `audit_logs.action` 放开 `archive`）、`models/{report_forms,enums}.py`、`crypto/archive_crypto.py`（PBKDF2 200k + AES-256-GCM 自描述容器）、`services/archive_service.py`（归档/检索/导出）、`schemas/{archive,report}.py`（`ReportOut` 补归档字段）、`api/v1/{admin,reports}.py`（`POST /admin/reports/{id}/archive`、`GET /reports`、`POST /reports/{id}/export`）、`scripts/open_archive.py`、`tests/{test_archive,test_archive_crypto}.py`（11 集成 + 5 纯函数）、`docs/{spec,plan}/s5-6-archive.md` | ① `pytest tests/test_archive.py -m integration` → **11 passed**；`test_archive_crypto` → **5 passed**；② 归档：200 `status=archived`、`archive_no=AR-2026-0001`、`archive_at` 非空、审计 `archive`、详情（本人/reviewer）可看且带归档号；`confirm=false` → **422/42202**；非 approved/重复归档 → 409；非 admin → 403、未知单 404；③ 并发归档两单 → 两个不同归档号、链 OK；④ 归档后 加明细/签名/提交/决策 → **全部 409**；⑤ 检索：只列 archived、submitter 本人 / reviewer 全部、admin 403、`status=draft` 422；q/金额区间/归档日过滤正确；⑥ 导出：200 `application/octet-stream` + `<单号>-archive.zip.enc`；解密 ZIP 成员固定 4 个（archive.json/manifest.csv/canonical.json/signatures/signature.json），manifest **BOM+CRLF**、canonical 与库一致、证书 PEM 在包内；**无影像明文/无密文/无对象名**；非本人 404、未归档 409、admin 403、短口令 422；⑦ `scripts/open_archive.py` 用口令解出 ZIP 并解压（CLI 冒烟通过）；⑧ `alembic upgrade head`（**0009**）+ `downgrade 0008 → upgrade` 往返 + `alembic check` 零差异；⑨ 全量单测 **756 passed**、集成 **351 passed**；⑩ 真机冒烟：提交→验签→approve→archive（AR-2026-0001）→检索命中 1→导出 2873B→脚本 exit 0（4 成员+BOM）→重复归档 409→归档后签名 409→审计 54 行链 OK；业务行/对象/临时包已清理 | ✅ 通过（D-089；归档不可逆、无取消接口；归档包是"口令加密容器 + 标准 ZIP"，非 WinZip AES 兼容） |
 | S5-5 | `backend/app/services/review_service.py`（`decide_report`：可见性 → 单据行 `FOR UPDATE` → `status='submitted'` → `version` 乐观锁 → active 签名 → approve 校验 verify_token + `verify_result='ok'` → `ReviewLog` → 状态迁移 → reject 置签名 `void` → 审计 `review` → commit → 消费 token）、`schemas/finance.py`（`ReviewRequest` 条件必填 / `ReviewData` / `FinanceDetailData.report_version`）、`services/finance_service.py`（详情补 `report_version`）、`api/v1/finance.py`（`POST /reports/{id}/review`）、`backend/tests/test_decision.py`（12 条集成）、`web/src/{types,api}/finance.ts` + `views/FinanceList.vue`（通过/驳回 + 意见弹窗）、`docs/{spec,plan}/s5-5-review-decision.md` | ① `pytest tests/test_decision.py -m integration` → **12 passed**；② approve：200 `status=approved`、`review_logs` 1 行（`approve/ok/decrypt_ok=true`）、审计 `review`、`verify_token` 已删除、待审列表不再含该单、详情 `report_version` 正确；③ 未验签/错 token → 409 `verify_token_invalid`（状态仍 submitted、无 review_logs）；④ 同 token 第二次 → 409（状态已变）；跨单 token → 409；⑤ reject 缺意见 → 422/42200；reject 成功 → `rejected` + comment 落库 + active 签名变 `void`（记录保留）；⑥ 重复决策/version 不符/签名结论非 ok → 409；⑦ 权限：submitter/admin 403、未知单 404、未登录 401；⑧ 并发两线程 approve → 恰好 1 成功、`review_logs` 仍 1 行；⑨ 前端 typecheck/build 通过；⑩ 全量单测 **751 passed**、集成 **340 passed**、`alembic check` 零差异；⑪ 真机冒烟：A 单 approve（approved、日志、token 消费、待审列表 0）+ B 单 reject（rejected、comment、签名 void）+ token 复用 409 + 审计 47 行链 OK；业务行/对象已清理 | ✅ 通过（D-088；驳回重提仍受 #109 信封唯一约束限制，见 spec §8） |
 | S5-4 | `backend/app/services/verify_service.py`（七步验签、失败归类、签名结论落库、`verify_token` 签发、审计）、`services/preview_service.py`（解密到 `previews/{token}/...`、预览凭据、读取、TTL 清理）、`services/credential_store.py`（Redis 凭据 + 内存实现）、`services/report_crypto.py`（`open_sealed_steps` 分步解封、`rebuild_signing_canonical`）、`services/storage.py`（`list_objects`）、`services/key_service.py`（`load_finance_private_key`）、`crypto/key_loader.py`（`certificate_fingerprint`）、`schemas/finance.py`（`VerifyStep/VerifyData/DecryptRequest/DecryptData`）、`api/v1/finance.py`（verify/decrypt/preview/preview-files 四条）、`core/config.py` + `.env.example`（`FINANCE_KEY_PASSPHRASE`、预览 TTL/清理/前缀/锁）、`tasks/scheduler.py`（预览清理 IntervalTrigger + 抢锁）、`backend/tests/test_verify.py`（13 条集成）、`web/src/{types,api}/finance.ts` + `views/FinanceList.vue`（验签/解密预览/看图）、`docs/{spec,plan}/s5-4-verify-decrypt.md` | ① `pytest tests/test_verify.py -m integration` → **13 passed**；② verify 成功：7 步全 ok、`cert_fp`、`payload_sha256_match=true`、`verify_token` 落 Redis、审计 `verify:ok`、`verify_chain ok`；③ 改业务行（不动签名域）→ **409 `digest_mismatch` / `digest_recheck`**，签名行变 failed，列表 `verify_status=failed`（证明是"从库内重算"而不是比存下的摘要）；④ 改 canonical / 篡改密文 → 分别 `bad_signature`（50021）与 `mac_mismatch`（50030，且**不改写** `signatures.verify_result`）；⑤ 错误财务口令 → **422/42200** 统一文案；吊销证书 → `cert_invalid`；缺信封 → `bad_envelope/envelope_lookup`；submitter/admin → 403、未知单 404；⑥ decrypt：`verify_token` → `preview_token`（TTL 1800），`fields_preview.report_no` 正确，MinIO 有 `previews/{token}/report.json` + `files/{id}.bin`，**DB 无明文**；⑦ 预览 JSON 可重复读、影像字节 SHA-256 与 `invoice_files.sha256` 一致；无凭据 409、过期 **410/41001**；⑧ 清理任务只删 `LastModified` 早于 TTL 的对象（旧删/新留）；⑨ RSA provider 下 verify/decrypt 全流程通过；⑩ 前端抽屉可"验签 → 解密预览 → 查看影像"，`typecheck`/`build` 通过；⑪ 全量单测 **751 passed**、集成 **328 passed**、`alembic check` 零差异；⑫ 真机冒烟（开发库 + 真 MinIO/Redis）：verify 7 步全 ok、decrypt/preview JSON/影像 200、影像哈希匹配、preview 对象 2 个、submitter 403、审计 36 行链 OK；业务行/对象/预览已清理 | ✅ 通过（D-087：口令走环境变量、七步顺序、库内重算、预览 TTL + 清理任务；票据影像接口保持密文 409） |
 | S5-3 | `backend/app/schemas/finance.py`（`FinancePendingQuery/Item`、`FinanceAttachmentOut`、`FinanceDetailData`）、`backend/app/services/finance_service.py`（`list_pending` 三态/日期/q 筛选 + 排序白名单 + 整页 2 条 SQL；`get_detail` 复用 `report_service` + 一次查完附件信封；`export_pending_csv` 与列表同筛选、BOM+CRLF、上限 10000）、`backend/app/api/v1/finance.py`（`GET /finance/pending`、`/pending/export`、`/{id}`，全部 reviewer）、`backend/app/utils/time.py`（`business_day_bounds` 唯一入口，`report_service` 同步改调）、`backend/app/services/report_service.py`（`verify_status_of/verify_status_from_result`、`envelope_out` 公开）、`backend/app/services/submit_service.py`（提交时系统验签落库：`verified=true/result='ok'/verified_at`）、`backend/tests/test_finance.py`（12 条集成）、`web/src/{types/finance.ts,api/finance.ts,views/FinanceList.vue}`、`web/src/{router/index.ts,utils/format.ts}`、`docs/{spec,plan}/s5-3-finance-list.md` | ① `pytest tests/test_finance.py -m integration` → **12 passed**；`test_submit.py` 仍 **19 passed**（新增"提交后 `verified=true/ok`"断言）；② 提交 5 单 → 列表 `total=5`，字段 `report_no/applicant_name/total_amount/item_count/submitted_at/verify_status` 齐全且默认 `verify_status=ok`；③ 三态筛选：把签名改成 `NULL`/`bad_signature` 后分别命中 1 单；④ `q` 按单号命中 1、按申请人命中 5；业务日过滤今天 5 / 明天 0，`from>to` → **422**；⑤ 排序 `total_amount asc/desc` 顺序正确，非法 `sort_by` → 422；⑥ 权限：submitter/admin 列表/详情/CSV 全 **403/40301**，未登录 401；⑦ 详情 200：单据 + `applicant_name` + 签名 + 单据信封 + 1 条附件（文件名/大小/SHA-256/页数 + 文件级信封元数据），响应**无** `ciphertext_b64`/`wrapped_key_b64`/`ciphertext_storage_key`；草稿单 reviewer → 404；⑧ CSV：`text/csv`、**BOM `EF BB BF`**、CRLF、表头 `单号,申请人,金额,票据数,提交时间,验签状态`、5 行数据；筛选后行数一致；超过上限（monkeypatch=2）→ 422；⑨ **整页只 2 条 SELECT**（count + 分页，无 N+1/实时验签）；⑩ `npm run typecheck && npm run build` 通过；⑪ 真机冒烟（开发库 + 真 MinIO，5 单）：列表 5 条/详情 200 附件 1 条/CSV 359B（BOM+CRLF+中文表头+5 行，样例 `RPT-202611-0002,Alice,100.00,1,2026-11-21 19:07:32,通过`）、submitter 403；⑫ 全量单测 **751 passed**、集成 **315 passed**、`alembic check` 零差异 | ✅ 通过（D-086：`verify_status` 由签名行派生、不加列；补两条契约；CSV BOM 口径） |
@@ -304,11 +305,26 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 121 | **驳回后重提仍撞信封唯一约束**（#109）：可重新签名，但 submit 409 | "驳回→修改→重提"闭环不完整 | 需要信封版本列或"财务私钥解密重封"，留 S5-6/补充卡；论文不足写明 |
 | 122 | "同一轮只决策一次"是状态语义，不是数据库唯一约束 | 未来支持重提后同一单会有多条 review_logs（SCHEMA 明确不唯一） | 已用行锁 + 状态闸门 + 并发用例证明；论文写清口径 |
 | 123 | `decrypt_ok` 以验签结论为准 | 不区分"审核员是否真的看了预览" | 审核流程约定：approve 前必须先验签（前端按钮强制）；论文说明 |
+| 124 | 归档**不可逆**，无取消归档接口 | 误归档只能靠备份恢复 | 契约只要求归档不可逆；需要撤销时走 DB 运维 + 审计说明 |
+| 125 | 归档号全局递增、不按年重置（同 #104） | `AR-2026-0001` 之后跨年仍是 `AR-2027-0002` | 与 report_no 一致；论文写清"唯一但不按年归零" |
+| 126 | 归档包是**口令加密容器 + 标准 ZIP**，不是 WinZip AES 兼容 zip | 需用 `scripts/open_archive.py` 解开（不能直接 `unzip -P`） | 不引 pyzipper（AGENTS §2.1）；论文写清格式；后续可换 pyzipper |
+| 127 | 归档/检索/导出只有接口与脚本，**无前端页面**；检索只覆盖 archived | admin 归档与导出需调接口；已审批/驳回检索仍缺视图 | 任务卡产出未要求 UI；S5-7 的 e2e 演示脚本覆盖 |
 
 ## 变更日志
 
 ### 2026-11-21
 
+- **S5-6 完成**：归档与检索（阶段 5 第六张）。
+  · `POST /admin/reports/{id}/archive`（admin，`confirm=true`）：approved→archived，归档号 `AR-YYYY-NNNN`（`archive_no_seq`）+ `archive_at`，审计 `archive`；
+    库级 CHECK 保证"归档号/时间成对、archived 必有归档号"；
+  · `GET /reports`：归档检索（submitter 本人 / reviewer 全部；q/归档日/金额区间/排序/分页），admin 403；
+  · `POST /reports/{id}/export`：口令加密归档包（PBKDF2 200k + AES-256-GCM），内含标准 ZIP：
+    `archive.json`/`manifest.csv`(BOM)/`canonical.json`/`signatures/signature.json`，**不含影像明文/密文/对象名**；
+    `scripts/open_archive.py` 可解密解开；
+  · 迁移 **0009**（两列 + 序列 + 两条 CHECK + `audit_logs.action` 放开 `archive`）；归档后修改/决策全 409；
+  · 实测：`test_archive` **11 passed**、`test_archive_crypto` **5 passed**、全量单测 **756**、集成 **351**、
+    `alembic check` 零差异、downgrade/upgrade 往返；真机归档 AR-2026-0001、检索 1、导出 2873B、脚本 exit 0、
+    审计 54 行链 OK（D-089）。
 - **S5-5 完成**：审核决策与驳回（阶段 5 第五张）。
   · `POST /finance/reports/{id}/review`：approve 必须带**未消费**的 verify_token 且签名 `verify_result='ok'`；
     reject 必填意见；`review_logs` 追加写（decision/comment/verify_result/decrypt_ok）；审计 `action=review`（不写意见正文）；

@@ -10,12 +10,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_roles
+from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
 from app.core.exceptions import ok
+from app.models.users import User
+from app.schemas.archive import ArchiveData, ArchiveRequest
 from app.schemas.audit import AuditListQuery, AuditLogOut, AuditVerifyData
 from app.schemas.common import Envelope, PageResult
-from app.services import audit
+from app.services import archive_service, audit
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_roles("admin"))])
 
@@ -42,5 +44,23 @@ def verify_audit_chain(db: Session = Depends(get_db)) -> dict:
             broken_at=result.broken_at,
             broken_id=result.broken_id,
             reason=result.reason,
+        )
+    )
+
+
+@router.post(
+    "/reports/{report_id}/archive",
+    response_model=Envelope[ArchiveData],
+    summary="归档已审批单据（不可逆；必须 confirm=true）",
+)
+def archive_report(
+    report_id: int,
+    payload: ArchiveRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return ok(
+        archive_service.archive_report(
+            db, user, report_id, confirm=payload.confirm
         )
     )

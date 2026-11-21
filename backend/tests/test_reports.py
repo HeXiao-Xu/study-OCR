@@ -633,6 +633,10 @@ def test_transition_follows_state_machine(client, session_factory, actors) -> No
         form = db.get(ReportForm, report["id"])
         chain = ["pending_sign", "signed", "encrypted", "submitted", "approved", "archived"]
         for target in chain:
+            if target == "archived":
+                # S5-6 的库级 CHECK：archived 必须有归档号/归档时间（生产由 archive_service 写）
+                form.archive_no = "AR-TEST-0001"
+                form.archive_at = datetime.now(timezone.utc)
             report_service.transition(db, form, target, user)
             assert form.status == target
         db.commit()

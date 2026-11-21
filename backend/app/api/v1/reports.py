@@ -7,14 +7,15 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_roles
 from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.core.exceptions import ok
 from app.models.users import User
+from app.schemas.archive import ArchiveExportRequest, ArchiveSearchQuery
 from app.schemas.common import Envelope, PageResult
 from app.schemas.report import (
     ReportCreateRequest,
@@ -27,7 +28,7 @@ from app.schemas.report import (
     SubmitData,
     SubmitRequest,
 )
-from app.services import report_service, submit_service
+from app.services import archive_service, report_service, submit_service
 from app.services.storage import StorageService, get_storage
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -48,6 +49,19 @@ def create_report(
 
 
 @router.get(
+    "",
+    response_model=Envelope[PageResult[ReportOut]],
+    summary="归档检索（submitter 本人 / reviewer 全部；只列 archived）",
+)
+def search_archived_reports(
+    query: Annotated[ArchiveSearchQuery, Query()],
+    user: User = Depends(require_roles("submitter", "reviewer")),
+    db: Session = Depends(get_db),
+) -> dict:
+    return ok(archive_service.search_reports(db, user, query))
+
+
+@router.get(
     "/mine",
     response_model=Envelope[PageResult[ReportOut]],
     summary="我的报销单（分页/状态/日期；不含明细）",
@@ -58,6 +72,31 @@ def list_my_reports(
     db: Session = Depends(get_db),
 ) -> dict:
     return ok(report_service.list_my_reports(db, user, query))
+
+
+@router.post(
+    "/{report_id}/export",
+    response_class=Response,
+    summary="导出归档包（口令加密；仅 archived；不含影像明文）",
+)
+def export_archived_report(
+    report_id: int,
+    payload: ArchiveExportRequest,
+    user: User = Depends(require_roles("submitter", "reviewer")),
+    db: Session = Depends(get_db),
+) -> Response:
+    content, filename = archive_service.export_archive(
+        db, user, report_id, payload.passphrase
+    )
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get(

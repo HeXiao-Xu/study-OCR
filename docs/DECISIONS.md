@@ -2016,3 +2016,41 @@
   真机冒烟（开发库 + 真 MinIO/Redis）：A 单 verify→approve（approved、review_logs 1 行、
   token 已消费、待审列表 0、详情 version=4）；B 单 reject（rejected、comment 落库、签名 void）；
   同 token 复用 → 409；审计 47 行链 OK；业务行/对象已清理。
+
+## D-089 归档：`report_forms` 补归档号/归档时间、admin 例外、检索只读视图、归档包"口令容器 + 标准 ZIP"
+
+- **日期**：2026-11-21（S5-6）
+- **背景**：任务卡要求 `POST /admin/reports/{id}/archive`（confirm）+ `AR-YYYY-NNNN` + `archive_at`，
+  但 SCHEMA §5.1 没有归档字段、API.md 没有三条接口，`audit_logs.action` 也没有 `archive`；
+  另外"ZIP 用口令加密"在 Python 标准库下无法直接写加密 ZIP（`zipfile` 只能读）。
+- **决策**：
+  1. **契约先行**：SCHEMA §5.1 补 `archive_no`（UNIQUE）/`archive_at` 与两条 CHECK
+     （`(archive_no IS NULL) = (archive_at IS NULL)`、`status <> 'archived' OR archive_no IS NOT NULL`），
+     §9.19b 补 `archive`；API.md 补三条接口与权限矩阵。**迁移 0009** 建列/唯一约束/索引/`archive_no_seq`，
+     并放开 `ck_audit_logs_action`（与 0002/0005/0008 同法手写）。
+  2. **admin 归档是系统运维动作**：`POST /admin/reports/{id}/archive` 仅 admin，走 `db.get` 直查，
+     不改变"admin 业务表 404"的常规读取策略；响应只含 `report_id/report_no/status/archive_no/archive_at`，
+     不含业务内容。矩阵里单列"归档"一行说明这个例外。
+  3. **归档号 `AR-YYYY-NNNN`**：PG 序列 `archive_no_seq` + `Asia/Shanghai` 业务年；全局递增、不按年重置
+     （与 report_no 同一取舍 D-084），UNIQUE 兜底；`archive_no`/`archive_at` 同事务写入。
+  4. **只读靠状态机 + 库约束**：归档后 `add_item/sign/submit/review` 全部 409（已有闸门）；
+     新增两条 CHECK 防止"archived 却没有归档号"的半状态。
+  5. **检索只覆盖 archived**：`GET /reports`（submitter 本人 / reviewer 全部；admin 403），
+     筛 q/归档日/金额区间，排序白名单 `archive_at/total_amount/submitted_at`，分页复用 S2-4。
+     已审批/驳回的通用检索仍不在本卡范围（#127）。
+  6. **归档包 = 口令加密容器 + 标准 ZIP**：不引入 `pyzipper`（AGENTS §2.1 要求先确认），
+     用现有 `cryptography` 实现 `STUDYOCR-ARCHIVE v1`（PBKDF2-HMAC-SHA256 200k + AES-256-GCM，
+     AAD 绑头）；容器里是标准 ZIP，`scripts/open_archive.py` 用同一实现解开。
+     ZIP 成员固定 4 个：`archive.json`、`manifest.csv`（UTF-8 BOM+CRLF）、`canonical.json`、
+     `signatures/signature.json`（含申请人证书 PEM），**不含影像明文/密文/对象名/私钥**。
+  7. **导出权限**：仅 archived；submitter 本人 / reviewer；admin 403；口令 8–128；
+     响应 `application/octet-stream` + `<单号>-archive.zip.enc`。
+  8. **`ReportOut` 补 `archive_no/archive_at`**（可空），列表/详情/财务详情共用；归档号出现在财务检索结果。
+- **代价/限制**：归档不可逆、无取消接口（#124）；归档号全局递增（#125）；归档包不是 WinZip AES 兼容 zip，
+  需脚本解开（#126）；归档/检索/导出无前端页面（#127）；ZIP 里不放影像，离线核验只能验签名/摘要/信封元数据，
+  要看影像仍需财务 `verify/decrypt` 的 30min 预览。
+- **验证**：`pytest tests/test_archive.py -m integration` **11 passed**、`test_archive_crypto.py` **5 passed**；
+  全量单测 **756**、集成 **351**；`alembic check` 零差异；`downgrade 0008 → upgrade` 往返通过。
+  真机冒烟（开发库 + 真 MinIO/Redis）：提交→验签→approve→archive（`AR-2026-0001`）→检索 1 条→
+  导出 2873B→`open_archive.py` exit 0（4 成员、manifest BOM）→重复归档 409→归档后签名 409→
+  审计 54 行链 OK；业务行/对象/临时包已清理。

@@ -20,6 +20,7 @@
 | 查看票据 | 仅本人 | 全部可读 | 不继承，越权即 404 |
 | 修正字段 | 本人、非金额字段 | 全部、含金额字段 | 404 |
 | 报销单 | 本人建/改/签/提交 | 只读已提交 | 404 |
+| 归档 | 403 | 403 | **仅 admin 可归档**（系统运维动作，响应不含业务内容；归档后读取仍 404） |
 | 财务待审 / 验签 / 解密 / 审核 | 403 | 全部 | 403（**不得代审**） |
 | 票种模板 | 403 | 只读 | 读写 |
 | 证书 | 仅本人证书 | 仅本人证书 | 全部 |
@@ -449,6 +450,25 @@
 - 错误：`404/40400` 不存在或无权访问
 - 备注：**不返回 `ciphertext_b64`、`wrapped_key_b64`、`ciphertext_storage_key`**；明文影像只经 `decrypt` 的临时预览。S5-1 已按此形状实现：`signature`/`envelope` 在 S5-2 之前恒为 `null`，`verify_status` 无签名时为 `unverified`
 
+### GET /api/v1/reports
+- 权限：`submitter`（仅本人）/ `reviewer`（全部）；`admin` → 403 ｜ 类型：同步（分页）｜ 幂等：是 ｜ 实现：S5-6
+- 入参：`status`（仅接受 `archived`，省略等价于 `archived`）、`q`（单号 / 申请人）、`date_from`/`date_to`（**归档日**，Asia/Shanghai 业务日）、`amount_min`/`amount_max`（含端点）、`page`、`page_size`、`sort_by`（`archive_at`｜`total_amount`｜`submitted_at`）、`order`
+- 出参：**200**，`data = {items: ReportOut[]（含 archive_no/archive_at，不含 items 明细）, total, page, page_size}`
+- 错误：`403/40301`（admin 或未登录）；`422/42200`（`status` 非 archived / 金额区间非法 / 日期非法 / 排序非法）
+- 备注：本接口是**归档检索**，只列 `status='archived'`；行级隔离沿用 S2-3（submitter 本人 / reviewer 全部）
+
+### POST /api/v1/reports/{id}/export
+- 权限：本人 `submitter` / `reviewer`；`admin` → 403 ｜ 类型：同步 ｜ 幂等：否（每次生成新包）｜ 实现：S5-6
+- 入参（JSON）：
+
+| 字段 | 类型 | 必填 | 约束 |
+|---|---|---|---|
+| passphrase | string | 是 | 8–128 字符，仅用于加密归档包；不回显、不进日志 |
+
+- 出参：**200**，`Content-Type: application/octet-stream`、`Content-Disposition: attachment; filename="<report_no>-archive.zip.enc"`；正文是**口令加密的归档包**（内含标准 ZIP）
+- 错误：`409/40900` 未归档（只有 `archived` 可导出）；`404/40400` 非本人/不存在；`403/40301` admin；`422/42200` 口令长度非法
+- 备注：ZIP 成员固定 `archive.json` / `manifest.csv`（UTF-8 BOM+CRLF）/ `canonical.json` / `signatures/signature.json`（含申请人证书 PEM）；**不含影像明文、不含对象名、不含私钥**；容器格式 `STUDYOCR-ARCHIVE v1`（PBKDF2-HMAC-SHA256 200k + AES-256-GCM），用 `scripts/open_archive.py` 解开（D-089）
+
 ### GET /api/v1/reports/mine
 - 权限：`submitter`（仅本人）；`reviewer`/`admin` → 403 ｜ 类型：同步（分页）｜ 幂等：是 ｜ 实现：S5-1
 - 入参：`status`、`date_from`/`date_to`、`page`、`page_size`、`sort_by`（`created_at`｜`submitted_at`）、`order`
@@ -590,6 +610,18 @@
 - 备注：吊销后使用该证书的验签/信封校验一律返回 `cert_invalid`；不提供私钥导出；不做 CRL/OCSP（局限见方案 6.5.6）
 
 ## 7. 审计（S4-7）
+
+### POST /api/v1/admin/reports/{id}/archive
+- 权限：`admin` ｜ 类型：同步 ｜ 幂等：否（归档不可逆，重复归档 409）｜ 实现：S5-6
+- 入参（JSON）：
+
+| 字段 | 类型 | 必填 | 约束 |
+|---|---|---|---|
+| confirm | boolean | 是 | 必须为 `true`（高风险动作二次确认） |
+
+- 出参：**200**，`data = {report_id, report_no, status: "archived", archive_no, archive_at}`
+- 错误：`422/42202` 缺 `confirm=true`；`409/40900` 非 `approved` / 已归档 / 并发归档；`403/40301` 非 admin；`404/40400` 单据不存在
+- 备注：生成归档号 `AR-YYYY-NNNN`（PG 序列 `archive_no_seq` + 业务年）与 `archive_at`；单据行 `FOR UPDATE`，并发只有一个成功；写审计 `action=archive`（同一事务，进哈希链）；归档后**任何修改/决策接口 409**（状态机）；admin 的归档是**系统运维动作**，响应不含业务内容（admin 读取业务表仍 404）
 
 > 哈希链：`entry_hash = HMAC_SM3(key, prev_hash ‖ ts ‖ actor_id ‖ action ‖ target_id ‖ payload_sha256)`，创世 `prev_hash=0×32`，写入串行加锁。哈希链防"改了不被发现"，不防"数据被读"。
 

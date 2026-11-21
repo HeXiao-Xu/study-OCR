@@ -34,6 +34,16 @@ class ReportForm(Base):
     __table_args__ = (
         UniqueConstraint("report_no", name="uq_report_forms_report_no"),
         UniqueConstraint("idempotency_key", name="uq_report_forms_idempotency_key"),
+        # S5-6：归档号唯一；归档号与归档时间同进同出；archived 必须有归档号（库兜底，不只靠服务）
+        UniqueConstraint("archive_no", name="uq_report_forms_archive_no"),
+        CheckConstraint(
+            "(archive_no IS NULL) = (archive_at IS NULL)",
+            name="ck_report_forms_archive_pair",
+        ),
+        CheckConstraint(
+            "status <> 'archived' OR archive_no IS NOT NULL",
+            name="ck_report_forms_archived_fields",
+        ),
         CheckConstraint("total_amount >= 0", name="ck_report_forms_total_amount"),
         CheckConstraint("item_count >= 0", name="ck_report_forms_item_count"),
         hex64_check("report_forms", "digest_hex"),
@@ -41,6 +51,7 @@ class ReportForm(Base):
         enum_check("report_forms", "digest_algo", DigestAlgo),
         Index("ix_report_forms_applicant_created", "applicant_id", text("created_at DESC")),
         Index("ix_report_forms_status", "status"),
+        Index("ix_report_forms_archive_at", "archive_at"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
@@ -67,6 +78,9 @@ class ReportForm(Base):
     idempotency_key: Mapped[str | None] = mapped_column(Text)
     # 乐观锁计数器（与 signatures.version 是两回事）
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # S5-6：归档不可逆；两列同进同出，归档号 AR-YYYY-NNNN
+    archive_no: Mapped[str | None] = mapped_column(Text)
+    archive_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

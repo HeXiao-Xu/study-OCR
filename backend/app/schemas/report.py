@@ -72,6 +72,9 @@ class ReportOut(BaseModel):
     digest_algo: str | None
     digest_hex: str | None
     submitted_at: datetime | None
+    # S5-6：归档号/归档时间（未归档为 None）；列表与详情共用同一输出形状
+    archive_no: str | None = None
+    archive_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     items: list[ReportItemOut] = Field(default_factory=list)

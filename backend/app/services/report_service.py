@@ -475,6 +475,8 @@ def _report_out(
         digest_algo=form.digest_algo,
         digest_hex=form.digest_hex,
         submitted_at=form.submitted_at,
+        archive_no=form.archive_no,
+        archive_at=form.archive_at,
         created_at=form.created_at,
         updated_at=form.updated_at,
         items=[ReportItemOut.model_validate(item) for item in items],
