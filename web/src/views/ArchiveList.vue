@@ -5,12 +5,15 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import { exportArchiveBlob, getReport, listArchivedReports } from '../api/reports'
+import { decryptReport, getFinanceDetail, getPreviewFileBlob, verifyReport } from '../api/finance'
 import { ApiError } from '../api/http'
 import type { ReportDetail, ReportOut } from '../types/report'
+import { useUserStore } from '../stores/user'
 import { formatDateTime, formatMoney } from '../utils/format'
 
 const route = useRoute()
 const router = useRouter()
+const store = useUserStore()
 
 const rows = ref<ReportOut[]>([])
 const total = ref(0)
@@ -27,6 +30,10 @@ const filters = ref({
 const drawerOpen = ref(false)
 const detail = ref<ReportDetail | null>(null)
 const detailLoading = ref(false)
+
+const previewLoading = ref(false)
+const previewError = ref('')
+const imageUrls = ref<Record<number, string>>({})
 
 const exportOpen = ref(false)
 const exportTarget = ref<ReportOut | null>(null)
@@ -69,6 +76,8 @@ function goPage(next: number): void {
 
 async function openDetail(row: ReportOut): Promise<void> {
   drawerOpen.value = true
+  clearImages()
+  previewError.value = ''
   detail.value = null
   detailLoading.value = true
   try {
@@ -84,6 +93,32 @@ function openExport(row: ReportOut): void {
   exportTarget.value = row
   passphrase.value = ''
   exportOpen.value = true
+}
+
+async function loadArchivedImages(): Promise<void> {
+  if (!detail.value || previewLoading.value) return
+  previewLoading.value = true
+  previewError.value = ''
+  try {
+    const finance = await getFinanceDetail(detail.value.report.id)
+    const verified = await verifyReport(detail.value.report.id)
+    const preview = await decryptReport(detail.value.report.id, verified.verify_token)
+    const urls: Record<number, string> = {}
+    for (const attachment of finance.attachments) {
+      const blob = await getPreviewFileBlob(preview.preview_token, attachment.file_id)
+      urls[attachment.file_id] = URL.createObjectURL(blob)
+    }
+    imageUrls.value = urls
+  } catch (cause) {
+    previewError.value = cause instanceof ApiError ? cause.message : '影像解密失败'
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+function clearImages(): void {
+  for (const url of Object.values(imageUrls.value)) URL.revokeObjectURL(url)
+  imageUrls.value = {}
 }
 
 async function doExport(): Promise<void> {
@@ -178,7 +213,7 @@ watch(
       @current-change="goPage"
     />
 
-    <el-drawer v-model="drawerOpen" title="归档详情" size="46%">
+    <el-drawer v-model="drawerOpen" title="归档详情" size="46%" @closed="clearImages">
       <div v-loading="detailLoading">
         <template v-if="detail">
           <el-descriptions :column="2" border size="small">
@@ -201,6 +236,24 @@ watch(
             </el-table-column>
             <el-table-column prop="remark" label="备注" />
           </el-table>
+          <h4 class="section">影像（仅财务可解密）</h4>
+          <template v-if="store.role === 'reviewer'">
+            <el-button type="primary" plain :loading="previewLoading" @click="loadArchivedImages">
+              验签并解密查看影像
+            </el-button>
+            <el-alert v-if="previewError" type="error" :closable="false" show-icon :title="previewError" />
+            <div v-if="Object.keys(imageUrls).length" class="archive-images">
+              <el-image
+                v-for="(url, fileId) in imageUrls"
+                :key="fileId"
+                :src="url"
+                fit="contain"
+                class="archive-image"
+              />
+            </div>
+          </template>
+          <p v-else class="muted">归档后影像为密文；如需查看，请财务审核人登录后在“归档检索”中解密查看。</p>
+
           <h4 class="section">签名</h4>
           <el-descriptions v-if="detail.signature" :column="2" border size="small">
             <el-descriptions-item label="算法">{{ detail.signature.algo }}</el-descriptions-item>
@@ -256,6 +309,23 @@ watch(
 }
 .section {
   margin: 16px 0 8px;
+}
+.archive-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+.archive-image {
+  width: 240px;
+  height: 170px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+.muted {
+  font-size: 12px;
+  color: #94a3b8;
 }
 .dialog-tip {
   margin: 0 0 10px;

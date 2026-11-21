@@ -171,7 +171,7 @@ async function loadImage(): Promise<void> {
   } catch (cause) {
     imageError.value =
       cause instanceof ApiError && cause.status === 409
-        ? '影像暂不可用（加密链路待 S4）'
+        ? '影像已加密：提交后只能在财务审核中验签解密查看'
         : '影像加载失败'
   }
   try {
