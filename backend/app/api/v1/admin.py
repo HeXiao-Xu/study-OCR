@@ -14,7 +14,12 @@ from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
 from app.core.exceptions import ok
 from app.models.users import User
-from app.schemas.archive import ArchiveData, ArchiveRequest
+from app.schemas.archive import (
+    AdminReportItem,
+    AdminReportQuery,
+    ArchiveData,
+    ArchiveRequest,
+)
 from app.schemas.audit import AuditListQuery, AuditLogOut, AuditVerifyData
 from app.schemas.common import Envelope, PageResult
 from app.services import archive_service, audit
@@ -46,6 +51,18 @@ def verify_audit_chain(db: Session = Depends(get_db)) -> dict:
             reason=result.reason,
         )
     )
+
+
+@router.get(
+    "/reports",
+    response_model=Envelope[PageResult[AdminReportItem]],
+    summary="管理端归档工作台（approved / archived）",
+)
+def list_admin_reports(
+    query: Annotated[AdminReportQuery, Query()],
+    db: Session = Depends(get_db),
+) -> dict:
+    return ok(archive_service.list_admin_reports(db, query))
 
 
 @router.post(

@@ -360,6 +360,38 @@ def test_search_filters(client, session_factory, storage, actors) -> None:
     assert by_date.json()["data"]["total"] == 2
 
 
+def test_admin_report_workbench(
+    client, session_factory, storage, actors
+) -> None:
+    report_id = _approved(client, session_factory, storage, actors)
+
+    pending = client.get(
+        f"{BASE}/admin/reports", params={"status": "approved"}, headers=_auth(actors["ada"])
+    )
+    assert pending.status_code == 200, pending.text
+    items = pending.json()["data"]["items"]
+    assert [item["report_id"] for item in items] == [report_id]
+    assert items[0]["applicant_name"] == "A"
+    assert items[0]["status"] == "approved"
+
+    assert (
+        client.get(
+            f"{BASE}/admin/reports",
+            params={"status": "approved"},
+            headers=_auth(actors["rita"]),
+        ).status_code
+        == 403
+    )
+
+    archived = _archive(client, actors, report_id).json()["data"]
+    done = client.get(
+        f"{BASE}/admin/reports", params={"status": "archived"}, headers=_auth(actors["ada"])
+    )
+    assert done.status_code == 200
+    row = done.json()["data"]["items"][0]
+    assert (row["report_id"], row["archive_no"]) == (report_id, archived["archive_no"])
+
+
 # --------------------------------------------------------------------------- #
 # 导出
 # --------------------------------------------------------------------------- #

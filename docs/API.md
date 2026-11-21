@@ -611,6 +611,13 @@
 
 ## 7. 审计（S4-7）
 
+### GET /api/v1/admin/reports
+- 权限：`admin` ｜ 类型：同步（分页）｜ 幂等：是 ｜ 实现：S5-6（管理端归档工作台）
+- 入参：`status`（`approved`｜`archived`，省略=两者都查）、`q`（单号/申请人）、`page`、`page_size`、`sort_by`（`submitted_at`｜`archive_at`）、`order`
+- 出参：**200**，`data = {items: [{report_id, report_no, applicant_name, status, total_amount, item_count, submitted_at, archive_no, archive_at}], total, page, page_size}`
+- 错误：`403/40301`（非 admin）
+- 备注：admin 的常规业务读取仍是 404，本接口是**归档工作台**专用（只读元数据，不含明细/密文/明文）；供前端"待归档 / 已归档"页使用
+
 ### POST /api/v1/admin/reports/{id}/archive
 - 权限：`admin` ｜ 类型：同步 ｜ 幂等：否（归档不可逆，重复归档 409）｜ 实现：S5-6
 - 入参（JSON）：

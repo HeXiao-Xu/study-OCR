@@ -5,11 +5,14 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_serializer, model_validator
 
 from app.schemas.common import PageParams
+from app.schemas.report import money_text
 
 __all__ = [
+    "AdminReportItem",
+    "AdminReportQuery",
     "ArchiveData",
     "ArchiveExportRequest",
     "ArchiveRequest",
@@ -58,3 +61,26 @@ class ArchiveExportRequest(BaseModel):
     """口令只用于本次加密；不进日志、不回显。"""
 
     passphrase: str = Field(min_length=8, max_length=128)
+
+
+class AdminReportQuery(PageParams):
+    """管理端归档工作台：看 approved（待归档）或 archived（已归档）。"""
+
+    status: Literal["approved", "archived"] | None = None
+    q: str | None = Field(default=None, max_length=100)
+
+
+class AdminReportItem(BaseModel):
+    report_id: int
+    report_no: str
+    applicant_name: str
+    status: str
+    total_amount: Decimal
+    item_count: int
+    submitted_at: datetime | None
+    archive_no: str | None = None
+    archive_at: datetime | None = None
+
+    @field_serializer("total_amount", when_used="json")
+    def _serialize_total(self, value: Decimal) -> str:
+        return money_text(value) or "0.00"

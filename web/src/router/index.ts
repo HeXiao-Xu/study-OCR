@@ -71,6 +71,30 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '上传票据', roles: ['submitter'] },
       },
       {
+        path: 'reports',
+        name: 'reports',
+        component: () => import('../views/ReportList.vue'),
+        meta: { title: '我的报销单', roles: ['submitter'] },
+      },
+      {
+        path: 'reports/:id',
+        name: 'report-detail',
+        component: () => import('../views/ReportDetail.vue'),
+        meta: { title: '报销单详情', roles: ['submitter', 'reviewer'] },
+      },
+      {
+        path: 'archive',
+        name: 'archive',
+        component: () => import('../views/ArchiveList.vue'),
+        meta: { title: '归档检索', roles: ['submitter', 'reviewer'] },
+      },
+      {
+        path: 'admin/archive',
+        name: 'admin-archive',
+        component: () => import('../views/AdminArchive.vue'),
+        meta: { title: '归档管理', roles: ['admin'] },
+      },
+      {
         // S3-9 起 reviewer 队列 = "提交人已确认、等待二审"的票据（review_status=pending）
         path: 'review',
         redirect: '/invoices?review_status=pending',

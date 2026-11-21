@@ -29,7 +29,7 @@ from app.models.report_forms import ReportForm
 from app.models.report_items import ReportItem
 from app.models.signatures import Signature
 from app.models.users import User
-from app.schemas.archive import ArchiveData, ArchiveSearchQuery
+from app.schemas.archive import AdminReportItem, AdminReportQuery, ArchiveData, ArchiveSearchQuery
 from app.schemas.common import PageResult
 from app.schemas.report import ReportOut
 from app.services.audit import append_audit
@@ -45,6 +45,11 @@ _ARCHIVE_SORT = {
     "archive_at": ReportForm.archive_at,
     "total_amount": ReportForm.total_amount,
     "submitted_at": ReportForm.submitted_at,
+}
+
+_ADMIN_SORT = {
+    "submitted_at": ReportForm.submitted_at,
+    "archive_at": ReportForm.archive_at,
 }
 
 
@@ -172,6 +177,56 @@ def search_reports(
     ]
     return PageResult[ReportOut](
         items=items,
+        total=result.total,
+        page=result.page,
+        page_size=result.page_size,
+    )
+
+
+def list_admin_reports(
+    db: Session, query: AdminReportQuery
+) -> PageResult[AdminReportItem]:
+    """管理端归档工作台：approved（待归档）/ archived（已归档）；admin 专用。"""
+    stmt = select(ReportForm, User.real_name, User.username).join(
+        User, User.id == ReportForm.applicant_id
+    )
+    if query.status is not None:
+        stmt = stmt.where(ReportForm.status == query.status)
+    else:
+        stmt = stmt.where(ReportForm.status.in_(["approved", "archived"]))
+    if query.q:
+        pattern = escape_like(query.q)
+        stmt = stmt.where(
+            (ReportForm.report_no.ilike(pattern, escape="\\"))
+            | (User.username.ilike(pattern, escape="\\"))
+            | (User.real_name.ilike(pattern, escape="\\"))
+        )
+
+    result = paginate(
+        db,
+        stmt,
+        ReportForm,
+        _ADMIN_SORT,
+        query,
+        default="submitted_at",
+        scalar=False,
+        nulls_last=True,
+    )
+    return PageResult[AdminReportItem](
+        items=[
+            AdminReportItem(
+                report_id=form.id,
+                report_no=form.report_no,
+                applicant_name=real_name or username,
+                status=form.status,
+                total_amount=form.total_amount,
+                item_count=form.item_count,
+                submitted_at=form.submitted_at,
+                archive_no=form.archive_no,
+                archive_at=form.archive_at,
+            )
+            for form, real_name, username in result.items
+        ],
         total=result.total,
         page=result.page,
         page_size=result.page_size,

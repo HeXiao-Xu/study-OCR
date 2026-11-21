@@ -1,7 +1,7 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-21 20:45（S5-7 完成，**阶段 5 已收口**；下一步 S6-1）
+> 最后更新：2026-11-21 22:20（S5-7 + 前端页面补全完成，**阶段 5 已收口**；下一步 S6-1）
 
 ## 1. 一句话现状
 
@@ -152,6 +152,10 @@ backend/app/services/archive_service.py ← S5-6 归档 / 归档检索 / 口令�
 backend/app/crypto/archive_crypto.py   ← S5-6 归档包容器（PBKDF2 + AES-GCM）
 scripts/open_archive.py                ← S5-6 归档包解开脚本
 scripts/e2e_demo.py                    ← S5-7 端到端演示（打印 trace_id）
+web/src/views/ReportList.vue           ← 我的报销单（列表/新建）
+web/src/views/ReportDetail.vue         ← 报销单详情（明细/签名/提交）
+web/src/views/ArchiveList.vue          ← 归档检索 + 导出包下载
+web/src/views/AdminArchive.vue         ← 管理端归档工作台
 backend/app/services/preview_service.py ← S5-4 临时预览（previews/ + TTL 清理）
 backend/app/services/credential_store.py ← verify/preview 凭据（Redis + 内存实现）
 backend/app/utils/time.py              ← 业务日换算唯一入口（business_day_bounds）
@@ -165,7 +169,7 @@ backend/app/ocr/               ← 预处理 / 检测识别适配器 / 版面 / 
 backend/app/crypto/            ← 阶段 4 全部产物 + S5-2 的 key_loader.py：
   canonical.py  signature.py  envelope.py  keystore.py  certs.py  key_loader.py
   sm/{sm3,sm2,sm4}.py        rsa_layer.py  aesgcm_layer.py  provider.py
-backend/tests/                 ← 默认 751 条；`test_crypto/` 287 条；集成用例 `-m integration` **355** 条（含 S5-1 25 + S5-2 19 + S5-3 12 + S5-4 13 + S5-5 12 + S5-6 11 + S5-7 4）
+backend/tests/                 ← 默认 751 条；`test_crypto/` 287 条；集成用例 `-m integration` **356** 条（含 S5-1 25 + S5-2 19 + S5-3 12 + S5-4 13 + S5-5 12 + S5-6 11 + S5-7 4）
 scripts/                       ← 根目录统一放脚本：
   openssl.sh / openssl.ps1 / _openssl_docker.sh     ← Docker 内 OpenSSL 3.5.9（D-078）
   keygen.py / ca_init.sh / unlock_key.py            ← 密钥与证书（S4-5/S4-6；S5-2 起 `issue … server`）
@@ -178,7 +182,7 @@ docs/{SCHEMA.md,API.md,PROGRESS.md,DECISIONS.md,EVAL.md,UI_TEST_FLOW.md} + docs/
 
 ## 4. 指标（实测汇总，论文口径）
 
-**当前基线（2026-11-21）**：默认单测 **756 passed**；集成 **355 passed**（需 Docker）；
+**当前基线（2026-11-21）**：默认单测 **756 passed**；集成 **356 passed**（需 Docker）；
 `tests/test_crypto` **287 passed**；`app/crypto` 行覆盖 **94%**；`alembic check` 零差异（head 0009）。
 
 | 主题 | 关键数字 | 来源 |
@@ -209,6 +213,7 @@ docs/{SCHEMA.md,API.md,PROGRESS.md,DECISIONS.md,EVAL.md,UI_TEST_FLOW.md} + docs/
 | S5-5 审核决策 | approve 需 verify_token+签名 ok；token 复用/跨单/重复决策/版本冲突全 409；reject 必填意见并置签名 `void`；并发恰好 1 成功；`review_logs` 只 1 行 | `tests/test_decision.py`（12 条集成） |
 | S5-6 归档 | `AR-2026-0001`；confirm 缺失 42202；重复/非 approved 409；归档后修改 409；检索命中；导出 2873B、解出 4 成员（BOM+canonical 一致、无影像）；脚本 exit 0 | `tests/test_archive.py`（11 集成）+ `test_archive_crypto.py`（5 纯函数） |
 | S5-7 e2e | 全链路 13 步全 200；异常码 401/403/409/422 与 API.md 一致；并发 approve 1 成功 1 冲突；密文非明文/无 bytea/信封 sha256 匹配；demo 退出 0 | `tests/test_e2e_flow.py`（4 集成）+ `scripts/e2e_demo.py` |
+| 前端补全 | 我的报销单/详情/归档检索/管理端归档 4 个页面 + 路由菜单；`GET /admin/reports`；typecheck/build 通过 | `ReportList.vue` / `ReportDetail.vue` / `ArchiveList.vue` / `AdminArchive.vue` + `test_archive`（12 集成） |
 
 **最弱环节**：`taxi_ticket` 整单 0.200（纸面约 300px 高、字太小）、`total_amount` 约 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（D-033）。
@@ -222,7 +227,7 @@ cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)        # head=0009
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)               # 模型↔库零差异
 (cd backend && ../.venv/Scripts/python.exe -m pytest -q)                   # 751 passed（默认跳过集成）
-(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration -q)    # 355 passed（需 Docker）
+(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration -q)    # 356 passed（需 Docker）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto -q) # 287 passed（密码层）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_reports.py -m integration -q)  # 25 passed（S5-1）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_submit.py -m integration -q)   # 19 passed（S5-2）
