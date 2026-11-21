@@ -150,19 +150,19 @@ watch(() => route.query, () => void load(), { immediate: true })
     <el-alert v-if="error" type="error" :closable="false" show-icon :title="error" />
 
     <el-table v-loading="loading" :data="rows" row-key="report_id">
-      <el-table-column label="单号" width="170">
+      <el-table-column label="单号" min-width="200">
         <template #default="{ row }">
           <el-button text type="primary" @click="router.push(`/finance/pending/${row.report_id}`)">
             {{ row.report_no }}
           </el-button>
         </template>
       </el-table-column>
-      <el-table-column prop="applicant_name" label="申请人" width="110" />
+      <el-table-column prop="applicant_name" label="申请人" min-width="120" />
       <el-table-column label="金额" width="120">
         <template #default="{ row }">{{ formatMoney(row.total_amount) }}</template>
       </el-table-column>
       <el-table-column prop="item_count" label="票据数" width="80" />
-      <el-table-column label="提交时间" width="165">
+      <el-table-column label="提交时间" min-width="170">
         <template #default="{ row }">{{ formatDateTime(row.submitted_at) }}</template>
       </el-table-column>
       <el-table-column label="验签" width="100">
@@ -194,7 +194,7 @@ watch(() => route.query, () => void load(), { immediate: true })
 </template>
 
 <style scoped>
-.page-card { border-radius: 12px; }
+.page-card { border-radius: 12px; width: 100%; }
 .head { display: flex; align-items: center; justify-content: space-between; }
 .head h3 { margin: 0; }
 .sub { margin: 4px 0 0; font-size: 12px; color: #64748b; }
