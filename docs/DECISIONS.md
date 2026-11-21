@@ -1770,3 +1770,29 @@
   改 entry_hash → 断在该行；删中间行 → `prev_hash_mismatch`；**并发 50 条后 `verify ok` 且
   `count(distinct prev_hash)=50`**；HTTP 403/40301 与 422 边界齐全；`scripts/verify_chain.py`
   真库输出 `{"ok": true, "checked_count": 0, ...}`、退出码 0。
+
+---
+
+## D-082 测试向量集中化、覆盖率先行：新增 pytest-cov（测试期依赖）；跨实现走命令行脚本
+
+- **日期**：2026-11-21（S4-8）
+- **背景**：任务卡要求 `pytest --cov=app/crypto` 且行覆盖 ≥85%；环境里**没有** pytest-cov/coverage。
+  同时"自己签自己验"是循环自证，需要标准向量与一次跨实现验证。
+- **决策**：
+  1. **新增测试期依赖** `pytest-cov==7.1.0` + `coverage==7.17.4`（锁进 requirements + lock）。
+     仅测试用，不进运行时；装完 `pytest` 仍 9.2.0，全量单测/集成回归通过；
+  2. **向量集中到 `tests/test_crypto/test_vectors.py`**，每条注明出处：
+     SM3 → GB/T 32905-2016 附录 A；SM4 → GB/T 32907-2016 附录 A.1；SM2 → GB/T 32918.5-2017 附录 A.1；
+     **HMAC-SM3 没有国标向量** → 明确标 "OpenSSL 3.5 交叉向量"，不冒充国标（沿用 D-076）；
+  3. **端到端 `test_pipeline.py`**：canonical → SM3 → SM2 签名 → SM4 信封 → 解封 → 验签 → 摘要比对，
+     7 类 1 bit 篡改**断言具体错误归类**（`digest_mismatch` / `bad_signature` / `mac_mismatch`）；
+  4. **跨实现不进 pytest**：`scripts/crypto_cross_check.py` 用 OpenSSL 3.5（Docker，D-078）验我们的签名，
+     避免测试套件依赖 Docker；必须显式 `-pkeyopt distid:1234567812345678`（D-079/遗留 #88）；
+  5. **覆盖率口径**：只算 `app/crypto`（密码层），行覆盖 ≥85%；**实测 94%**（760 行缺 43）。
+     未覆盖的是防御性分支（类型/结构错误、循环引用兜底）与"指纹不一致"这类需要伪造 AAD 才可达的分支。
+- **代价/限制**：行覆盖不衡量分支/路径；没有 fuzz/属性测试（S6-4 再补）；跨实现是单向
+  （我们签 → OpenSSL 验；反向 OpenSSL 签 → 我们验已在 S4-2 用 gmssl 做过）。
+- **验证**：`pytest tests/test_crypto --cov=app/crypto` → **TOTAL 94%**
+  （certs 98 / keystore 99 / signature 98 / canonical 96 / envelope 93 / sm3 91 / sm2 90 / sm4 88）；
+  `scripts/crypto_cross_check.py` → `{"openssl_verified": true, "openssl_output": "Signature Verified Successfully"}`；
+  `pytest tests/test_crypto` 256 passed、全量单测 703、集成 259；`alembic check` 零差异。

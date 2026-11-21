@@ -6,11 +6,12 @@
 
 ## 当前状态
 
-- 阶段：**阶段 4 进行中**（S4-1 ~ S4-7 已完成，密码链路 + 审计链闭环）；下一张卡 **S4-8 密码模块单测与国标向量验证**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-7**（共 41 张卡，全部 ✅ 通过）
-- 最近完成：**S4-7 审计日志哈希链**（HMAC-SM3 链 + 行级锁 + verify-chain API/脚本；单测 667 / 集成 259 全绿）
+- 阶段：**阶段 4 进行中**（S4-1 ~ S4-8 已完成，密码链路 + 审计链 + 覆盖率收口）；下一张卡 **S4-9 RSA-OAEP+PSS 与 AES-GCM 对照实现**
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-8**（共 42 张卡，全部 ✅ 通过）
+- 最近完成：**S4-8 密码向量收口**（集中国标向量 + 端到端链路 + `app/crypto` 覆盖率 **94%**；OpenSSL 交叉验签通过）
 - 附加改动（2026-11-20）：D-069 真实横版票抽取修复、D-070 确认流程简化（去重识别/逐字段操作）、D-071 删除改硬删（仅 draft，可重传）；业务状态统一显示为 待确认/待复核/已复核（前端派生）
-- 下一步：**S4-8 密码模块单测与国标测试向量验证 ★关键**
+- 下一步：**S4-9 RSA-OAEP+PSS 与 AES-GCM 对照实现**
+- 测试期新增依赖：`pytest-cov==7.1.0` + `coverage==7.17.4`（仅测试，已锁）
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
@@ -18,7 +19,7 @@
   - `gmssl==3.2.2` + `cryptography==50.0.2`（+ `pycryptodomex==3.24.2`）已装并锁版本；numpy 1.26.4 / paddle 2.6.2 未变
   - **本机没有 openssl CLI**：统一用 `scripts/openssl.sh` / `scripts/openssl.ps1`（Docker 内 OpenSSL 3.5.9，D-078）
   - **新增必填配置 `AUDIT_HMAC_KEY`**（≥32 字符，D-081）；`backend/.env` 已本地生成，`.env.example` 已加占位符
-  - 本地领先 origin **78 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **79 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -73,7 +74,7 @@
 [x] S4-5 密钥生成与私钥口令保护 ★关键
 [x] S4-6 X.509 自建 CA 与角色证书
 [x] S4-7 审计日志哈希链 ★关键
-[ ] S4-8 密码模块单测与国标测试向量验证 ★关键
+[x] S4-8 密码模块单测与国标测试向量验证 ★关键
 [ ] S4-9 RSA-OAEP+PSS 与 AES-GCM 对照实现
 
 ## 阶段 5：报销业务闭环（M4）
@@ -104,6 +105,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S4-8 | `backend/tests/test_crypto/test_vectors.py`（集中向量：SM3 GB/T 32905、SM4 GB/T 32907、SM2 GB/T 32918.5 A.1、HMAC-SM3 OpenSSL 交叉向量、canonical 字节向量）、`backend/tests/test_crypto/test_pipeline.py`（端到端 + 7 类 1 bit 篡改）、`test_certs.py` / `test_keystore.py`（补错误分支）、`scripts/crypto_cross_check.py`（我们签名 → OpenSSL 验签）、`backend/requirements{,.lock}.txt`（`pytest-cov==7.1.0` + `coverage==7.17.4`）、`docs/{spec,plan}/s4-8-crypto-vectors.md` | ① 向量全部注明出处（GB/T 32905-2016 附录 A、GB/T 32907-2016 附录 A.1、GB/T 32918.5-2017 附录 A.1；HMAC 明确标"OpenSSL 交叉向量，非国标"）；② 端到端 `canonical → SM3 → SM2 签名 → SM4 信封 → 解封 → 验签 → 摘要比对` 通过；③ 篡改矩阵：载荷 → `digest_mismatch`、签名 1 bit/错公钥 → `bad_signature`、密文/IV/MAC/wrapped_key(C2/C3)/错收方 → `mac_mismatch`、`payload_sha256` → `digest_mismatch`；④ **OpenSSL 3.5 交叉验签**：`scripts/crypto_cross_check.py` → `{"openssl_verified": true, "openssl_output": "Signature Verified Successfully"}`（显式 `distid:1234567812345678`）；⑤ **覆盖率**：`pytest tests/test_crypto --cov=app/crypto` → **TOTAL 94%**（760 行缺 43；certs 98%、keystore 99%、signature 98%、canonical 96%、envelope 93%、sm3 91%、sm2 90%、sm4 88%），≥85% 达标；⑥ `pytest tests/test_crypto` **256 passed**、全量单测 **703 passed**、集成 **259 passed**、`alembic check` 零差异 | ✅ 通过（新增测试期依赖 D-082；向量出处可直引论文） |
 | S4-7 | `backend/app/services/audit.py`（新：`GENESIS_HASH` / `ADVISORY_LOCK_KEY=8071701` / `ChainVerification` / `payload_sha256` / `chain_hash` / `append_audit`（事务内 `pg_advisory_xact_lock` 后取链尾）/ `verify_chain`（按 id 流式复算，返回首个断点）/ `list_audit_logs`）、`backend/app/schemas/audit.py`（`AuditLogOut` / `AuditListQuery` / `AuditVerifyData`）、`backend/app/api/v1/admin.py` + `main.py`（`GET /admin/audit`、`GET /admin/audit/verify-chain`，admin 专用）、`core/config.py` + `.env.example`（新增必填 `AUDIT_HMAC_KEY` ≥32，prod 拒绝示例值）、`tasks/ocr_task.py`（`anchor_audit_task` 从占位改为每日真实复算）、`scripts/verify_chain.py`（断开退出码 1）、`backend/tests/{test_audit.py,test_audit_chain.py}`（18 单测 + 11 集成）、`docs/{spec,plan}/s4-7-audit-chain.md` | ① 3 条链：首行 `prev_hash=0×64`、逐行 prev 指向上一行 `entry_hash`；`verify ok=True, checked_count=3`；② 改中间行 `detail_json` → `ok=False, broken_at=2, broken_id=第二行, reason=entry_hash_mismatch`；③ 改 entry_hash → 断在该行（broken_at=1）；④ 删中间行 → 下一行 prev 对不上（broken_at=2, prev_hash_mismatch）；⑤ **并发 50 条**（10 线程各自事务）→ 全部成功、`verify ok`、`count(distinct prev_hash)=50`（不分叉）；⑥ 回滚不产生审计行；⑦ HTTP：admin 列表/校验 200、reviewer/submitter **403/40301**、`action=not_an_action`/`from>to`/`page=0` → **422**；⑧ `scripts/verify_chain.py` 真库输出 `{"ok": true, "checked_count": 0, ...}` 退出码 0；⑨ 单测 667 passed（646+21）、集成 259 passed（248+11）、`alembic check` 零差异（无迁移） | ✅ 通过（D-081：哈希载荷超集、payload 不落列、业务审计行留 S5） |
 | S4-6 | `backend/app/crypto/certs.py`（新：`CertStatus{ok/cert_expired/cert_not_yet_valid/cert_revoked/cert_public_key_mismatch/cert_role_mismatch}`、`CertificateInfo`、`parse_certificate`、`check_certificate`；`cryptography` 解析证书/扩展/有效期/指纹，**公钥从 DER 的 SPKI BIT STRING 取**（cryptography 不支持 SM2 公钥）；角色取自 OU）、`scripts/ca_init.sh`（`init`/`issue`/`show`/`verify`；签发时解锁私钥**经 stdin** 做 CSR，私钥不落盘）、`scripts/unlock_key.py`（`.p8.enc` → PKCS#8 PEM 仅走 stdout）、`scripts/_openssl_docker.sh`（共享 docker 封装，`openssl.sh` 瘦身复用）、`backend/tests/test_crypto/fixtures/{ca,alice,bob}.crt.pem` + 公钥（公开夹具）、`backend/tests/test_crypto/test_certs.py`（15 条）、`docs/{spec,plan}/s4-6-certs.md` | ① 夹具由真 OpenSSL 3.5 生成：`openssl x509 -text` 可见 **KeyUsage(Digital Signature, Non Repudiation, Key Encipherment)**、**EKU=clientAuth**、SKI/AKI，签名算法 **sm2sign-with-SM3（1.2.156.10197.1.501）**；② `openssl verify -CAfile ca.crt alice.crt` → **OK**；③ 运行期 `parse_certificate` 指纹与 `openssl -fingerprint -sha256` 逐字一致（`9636254f…`）；公钥提取与 `sign.pub.pem` 一致；④ `check_certificate`：正常 `ok`、`now=not_after+1s` `cert_expired`、`now=not_before-1s` `cert_not_yet_valid`、`revoked=True` `cert_revoked`（优先级最高）、错公钥 `cert_public_key_mismatch`、错角色 `cert_role_mismatch`；⑤ 真跑 `ca_init.sh init` + `issue alice submitter`：证书签发成功、**公钥一致性自检通过**、`secrets/certs/` 只有 `alice.crt.pem`、无临时密钥文件；⑥ `pytest tests/test_crypto` **220 passed**（205+15），全量 **646 passed**（631+15），`alembic check` 零差异 | ✅ 通过（D-080：不做链验签的边界、stdin 签发、OU 取角色；证书落库属 S5） |
 | S4-5 | `backend/app/crypto/keystore.py`（新：`EncryptedPrivateKey`（frozen/extra=forbid、iterations≥200000）、`KeyPair`、`KeystoreError`、`derive_kek`、`key_fingerprint`、`private_key_hex_from_pkcs8`（DER 原语解析）、`wrap_private_key`/`unwrap_private_key`/`load_keypair`；PBKDF2-HMAC-SHA256+AES-256-GCM，AAD 绑定元数据；解锁失败统一"口令错误"）、`backend/app/crypto/sm/sm2.py`（追加 `public_key_from_private`）、`scripts/keygen.py`（OpenSSL 生成 → 加锁 → 解锁 → 签名自检；临时 PEM 即删；口令只走 env/getpass）、`backend/tests/test_crypto/test_keystore.py`（22 条）+ `test_sm2.py`（+2）、`docs/{spec,plan}/s4-5-keystore.md` | ① 真 OpenSSL 3.5 生成：`genpkey -algorithm SM2` → PKCS#8，`pkey -pubout` 与 `dG` 推导**逐字节一致**；② `keygen.py` 全链路：产物只有 `sign.p8.enc`（498B JSON 密文）与 `sign.pub.pem`，**无临时 PEM 残留**；自检"解锁+签名+验签"通过；③ **OpenSSL 独立验签**：`pkeyutl -verify -rawin -digest sm3 -pkeyopt distid:1234567812345678` → `Signature Verified Successfully`（不传 distid 失败，见遗留 #88）；④ 错误口令 → `KeystoreError("口令错误")`；篡改密文/盐/nonce/iterations（AAD）→ 同一错误；空/7 字符口令 → `ValueError`；⑤ PKCS#8 解析拒绝非法 DER/31B 标量/越界标量；⑥ 模型 frozen/extra=forbid/iterations 下限/key_fp 格式；⑦ `key_fp = SHA-256(0x04‖X‖Y)`，128/130 hex 同指纹；⑧ `pytest tests/test_crypto` **205 passed**（181+24），全量 **631 passed**（607+24），`alembic check` 零差异（无迁移）；⑨ `backend/` 无任何真实私钥材料（`BEGIN PRIVATE KEY` 仅出现在文档说明；`secrets/` 未入库） | ✅ 通过（D-079：密钥生成/口令保护口径；`key_records` 落库属 S5） |
@@ -275,6 +277,18 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 ## 变更日志
 
 ### 2026-11-21
+
+- **S4-8 完成**：密码模块单测与国标向量收口。
+  · 集中向量 `test_vectors.py`：SM3（GB/T 32905 附录 A 三条）、SM4（GB/T 32907 A.1 单块）、
+    SM2（GB/T 32918.5 A.1 固定 k 复现 r/s）、HMAC-SM3（明确标注"OpenSSL 交叉向量，非国标"）、
+    canonical 字节向量；
+  · 端到端 `test_pipeline.py`：canonical → SM3 → 签名 → 信封 → 解封 → 验签 → 摘要比对，
+    **7 类 1 bit 篡改**全部断言具体错误归类；
+  · 跨实现：`scripts/crypto_cross_check.py` 用 OpenSSL 3.5 验证我们的签名 →
+    `Signature Verified Successfully`（显式 distid）；
+  · 覆盖率：`app/crypto` **94%**（760 行缺 43），certs 98% / keystore 99%；新增测试期依赖
+    `pytest-cov==7.1.0` + `coverage==7.17.4`（D-082）；
+  · 单测 703 / 集成 259 全绿。
 
 - **S4-7 完成**：审计日志哈希链。
   · `services/audit.py`：`entry_hash = HMAC-SM3(key, canonical_json({prev_hash, ts, actor_id,

@@ -192,3 +192,52 @@ def test_check_certificate_requires_timezone_aware_now() -> None:
             expected_public_key_hex=ALICE_PUBLIC_KEY_HEX,
             now=datetime(2027, 1, 1, 0, 0, 0),
         )
+
+# ---------------------------------------------------------------- 错误分支（覆盖率）
+
+
+def test_parse_certificate_accepts_str_and_bytearray() -> None:
+    info_bytes = parse_certificate(bytearray(ALICE_PEM))
+    info_str = parse_certificate(ALICE_PEM.decode("ascii"))
+
+    assert info_bytes.fingerprint_sha256 == info_str.fingerprint_sha256 == ALICE_FINGERPRINT
+
+
+def test_parse_certificate_rejects_non_ascii_str_and_wrong_type() -> None:
+    with pytest.raises(ValueError):
+        parse_certificate("证书不是 ASCII")
+
+    with pytest.raises(TypeError):
+        parse_certificate(123)  # type: ignore[arg-type]
+
+
+def test_public_key_extraction_rejects_broken_structures() -> None:
+    from Cryptodome.Util.asn1 import DerObjectId, DerOctetString, DerSequence
+
+    from app.crypto.certs import _public_key_hex_from_cert_der
+
+    with pytest.raises(ValueError):
+        _public_key_hex_from_cert_der(b"\x30\x00")  # tbsCertificate 不存在
+
+    # tbs 里第 6 项不是 SEQUENCE（走跳过分支）
+    shallow = DerSequence([1, 2, 3, 4, 5, DerOctetString(b"x")]).encode()
+    with pytest.raises(ValueError):
+        _public_key_hex_from_cert_der(DerSequence([shallow]).encode())
+
+    # 第 6 项是 SEQUENCE 但第二项不是 BIT STRING（走解析失败分支）
+    not_spki = DerSequence([DerObjectId("1.2.840.10045.2.1"), DerOctetString(b"x")]).encode()
+    with pytest.raises(ValueError):
+        _public_key_hex_from_cert_der(
+            DerSequence([DerSequence([1, 2, 3, 4, 5, not_spki])]).encode()
+        )
+
+
+def test_expected_public_key_validation_errors() -> None:
+    with pytest.raises(TypeError):
+        check_certificate(ALICE_PEM, expected_public_key_hex=123)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError):
+        check_certificate(ALICE_PEM, expected_public_key_hex="a" * 130)  # 130 位但不是 04 开头
+
+    with pytest.raises(ValueError):
+        check_certificate(ALICE_PEM, expected_public_key_hex="zz" * 64)

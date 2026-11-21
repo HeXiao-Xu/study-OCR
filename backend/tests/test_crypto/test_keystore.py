@@ -227,3 +227,77 @@ def test_records_for_different_keys_do_not_interchange() -> None:
 
     with pytest.raises(KeystoreError):
         load_keypair(other, "another-pass-3")
+
+# ---------------------------------------------------------------- 错误分支（覆盖率）
+
+
+def test_derive_kek_rejects_bad_salt_and_types() -> None:
+    with pytest.raises(TypeError):
+        derive_kek(PASSPHRASE, "not-bytes")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError):
+        derive_kek(PASSPHRASE, b"short")
+
+    with pytest.raises(TypeError):
+        derive_kek(PASSPHRASE, b"\x00" * 16, iterations=True)  # type: ignore[arg-type]
+
+
+def test_pkcs8_parse_rejects_wrong_ec_version_and_zero_scalar() -> None:
+    from Cryptodome.Util.asn1 import DerObjectId, DerOctetString, DerSequence
+
+    algorithm = DerSequence(
+        [DerObjectId("1.2.840.10045.2.1"), DerObjectId("1.2.156.10197.1.301")]
+    )
+    bad_version = DerSequence([2, DerOctetString(bytes.fromhex(VECTOR_PRIVATE))])
+    wrong_der = DerSequence([0, algorithm, DerOctetString(bad_version.encode())]).encode()
+
+    with pytest.raises(ValueError):
+        private_key_hex_from_pkcs8(wrong_der)
+
+    with pytest.raises(ValueError):
+        private_key_hex_from_pkcs8(_build_pkcs8("00" * 32))
+
+
+def test_wrap_rejects_empty_or_non_bytes_der() -> None:
+    with pytest.raises(ValueError):
+        wrap_private_key(b"", PASSPHRASE)
+
+    with pytest.raises(TypeError):
+        wrap_private_key("not-bytes", PASSPHRASE)  # type: ignore[arg-type]
+
+
+def test_unwrap_rejects_wrong_record_type() -> None:
+    with pytest.raises(TypeError):
+        unwrap_private_key("not-a-record", PASSPHRASE)  # type: ignore[arg-type]
+
+
+def test_unwrap_rejects_bad_salt_length_and_bad_base64() -> None:
+    record = _wrap()
+
+    with pytest.raises(KeystoreError):
+        unwrap_private_key(record.model_copy(update={"salt_b64": _b64(b"short")}), PASSPHRASE)
+
+    with pytest.raises(KeystoreError):
+        unwrap_private_key(record.model_copy(update={"salt_b64": "!!!"}), PASSPHRASE)
+
+
+def test_passphrase_must_be_str() -> None:
+    with pytest.raises(TypeError):
+        wrap_private_key(STD_DER, b"bytes-pass-123")  # type: ignore[arg-type]
+
+
+def test_key_fingerprint_validation_errors() -> None:
+    with pytest.raises(TypeError):
+        key_fingerprint(123)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError):
+        key_fingerprint("a" * 130)  # 130 位但不是 04 开头
+
+    with pytest.raises(ValueError):
+        key_fingerprint("zz" * 64)
+
+
+def test_wrap_accepts_bytearray_der() -> None:
+    record = wrap_private_key(bytearray(STD_DER), PASSPHRASE)
+
+    assert unwrap_private_key(record, PASSPHRASE) == STD_DER

@@ -1,14 +1,14 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-21 15:45（阶段 4：S4-1 ~ S4-7 完成；开新会话用）
+> 最后更新：2026-11-21 16:05（阶段 4：S4-1 ~ S4-8 完成；开新会话用）
 
 ## 1. 一句话现状
 
 **阶段 3 已完成**（S3-1 ~ S3-8 + 补充卡 S3-9）；**阶段 4 进行中**：S4-1（canonical + SM3）、
 S4-2（SM2 签名）、S4-3（SM4 EtM）、S4-4（数字信封）、S4-5（密钥与口令保护）、S4-6（CA 与角色证书）、
-S4-7（审计哈希链）已完成；密码链路 + 审计链闭环。
-**下一步：S4-8 密码模块单测与国标测试向量验证 ★关键**（收口阶段 4）。
+S4-7（审计哈希链）、S4-8（向量与覆盖率收口）已完成；密码链路 + 审计链闭环，`app/crypto` 行覆盖 94%。
+**下一步：S4-9 RSA-OAEP+PSS 与 AES-GCM 对照实现**（阶段 4 最后一张）。
 
 当前浏览器可走通（`http://127.0.0.1:5173`）：
 
@@ -76,6 +76,9 @@ scripts/openssl.sh / .ps1        ← D-078：宿主机没有 openssl，用 Docke
 backend/app/services/audit.py    ← S4-7：审计哈希链（append/verify/list；咨询锁串行；canonical 载荷）
 backend/app/api/v1/admin.py      ← S4-7：GET /admin/audit + /admin/audit/verify-chain（admin）
 scripts/verify_chain.py          ← S4-7：命令行全链校验（断链退出码 1）
+backend/tests/test_crypto/test_vectors.py   ← S4-8：集中国标向量（注明出处）
+backend/tests/test_crypto/test_pipeline.py  ← S4-8：端到端 + 7 类 1 bit 篡改
+scripts/crypto_cross_check.py    ← S4-8：我们签名 → OpenSSL 验签（显式 distid）
 backend/app/services/repository.py  ← S2-3：行级隔离（策略表 + filter_visible + get_visible_or_404，deny-by-default）
 backend/app/services/pagination.py  ← S2-4：分页/排序协议（PageParams/PageResult、白名单排序、同一 stmt 求 total）
 backend/app/services/invoice_service.py  ← S2-5/S3-9：建草稿/状态机/列表/详情/**硬删**/字段修改/复核
@@ -160,6 +163,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S4-5 密钥库 | OpenSSL 生成 PKCS#8 → `dG` 与 `pkey -pubout` 逐字节一致；产物只有 `.p8.enc`（498B 密文 JSON）+ `.pub.pem`；自检解锁+签名+验签通过；**OpenSSL 独立验签成功**（`-pkeyopt distid:1234567812345678`）；错误口令/篡改密文/盐/迭代全失败；`key_fp=SHA-256(0x04‖X‖Y)` | `pytest tests/test_crypto`（205 passed，累计）+ `pytest` 631 passed |
 | S4-6 证书 | CA + 用户证书真签发；`openssl verify` **OK**；`x509 -text` 含 KeyUsage(DS/NR/KE)、EKU=clientAuth、SKI/AKI、签名算法 `sm2sign-with-SM3`；运行期指纹与 openssl 一致；过期/未生效/吊销/错公钥/错角色五类判定齐全；签发后公钥一致性自检通过，无临时密钥文件 | `pytest tests/test_crypto`（220 passed，累计）+ `pytest` 646 passed |
 | S4-7 审计链 | 3 条链 prev 逐行相连、创世 0×64；改 detail → `broken_at=2/entry_hash_mismatch`；改 entry_hash → 断在该行；删中间行 → `prev_hash_mismatch`；**并发 50 条后 verify ok 且 distinct prev=50**；HTTP 403/40301、422 边界；`scripts/verify_chain.py` 真库 `{"ok": true, "checked_count": 0}` 退出码 0 | 单测 667 passed + 集成 259 passed |
+| S4-8 向量与覆盖 | 集中国标向量（GB/T 32905 / 32907 / 32918.5）+ HMAC 交叉向量；端到端链路 + 7 类篡改全部命中具体错误码；OpenSSL 3.5 验我们的签名 → `Signature Verified Successfully`（distid）；**`app/crypto` 行覆盖 94%**（certs 98 / keystore 99 / sm4 88 等） | `pytest tests/test_crypto --cov=app/crypto`：256 passed，TOTAL 94% |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -172,11 +176,15 @@ cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
 (cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 365 passed（默认跳过集成）
 (cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 169 passed（需 Docker）
-# S4-1 ~ S4-7 密码封装 + 审计链（离线/连库）：单测 667、集成 259
+# S4-1 ~ S4-8 密码封装 + 审计链（离线/连库）：单测 703、集成 259
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto -q)        # 220（密码封装）
 (cd backend && ../.venv/Scripts/python.exe -m pytest -q)                          # 667（默认跳过集成）
 (cd backend && ../.venv/Scripts/python.exe -m pytest -m integration -q)           # 259（需 Docker）
 # 审计链校验（读 backend/.env → 全链复算；断链退出码 1）
+# 密码层覆盖率（任务卡验收：≥85%；实测 94%）
+(cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto --cov=app/crypto --cov-report=term-missing -q)
+# 跨实现：我们签名 → OpenSSL 3.5 验签（需 Docker；显式 distid）
+.venv/Scripts/python.exe scripts/crypto_cross_check.py
 .venv/Scripts/python.exe scripts/verify_chain.py
 curl -s localhost:8000/api/v1/admin/audit/verify-chain -H "Authorization: Bearer <admin-token>"
 # 生成密钥（OpenSSL 在 Docker 里跑；口令只走环境变量/交互，不进命令行历史）
@@ -325,32 +333,31 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-079 | 私钥口令保护：OpenSSL 生成 PKCS#8 → PBKDF2-HMAC-SHA256(200k,16B 盐)→AES-256-GCM，AAD 绑元数据；`key_fp=SHA-256(0x04‖X‖Y)`；解锁失败统一"口令错误"；`key_records` 落库属 S5（SCHEMA 无 key_fp/status 列） |
 | D-080 | 证书：OpenSSL 签发（CSR 经 stdin，私钥不落盘）；**运行期不做链验签**（只指纹/有效期/公钥/吊销/OU 角色）；角色取自 OU（SCHEMA 无 role 列）；失败取值 `cert_expired/cert_not_yet_valid/cert_revoked/cert_public_key_mismatch/cert_role_mismatch` |
 | D-081 | 审计链：HMAC-SM3 绑**全部**审计字段（比 SCHEMA 公式多 `actor_role`/`target_type`）；`payload_sha256` 不落列、从 detail 重算；`ts` 用 Python 显式 UTC；咨询锁常量 8071701；**业务审计行留 S5**（#21/#27/#54/#61 已重定向）；"锚定"=每日复算，无外部锚 |
+| D-082 | 测试向量集中（注明出处、不冒充国标）；新增测试期依赖 `pytest-cov==7.1.0`+`coverage==7.17.4`；`app/crypto` 行覆盖 **94%**（crypto 测试 256 条）；跨实现走命令行脚本（不进 pytest） |
 
-## 7. 下一步：S4-8 密码模块单测与国标测试向量验证（★关键，阶段 4 收口）
+## 7. 下一步：S4-9 RSA-OAEP+PSS 与 AES-GCM 对照实现（阶段 4 最后一张）
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章 S4-8；
-- 流程（AGENTS §11）：spec（`docs/spec/s4-8-*.md`）→ plan → 写码（用户已授权"不逐步确认"）；
-- **本卡是收口卡**：`test_vectors.py` + `test_pipeline.py`，把"自己签自己验"升级为"标准向量 + 跨实现 + 端到端"；
-- **S4-8 范围**（任务卡原文）：
-  1. **SM3**：GB/T 32905 附录向量（`abc` → `66c7f0f4…` 等；出处写进测试注释）；
-  2. **SM4**：GB/T 32907 示例密钥/明文**单块加密**向量（已有，确认口径）；
-  3. **SM2**：确定性摘要 + 随机 k + 验签成功/失败/篡改；**与 OpenSSL 命令行交叉验证一次**
-     （`scripts/openssl.sh pkeyutl -verify -rawin -digest sm3 -pkeyopt distid:1234567812345678`，遗留 #88）；
-  4. **端到端链路**：`canonical_json → SM3 → SM2 签名 → SM4 加密 → 信封 → 解封 → 验签`，
-     含 **1 bit 篡改**用例（改 payload 后验签失败）；
-  5. **覆盖率**：`pytest --cov=app.crypto --cov-report=term-missing`，行覆盖 **≥85%**，
-     把覆盖率与向量来源写进 `docs/PROGRESS.md`；
-- **现状（已具备，别重复造）**：`tests/test_crypto/` 已有 220 条（SM3/SM4/SM2 国标向量、
-  信封 2MB、密钥库、证书）；缺的是 `test_vectors.py`（集中向量清单 + 出处）与
-  `test_pipeline.py`（跨模块端到端 + 篡改）、以及 **coverage 实测**；
-- **注意**：`pytest-cov` **可能未安装**（`requirements.txt` 里没有）——加依赖要按 AGENTS §2.1 说明理由
-  并记 DECISIONS；也可先用 `coverage` 模块（若已装）或临时 `pip install pytest-cov` 并补 requirements；
-- **验收**：`pytest backend/tests/test_crypto -q --cov=app/crypto` 全绿且 **≥85%**；
-  向量出处（标准号 + 附录）写进测试与 PROGRESS；论文可直接引用。
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章 S4-9；
+- 流程（AGENTS §11）：spec（`docs/spec/s4-9-*.md`）→ plan → 写码（用户已授权"不逐步确认"）；
+- **目标**：给 S6 性能实验提供"同接口换实现"的第二套算法（**接口签名必须一致**，否则对比不成立）：
+  1. `crypto/rsa_layer.py`：RSA-2048/3072 密钥生成（`cryptography` 支持 RSA，PEM/PKCS#8）、
+     OAEP-SHA256 加密会话密钥（`encrypt_key`/`decrypt_key`）、PSS(MGF1-SHA256) 签名
+     （`sign`/`verify` —— 注意与国密层不同，这里对消息签名，内部做 SHA-256）；
+  2. `crypto/aesgcm_layer.py`：AES-256-GCM（nonce 12B、tag 16B）`encrypt/decrypt`，
+     **接口与 S4-3 的 SM4 层一致**（iv/ciphertext/tag 或等价结构）；
+  3. `crypto/provider.py`：`AlgoProvider` 协议（`keygen/sign/verify/encrypt_key/decrypt_key/wrap_symmetric`），
+     SM 与 RSA/AES 各实现一份；S5 通过配置选择，**默认国密**；
+- **坑**（任务卡原文）：接口不一致 S6 就无法公平对比；RSA-OAEP 的 hash 与 PSS 的 MGF1 **必须显式
+  SHA-256**（不同库/版本默认值不同）；RSA 只能加密 16–32B 会话密钥（CEK 正好 16B）；
+- **验收**：`pytest backend/tests/test_crypto -q -k "rsa or gcm"` 全绿；
+  对拍脚本能输出两套实现的可比耗时（例如 `scripts/crypto_bench_compare.py`：
+  同一 CEK/同一消息，SM2 vs RSA-OAEP、SM4-CBC-EtM vs AES-GCM、SM2-SM3 vs RSA-PSS，各跑 N 次给 p50/p95）；
+- **注意**：`cryptography` 已装（D-077），无需新依赖；RSA 密钥生成/加载/加解密/SHA-256 签名都用它；
+  国密层**不改**，只加对照实现；本卡也不改 `envelope.py`（S5 才按 provider 选择）。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地领先 origin **78 个 commit**（S3-1 ~ S3-9 + D-069~D-081 + S4-1~S4-7），AI 不推，由用户 `git push`；
+1. **push**：本地领先 origin **79 个 commit**（S3-1 ~ S3-9 + D-069~D-082 + S4-1~S4-8），AI 不推，由用户 `git push`；
 2. ✅ 已闭合（S4-1）：`gmssl==3.2.2` 已装并锁进 `requirements.txt` / `requirements.lock.txt`（D-073）；
    装完 numpy/paddle/paddleocr 未变、全量单测 631 passed；`cryptography==50.0.2` 已在环境与 lock，S4-4 起升为直接依赖（D-077）；
 3. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`、
