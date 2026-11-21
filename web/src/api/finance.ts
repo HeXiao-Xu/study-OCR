@@ -67,8 +67,12 @@ export async function decryptReport(
 export async function getPreviewFileBlob(
   previewToken: string,
   fileId: number,
+  page = 1,
 ): Promise<Blob> {
-  return getBlob(`/finance/preview/${previewToken}/files/${fileId}`, { silent: true })
+  return getBlob(`/finance/preview/${previewToken}/files/${fileId}`, {
+    params: { page },
+    silent: true,
+  })
 }
 
 /** 审核决策（S5-5）：approve 必须带未消费的 verify_token；reject 必须带意见。 */

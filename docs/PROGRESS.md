@@ -319,6 +319,10 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 
 ### 2026-11-21
 
+- **财务审核预览与确认页 UI 对齐（用户要求）**：新增 `components/FinanceInvoicePane.vue`，
+  复用 `ImageCanvas`（画框/缩放/拖拽/翻页）与字段表（置信度红黄底、hover 高亮、点击行→图上定位）；
+  数据用解密影像 + 票据库字段/行框；多张票逐票左右布局；PDF 按页渲染（page 参数）。
+  无头浏览器实测：canvas=1、img=1、rows=4、naturalWidth=2067。
 - **修复：财务预览的 PDF 影像显示空白**（用户实测 `RPT-202611-0016` 电子发票 PDF）：
   `GET /finance/preview/{token}/files/{id}` 原先原样返回 PDF 字节，浏览器 `<img>` 不能显示；
   现与票据详情一致，PDF 按 250DPI 渲染为 `image/png` 返回（`page` 参数可选，默认第 1 页），

@@ -3,20 +3,15 @@
  * 财务报销审核详情（S5-4/S5-5）：整页审核。
  * 验签（七步）→ 解密预览（左侧全部票面影像，右侧全部字段表）→ 通过 / 驳回。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
-import {
-  decryptReport,
-  getFinanceDetail,
-  getPreviewFileBlob,
-  reviewReport,
-  verifyReport,
-} from '../api/finance'
+import FinanceInvoicePane from '../components/FinanceInvoicePane.vue'
+import { decryptReport, getFinanceDetail, reviewReport, verifyReport } from '../api/finance'
 import { ApiError } from '../api/http'
 import type { DecryptPreview, FinanceDetail, VerifyResult } from '../types/finance'
-import { fieldLabel, formatDateTime, formatMoney, formatSize } from '../utils/format'
+import { formatDateTime, formatMoney, formatSize } from '../utils/format'
 
 interface PreviewItem {
   invoice_id: number
@@ -53,9 +48,6 @@ const decrypting = ref(false)
 const preview = ref<DecryptPreview | null>(null)
 const previewReport = computed<PreviewReport>(() => (preview.value?.fields_preview ?? {}) as PreviewReport)
 
-const imageUrls = ref<Record<number, string>>({})
-const imageErrors = ref<Record<number, string>>({})
-const imagesLoading = ref(false)
 
 const reviewing = ref(false)
 const rejectOpen = ref(false)
@@ -86,7 +78,6 @@ async function load(): Promise<void> {
   error.value = ''
   verifyResult.value = null
   preview.value = null
-  clearImages()
   try {
     detail.value = await getFinanceDetail(reportId())
   } catch (cause) {
@@ -94,12 +85,6 @@ async function load(): Promise<void> {
   } finally {
     loading.value = false
   }
-}
-
-function clearImages(): void {
-  for (const url of Object.values(imageUrls.value)) URL.revokeObjectURL(url)
-  imageUrls.value = {}
-  imageErrors.value = {}
 }
 
 async function runVerify(): Promise<void> {
@@ -115,34 +100,6 @@ async function runVerify(): Promise<void> {
   }
 }
 
-async function loadImages(items: PreviewItem[]): Promise<void> {
-  if (!preview.value) return
-  imagesLoading.value = true
-  const urls: Record<number, string> = {}
-  const errors: Record<number, string> = {}
-  try {
-    await Promise.all(
-      items.map(async (item) => {
-        const fileId = fileIdFor(item)
-        if (!fileId) {
-          errors[item.invoice_id] = '找不到附件'
-          return
-        }
-        try {
-          const blob = await getPreviewFileBlob(preview.value!.preview_token, fileId)
-          urls[item.invoice_id] = URL.createObjectURL(blob)
-        } catch (cause) {
-          errors[item.invoice_id] = cause instanceof ApiError ? cause.message : '影像加载失败'
-        }
-      }),
-    )
-    imageUrls.value = urls
-    imageErrors.value = errors
-  } finally {
-    imagesLoading.value = false
-  }
-}
-
 async function runDecrypt(): Promise<void> {
   if (!verifyResult.value) {
     ElMessage.warning('请先验签')
@@ -150,10 +107,8 @@ async function runDecrypt(): Promise<void> {
   }
   decrypting.value = true
   error.value = ''
-  clearImages()
   try {
     preview.value = await decryptReport(reportId(), verifyResult.value.verify_token)
-    await loadImages(previewReport.value.items ?? [])
   } catch (cause) {
     error.value = cause instanceof ApiError ? cause.message : '解密失败'
   } finally {
@@ -205,7 +160,6 @@ async function submitReject(): Promise<void> {
 }
 
 watch(() => route.params.id, () => void load(), { immediate: true })
-onBeforeUnmount(clearImages)
 </script>
 
 <template>
@@ -267,56 +221,22 @@ onBeforeUnmount(clearImages)
       />
 
       <template v-else>
-        <el-row :gutter="14" class="preview-body">
-          <el-col :span="10">
-            <div class="panel-title">票面影像（{{ (previewReport.items ?? []).length }} 张）</div>
-            <div v-loading="imagesLoading" class="image-list">
-              <div v-for="item in previewReport.items ?? []" :key="item.invoice_id" class="image-card">
-                <div class="image-caption">
-                  票号 {{ item.invoice_no ?? '—' }} ｜ 合计 {{ formatMoney(item.total_amount) }}
-                </div>
-                <img
-                  v-if="imageUrls[item.invoice_id]"
-                  :src="imageUrls[item.invoice_id]"
-                  :alt="`票面影像 ${item.invoice_no ?? item.invoice_id}`"
-                />
-                <el-empty
-                  v-else
-                  :description="imageErrors[item.invoice_id] ?? '影像加载中…'"
-                  :image-size="60"
-                />
-              </div>
-            </div>
-          </el-col>
+        <el-descriptions :column="3" border size="small" class="report-meta">
+          <el-descriptions-item label="单号">{{ previewReport.report_no ?? detail.report.report_no }}</el-descriptions-item>
+          <el-descriptions-item label="申请人">{{ previewReport.applicant?.username ?? detail.applicant_name }}</el-descriptions-item>
+          <el-descriptions-item label="合计">{{ formatMoney(previewReport.total_amount ?? detail.report.total_amount) }}</el-descriptions-item>
+          <el-descriptions-item label="票据数">{{ previewReport.item_count ?? detail.report.item_count }}</el-descriptions-item>
+          <el-descriptions-item label="事由" :span="2">{{ previewReport.reason ?? '—' }}</el-descriptions-item>
+        </el-descriptions>
 
-          <el-col :span="14">
-            <div class="panel-title">单据与字段</div>
-            <el-descriptions :column="2" border size="small">
-              <el-descriptions-item label="单号">{{ previewReport.report_no ?? detail.report.report_no }}</el-descriptions-item>
-              <el-descriptions-item label="申请人">{{ previewReport.applicant?.username ?? detail.applicant_name }}</el-descriptions-item>
-              <el-descriptions-item label="合计">{{ formatMoney(previewReport.total_amount ?? detail.report.total_amount) }}</el-descriptions-item>
-              <el-descriptions-item label="票据数">{{ previewReport.item_count ?? detail.report.item_count }}</el-descriptions-item>
-              <el-descriptions-item label="事由" :span="2">{{ previewReport.reason ?? '—' }}</el-descriptions-item>
-            </el-descriptions>
-
-            <div v-for="item in previewReport.items ?? []" :key="item.invoice_id" class="field-block">
-              <div class="invoice-meta">
-                票号 <code>{{ item.invoice_no ?? '—' }}</code>
-                ｜ 日期 {{ item.invoice_date ?? '—' }}
-                ｜ 销方 {{ item.seller_name ?? '—' }}
-                ｜ 合计 {{ formatMoney(item.total_amount) }}
-              </div>
-              <el-table :data="Object.entries(item.fields ?? {})" size="small" border class="field-table">
-                <el-table-column label="字段" width="150">
-                  <template #default="{ row }">{{ fieldLabel(row[0]) }}</template>
-                </el-table-column>
-                <el-table-column label="值">
-                  <template #default="{ row }">{{ row[1] || '—' }}</template>
-                </el-table-column>
-              </el-table>
-            </div>
-          </el-col>
-        </el-row>
+        <h4 class="panel-title">逐票核对（左图右表：hover 高亮、点击行自动定位）</h4>
+        <FinanceInvoicePane
+          v-for="item in previewReport.items ?? []"
+          :key="item.invoice_id"
+          :invoice-id="item.invoice_id"
+          :file-id="fileIdFor(item)"
+          :preview-token="preview.preview_token"
+        />
 
         <div class="attach-meta">
           <span>附件：</span>
@@ -351,13 +271,7 @@ onBeforeUnmount(clearImages)
 .hint { margin-bottom: 12px; }
 .preview-body { margin-top: 8px; }
 .panel-title { font-weight: 600; margin: 6px 0 8px; color: #0f172a; }
-.image-list { display: flex; flex-direction: column; gap: 12px; max-height: 640px; overflow: auto; }
-.image-card { border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; padding: 8px; }
-.image-card img { width: 100%; max-height: 420px; object-fit: contain; display: block; }
-.image-caption { font-size: 12px; color: #475569; margin-bottom: 6px; }
-.invoice-meta { margin: 10px 0 8px; font-size: 13px; color: #334155; }
-.field-block { margin-bottom: 14px; }
-.field-table { max-height: 420px; overflow: auto; }
+.report-meta { margin-bottom: 10px; }
 .attach-meta { margin-top: 14px; font-size: 12px; color: #475569; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .attach-hint { color: #94a3b8; }
 </style>
