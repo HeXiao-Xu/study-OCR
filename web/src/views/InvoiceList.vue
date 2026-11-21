@@ -194,8 +194,8 @@ function invoiceNumber(row: InvoiceOut): string {
 const hasFilters = computed(() => Object.keys(cleanQuery(route.query)).length > 0)
 
 const pageTitle = computed(() => {
-  if (route.query.review_status === 'pending') return '待复核'
-  if (route.query.review_status === 'reviewed') return '已复核'
+  if (route.query.review_status === 'pending') return '票据复核'
+  if (route.query.review_status === 'reviewed') return '已复核票据'
   return store.role === 'reviewer' ? '票据查询' : '我的票据'
 })
 
@@ -319,6 +319,20 @@ watch(
           <template #default="{ row }">
             <el-tag :type="invoiceDisplayStatus(row).tag" effect="plain">
               {{ invoiceDisplayStatus(row).label }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="复核状态" width="100">
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.status === 'draft' || row.status === 'void'"
+              type="info"
+              effect="plain"
+            >
+              —
+            </el-tag>
+            <el-tag v-else :type="row.reviewed_at ? 'success' : 'warning'" effect="plain">
+              {{ row.reviewed_at ? '已复核' : '待复核' }}
             </el-tag>
           </template>
         </el-table-column>

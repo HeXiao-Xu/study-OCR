@@ -102,7 +102,13 @@ const routes: RouteRecordRaw[] = [
         path: 'finance/pending',
         name: 'finance-pending',
         component: () => import('../views/FinanceList.vue'),
-        meta: { title: '待审核', roles: ['reviewer'] },
+        meta: { title: '报销审核', roles: ['reviewer'] },
+      },
+      {
+        path: 'finance/pending/:id',
+        name: 'finance-pending-detail',
+        component: () => import('../views/FinanceReportDetail.vue'),
+        meta: { title: '报销审核详情', roles: ['reviewer'] },
       },
       {
         path: 'templates',
