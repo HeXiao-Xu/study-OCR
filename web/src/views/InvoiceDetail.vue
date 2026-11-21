@@ -16,7 +16,6 @@ import {
   fetchInvoiceImage,
   fetchInvoiceLines,
   getInvoiceDetail,
-  reviewInvoice,
   updateInvoiceFields,
 } from '../api/invoices'
 import { ApiError } from '../api/http'
@@ -109,16 +108,6 @@ const canDelete = computed(() => {
       store.role === 'submitter' &&
       invoice.uploader_id === store.user?.id &&
       invoice.status === 'draft',
-  )
-})
-
-const canReview = computed(() => {
-  const invoice = detail.value?.invoice
-  return Boolean(
-    invoice &&
-      store.role === 'reviewer' &&
-      invoice.status === 'confirmed' &&
-      !invoice.reviewed_at,
   )
 })
 
@@ -263,7 +252,7 @@ async function confirmAll(): Promise<void> {
   try {
     await ElMessageBox.confirm(
       '请确认已仔细核对所有字段内容与票据一致。如有不一致，请先点「编辑字段」修改；' +
-        '确认后票据进入「待复核」，字段不可再修改。',
+        '确认后票据进入「已确认」，字段不可再修改。',
       '确认整单',
       { type: 'warning', confirmButtonText: '已核对，确认整单', cancelButtonText: '返回修改' },
     )
@@ -310,40 +299,6 @@ async function removeInvoice(): Promise<void> {
     void router.replace('/invoices')
   } catch (cause) {
     ElMessage.error(cause instanceof ApiError ? cause.message : '删除失败，请重试')
-  }
-}
-
-async function reviewAll(): Promise<void> {
-  const invoice = detail.value?.invoice
-  if (!invoice || confirming.value) return
-  try {
-    await ElMessageBox.confirm(
-      '复核后票据将锁定，字段不可再修改。确认复核通过？',
-      '复核通过',
-      { type: 'warning', confirmButtonText: '复核通过', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  confirmErrors.value = []
-  confirming.value = true
-  try {
-    await reviewInvoice(invoice.id, invoice.version)
-    ElMessage.success('已复核')
-    await load()
-  } catch (cause) {
-    if (cause instanceof ApiError && cause.code === 42201) {
-      const payload = cause.payload?.data as { fields?: ConfirmError[] } | null | undefined
-      confirmErrors.value = payload?.fields ?? []
-      ElMessage.error('复核前校验未通过，请按提示处理')
-    } else if (cause instanceof ApiError && cause.code === 40900) {
-      ElMessage.error('版本冲突：票据已被修改，已为你刷新')
-      await load()
-    } else {
-      ElMessage.error(cause instanceof ApiError ? cause.message : '复核失败，请重试')
-    }
-  } finally {
-    confirming.value = false
   }
 }
 
@@ -473,14 +428,6 @@ onBeforeUnmount(revokeImage)
               >
                 删除票据
               </el-button>
-              <el-button
-                v-if="canReview && !editMode"
-                type="success"
-                :loading="confirming"
-                @click="reviewAll"
-              >
-                复核通过
-              </el-button>
               <template v-if="editMode">
                 <el-button type="primary" :loading="saving" @click="save">保存修改</el-button>
                 <el-button :disabled="saving" @click="cancelEdit">取消</el-button>
@@ -510,9 +457,6 @@ onBeforeUnmount(revokeImage)
           </el-descriptions-item>
           <el-descriptions-item label="数据版本">
             v{{ detail.invoice.version }}
-          </el-descriptions-item>
-          <el-descriptions-item label="复核时间">
-            {{ detail.invoice.reviewed_at ? formatDateTime(detail.invoice.reviewed_at) : '—' }}
           </el-descriptions-item>
           <el-descriptions-item label="质量标记">
             {{ detail.invoice.quality_flag ?? '—' }}
