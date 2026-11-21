@@ -126,6 +126,7 @@ async function runDecrypt(): Promise<void> {
     preview.value = await decryptReport(reportId(), verifyResult.value.verify_token)
     const items = previewReport.value.items ?? []
     activeInvoice.value = items[0]?.invoice_id ?? null
+    if (items[0]) await selectInvoice(items[0].invoice_id)
   } catch (cause) {
     error.value = cause instanceof ApiError ? cause.message : '解密失败'
   } finally {
@@ -133,7 +134,8 @@ async function runDecrypt(): Promise<void> {
   }
 }
 
-async function selectInvoice(invoiceId: number): Promise<void> {
+async function selectInvoice(name: string | number): Promise<void> {
+  const invoiceId = Number(name)
   activeInvoice.value = invoiceId
   if (!preview.value || !currentFileId.value || imageUrls.value[invoiceId]) return
   imageLoading.value = true
@@ -257,12 +259,12 @@ watch(() => route.params.id, () => void load(), { immediate: true })
         <el-row :gutter="14" class="preview-body">
           <el-col :span="10">
             <div class="panel-title">票面影像</div>
-            <el-tabs :model-value="activeInvoice ?? undefined" @tab-change="selectInvoice">
+            <el-tabs :model-value="activeInvoice !== null ? String(activeInvoice) : undefined" @tab-change="selectInvoice">
               <el-tab-pane
                 v-for="item in previewReport.items ?? []"
                 :key="item.invoice_id"
                 :label="item.invoice_no ?? `票据 ${item.invoice_id}`"
-                :name="item.invoice_id"
+                :name="String(item.invoice_id)"
               />
             </el-tabs>
             <div v-loading="imageLoading" class="image-box">
