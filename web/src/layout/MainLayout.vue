@@ -28,7 +28,6 @@ const MENU: MenuItem[] = [
   { path: '/reports', label: '我的报销单', roles: ['submitter'] },
   { path: '/archive', label: '归档检索', roles: ['submitter'] },
   { path: '/invoices', label: '票据查询', roles: ['reviewer'] },
-  { path: '/review', label: '票据复核', roles: ['reviewer'] },
   { path: '/finance/pending', label: '报销审核', roles: ['reviewer'] },
   { path: '/archive', label: '归档检索', roles: ['reviewer'] },
   { path: '/templates', label: '票种模板', roles: ['admin'] },
