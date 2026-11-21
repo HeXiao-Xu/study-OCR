@@ -168,6 +168,8 @@ export interface InvoiceOut {
   duplicate_of: number | null
   reviewed_by: number | null
   reviewed_at: string | null
+  /** 派生：当前所属报销单状态（submitted/approved/rejected/archived）；未入单为 null */
+  report_status?: string | null
 
   file_id: number
   filename: string

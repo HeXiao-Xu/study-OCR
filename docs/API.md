@@ -724,6 +724,7 @@
 | `invoice_code` / `invoice_no` / `invoice_date` / `buyer_name` / `buyer_tax_no` / `seller_name` / `seller_tax_no` / `check_code` | string | `invoices` |
 | `amount` / `tax_amount` / `total_amount` | decimal(12,2)→string | `invoices` |
 | `ocr_status` / `extract_status` / `overall_confidence` / `quality_flag` / `duplicate_of` | string/number | `invoices` |
+| `report_status` | string/null | **派生**：该票所属报销单状态（`submitted`/`approved`/`rejected`/`archived`）；未入单为 null。列表据此显示“已审核/已复核”等，不新增票据状态 |
 | `file_id` / `filename` / `sha256` / `mime` / `size` / `page_count` | int/string | `invoice_files` |
 | `storage_key` | — | **永不返回** |
 

@@ -54,10 +54,17 @@ export interface DisplayStatus {
 }
 
 export function invoiceDisplayStatus(
-  invoice: Pick<InvoiceOut, 'status' | 'extract_status'>,
+  invoice: Pick<InvoiceOut, 'status' | 'extract_status'> & { report_status?: string | null },
 ): DisplayStatus {
   if (invoice.status === 'void') return { key: 'void', label: '已作废', tag: 'danger' }
   if (invoice.status === 'in_report') {
+    // 票据没有独立审核状态：看它所属报销单走到哪一步
+    if (invoice.report_status === 'approved') {
+      return { key: 'in_report', label: '已审核', tag: 'success' }
+    }
+    if (invoice.report_status === 'rejected') {
+      return { key: 'in_report', label: '已驳回', tag: 'danger' }
+    }
     return { key: 'in_report', label: '已入报销单', tag: 'primary' }
   }
   if (invoice.status === 'archived') return { key: 'archived', label: '已归档', tag: 'info' }

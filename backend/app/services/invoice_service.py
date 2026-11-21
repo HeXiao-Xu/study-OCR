@@ -29,6 +29,7 @@ from app.models.invoices import Invoice
 from app.models.envelopes import Envelope
 from app.models.ocr_jobs import OcrJob
 from app.models.ocr_lines import OcrLine
+from app.models.report_forms import ReportForm
 from app.models.report_items import ReportItem
 from app.models.users import User
 from app.ocr.validators import (
@@ -182,6 +183,16 @@ def list_invoices(db: Session, user: User, query: InvoiceListQuery) -> PageResul
     if user.role not in {UserRole.SUBMITTER.value, UserRole.REVIEWER.value}:
         raise NotFoundError()
 
+    # 派生“所在报销单状态”：票据本身没有审核状态，已审核/已归档看它所属的单
+    report_status_sq = (
+        select(ReportForm.status)
+        .join(ReportItem, ReportItem.form_id == ReportForm.id)
+        .where(ReportItem.invoice_id == Invoice.id)
+        .order_by(ReportForm.id.desc())
+        .limit(1)
+        .scalar_subquery()
+        .label("report_status")
+    )
     stmt = (
         select(Invoice)
         .join(InvoiceFile, Invoice.file_id == InvoiceFile.id)
@@ -191,6 +202,7 @@ def list_invoices(db: Session, user: User, query: InvoiceListQuery) -> PageResul
             InvoiceFile.size,
             InvoiceFile.sha256,
             InvoiceFile.page_count,
+            report_status_sq,
         )
     )
     stmt = filter_visible(stmt, Invoice, user)
@@ -225,8 +237,15 @@ def get_invoice_detail(db: Session, user: User, invoice_id: int) -> InvoiceDetai
         .limit(1)
     ).first()
 
+    report_status = db.scalar(
+        select(ReportForm.status)
+        .join(ReportItem, ReportItem.form_id == ReportForm.id)
+        .where(ReportItem.invoice_id == invoice_id)
+        .order_by(ReportForm.id.desc())
+        .limit(1)
+    )
     return InvoiceDetailData(
-        invoice=_invoice_out(invoice, file),
+        invoice=_invoice_out(invoice, file, report_status=report_status),
         fields=[_field_out(item) for item in fields],
         latest_job=_job_out(job) if job is not None else None,
     )
@@ -623,7 +642,9 @@ def _invoice_columns(invoice: Invoice) -> dict[str, object]:
     return {column.name: getattr(invoice, column.name) for column in Invoice.__table__.columns}
 
 
-def _invoice_out(invoice: Invoice, file: InvoiceFile) -> InvoiceOut:
+def _invoice_out(
+    invoice: Invoice, file: InvoiceFile, report_status: str | None = None
+) -> InvoiceOut:
     data = _invoice_columns(invoice)
     data.update(
         filename=file.filename,
@@ -631,6 +652,7 @@ def _invoice_out(invoice: Invoice, file: InvoiceFile) -> InvoiceOut:
         size=file.size,
         sha256=file.sha256,
         page_count=file.page_count,
+        report_status=report_status,
     )
     return InvoiceOut.model_validate(data)
 
@@ -644,6 +666,7 @@ def _invoice_out_from_row(row) -> InvoiceOut:
         size=row.size,
         sha256=row.sha256,
         page_count=row.page_count,
+        report_status=getattr(row, "report_status", None),
     )
     return InvoiceOut.model_validate(data)
 

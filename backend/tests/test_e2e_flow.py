@@ -373,6 +373,11 @@ def test_full_chain_and_security_invariants(
     )
     assert approved.status_code == 200, approved.text
 
+    # 票据状态派生：审核通过后，票据列表显示“已审核”（report_status=approved）
+    invoice_detail = client.get(f"{BASE}/invoices/{invoice_id}", headers=_auth(actors["alice"]))
+    assert invoice_detail.status_code == 200
+    assert invoice_detail.json()["data"]["invoice"]["report_status"] == "approved"
+
     archived = client.post(
         f"{BASE}/admin/reports/{report_id}/archive",
         json={"confirm": True},

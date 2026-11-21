@@ -51,6 +51,8 @@ class InvoiceOut(BaseModel):
     duplicate_of: int | None
     reviewed_by: int | None = None
     reviewed_at: datetime | None = None
+    # 派生：该票当前所属报销单的状态（submitted/approved/rejected/archived）；未入单为 None
+    report_status: str | None = None
 
     # 文件元数据（join 而来）
     file_id: int
