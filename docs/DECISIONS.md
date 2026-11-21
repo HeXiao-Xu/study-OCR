@@ -1629,3 +1629,30 @@
   SM3 双后端在 55/56/64/1000B 边界上逐字节一致；SM4 与 gmssl 参考实现逐字节一致；
   `wrapped_key` 的 C2 段/C3 段篡改都报 `mac_mismatch`；SM2 与 gmssl 双向互操作；
   `pytest tests/test_crypto` 181 passed、全量 607 passed、`alembic check` 零差异。
+
+---
+
+## D-078 本机没有 openssl CLI：用 Docker 里的 OpenSSL 3.5（`scripts/openssl.sh`），不换算法路径
+
+- **日期**：2026-11-21（用户提问"是修环境还是换方法"后实测拍板）
+- **背景**：S4-5 要求 `openssl genpkey -algorithm SM2`、S4-6 要求用 `openssl req -x509 -newkey sm2 -sm3`
+  建 CA 与证书；但本机 PATH / MSYS2 / Git **都没有 openssl.exe**，`cryptography` 也不支持 SM2 密钥。
+- **决策**：**修环境，不换方法**。用 Docker 里的 OpenSSL 3.5.9 执行所有 OpenSSL 命令：
+  `scripts/openssl.sh` 把仓库根挂到容器 `/work`，`--entrypoint openssl`，镜像固定
+  `alpine/openssl:3.5.9`（`OPENSSL_IMAGE` 可覆盖），并关掉 MSYS 路径转换。
+  - 宿主机**不安装任何软件**（Docker 是既有依赖，PG/Redis/MinIO 都在跑）；
+  - S4-5/S4-6 继续按任务卡用真 OpenSSL：密钥生成、CA、证书、签名交叉验证全部可做；
+  - **不采用** `secrets + gmssl._kg` 冒充密钥生成（任务卡明确 `_kg` 只是应急/原型），
+    **不手写 PKCS#8**（用 OpenSSL 产出的标准 PKCS#8 PEM，Python 只做口令保护：PEM→DER →
+    PBKDF2-HMAC-SHA256(200k,16B 盐) → AES-256-GCM 包裹；解锁时用 pycryptodomex 的 DER
+    解码原语解出 `d`）。
+- **理由**：① 与任务卡逐条对齐，答辩问"密钥怎么生成的"能直接答 OpenSSL；② 得到独立实现可交叉验证
+  （`openssl pkeyutl -verify` 验我们 gmssl 签的名、`openssl dgst -sm3` 复算摘要）；
+  ③ 避免手写 ASN.1（AGENTS §2.1 明确反对）；④ 可复现（镜像固定 tag）。
+- **代价**：生成密钥/证书的脚本要求 Docker 在跑；包装脚本是 bash（Windows 下用 Git Bash，
+  PowerShell 里 `bash scripts/openssl.sh ...` 亦可）；镜像升级需手动改 tag 并重跑相关验收。
+- **验证（实测）**：`scripts/openssl.sh version` → OpenSSL 3.5.9；
+  `genpkey -algorithm SM2` 产出 `BEGIN PRIVATE KEY`（PKCS#8）与 178B 公钥 PEM；
+  `req -x509 -newkey sm2 -sm3` + `x509 -req -sm3` 签出 `CN=alice/O=Test/OU=submitter`
+  证书（SHA-256 指纹可读）；`pkeyutl -sign/-verify -rawin -digest sm3` →
+  `Signature Verified Successfully`；容器写回仓库文件属主为当前用户（HEXIAO）。

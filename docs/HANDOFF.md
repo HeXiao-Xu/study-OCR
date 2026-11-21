@@ -160,6 +160,10 @@ cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 169 passed（需 Docker）
 # S4-1 ~ S4-4 密码封装（离线、不连库）：181 passed（含 SM3/SM2/SM4 国标向量、2MB 信封 <1s）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto -q)
+# OpenSSL 3.x 命令行（宿主机没装，用 Docker 里的）：见 D-078
+bash scripts/openssl.sh version                              # OpenSSL 3.5.9
+bash scripts/openssl.sh genpkey -algorithm SM2 -out secrets/keys/alice-sign.pem
+bash scripts/openssl.sh dgst -sm3 -binary somefile           # 独立复算摘要
 # 跨语言一致性：Python 与 Node 各算一遍，三字段（canonical_b64/sm3/sha256）必须逐字相等
 .venv/Scripts/python.exe scripts/canonical_cross_check.py
 node scripts/canonical_cross_check.mjs
@@ -301,17 +305,17 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
   2. 单测：生成→加锁→解锁→用解锁私钥签名 的脚本跑通；错误口令、被篡改密文、空口令；
      `grep -rn "PRIVATE KEY" backend/ docs/` 除测试向量外无命中；日志里搜不到口令；
   3. `scripts/keygen.py`（生成 + 落 `secrets/keys/` + 打印公开信息，绝不打印私钥）；
-- **⚠️ 两个环境/技术缺口（必须在 spec 里先解决，别硬编）**：
-  1. **本机没有 `openssl` 命令行**（PATH / MSYS2 / Git 都没有）。任务卡要求
-     `openssl genpkey -algorithm SM2` 生成密钥——不可用。替代：`secrets` 生成 `d ∈ [1, n-2]` +
-     gmssl `_kg` 求公钥（与 OpenSSL 同一套 EC 运算；`_kg` 是库内部 API，需在注释里写明
-     "原型可用、生产建议 HSM/OpenSSL"，并且**只用它做点乘，不碰随机源**）；
-  2. **`cryptography` 不支持 SM2 私钥的 PKCS#8 编解码**（它的 `ec` 模块不认 sm2p256v1）。
-     要么用 pycryptodomex 的 DER 原语（`DerSequence`/`DerObjectId`/`DerOctetString`）
-     按 RFC 5915 + PKCS#8 组合出 DER（**用库的 ASN.1 原语，不手写编码器**），
-     要么改存"密钥 JSON + AES-GCM"并在 SPEC/DECISIONS 里如实说明偏离 SCHEMA 的代价。
-     **优先前者**；若 DER 组装验证不了（没有 openssl 可交叉校验），就只做自往返 + 结构断言，
-     并在论文"不足"里写清楚。
+- **环境缺口已在 2026-11-21 解决（D-078）**：本机确实没有 `openssl` 命令行，但 Docker 里有
+  OpenSSL 3.5.9——统一用 `scripts/openssl.sh`（容器内 OpenSSL，仓库根挂到 `/work`，
+  镜像固定 `alpine/openssl:3.5.9`）。已实测可用：`genpkey -algorithm SM2`、
+  `req -x509 -newkey sm2 -sm3`、`x509 -req -sm3`、`pkeyutl -sign/-verify -rawin -digest sm3`、`dgst -sm3`。
+  **S4-5/S4-6 仍按任务卡用真 OpenSSL**，不引入 `_kg` 密钥生成、不手写 PKCS#8：
+  1. `scripts/keygen.py` 调 `scripts/openssl.sh genpkey -algorithm SM2` 生成 PKCS#8 PEM；
+  2. Python 侧只做"口令保护"：PEM→DER 后 PBKDF2-HMAC-SHA256（200k、16B 盐）→ KEK →
+     AES-256-GCM 包裹，写 `secrets/keys/{user}/sign.p8.enc`
+     （字段 `{kdf, iterations, salt, nonce, ciphertext, key_fp}`）；
+  3. 解锁后解出 `d`：用 pycryptodomex 的 DER **解码原语**（PKCS#8 → ECPrivateKey → `privateKey`
+     OCTET STRING），不手写 ASN.1 编解码；`cryptography` 不支持 SM2 键，但它提供 DER 原语与 AES-GCM。
 - **必须注意的坑**（任务卡原文）：私钥**不入库、不进日志、不进异常堆栈、不进接口响应**；
   `key_records` 只登记 `storage_path`（SCHEMA 2.3：`CHECK (storage_path NOT LIKE '%PRIVATE KEY%')`）；
   PBKDF2 迭代太低等于没保护；不要把 `_kg` 当生产密钥生成实现。

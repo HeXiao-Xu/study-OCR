@@ -252,7 +252,7 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 83 | 对称层加密一次性读入内存（无流式） | 20MB 上限下内存峰值约 3 倍明文，可接受 | 若 S4-4 换 OpenSSL 后端，可顺带评估分块 |
 | 84 | SM2 加密是"gmssl 点运算 + 自写 KDF"组合（gmssl 的 `encrypt` 无法注入 K 且用 `random`） | 组合代码需在升级 gmssl 时回归（测试已覆盖往返/互操作/边界） | gmssl 升级前先跑 `test_sm2.py`；S4-9 的 RSA-OAEP 对照可佐证流程等价 |
 | 85 | 2MB <1s 的性能断言在极慢机器/CI 上可能抖动 | 实测 0.095s，约 10 倍余量 | 若 CI 抖动，改为基准脚本 + 宽松阈值，但论文数字用手测实测值 |
-| 86 | **本机没有 `openssl` 命令行**（PATH/MSYS2/Git 都没有） | S4-5 的任务卡要求用 `openssl genpkey` 生成 SM2 密钥；S4-6 要求用 CLI 签证书 | S4-5 改走"`secrets` 生成 d + gmssl `_kg` 求公钥"（与 OpenSSL 等价的 EC 运算，注释"生产建议 HSM/OpenSSL"）；S4-6 改走 `cryptography` 构造 X.509（AGENTS §2 已列该用途） |
+| 86 | ✅ **已解决（2026-11-21，D-078）**：本机没有 `openssl` 命令行 | S4-5 密钥生成、S4-6 证书都要求 OpenSSL CLI | 统一用 `scripts/openssl.sh`（Docker 内 OpenSSL 3.5.9），已实测 SM2 密钥/CA/证书/签名验签；任务卡流程不改成 `_kg` 或自写 PKCS#8 |
 | 87 | 信封只到"字节 → Envelope 记录"，大影像的 MinIO 对象名（`ciphertext_storage_key`）未做 | 属业务层（S5）与存储层 | S5 封装接口时决定：小载荷进 `ciphertext_b64`、影像密文存 MinIO 并登记对象名 |
 
 ## 变更日志
