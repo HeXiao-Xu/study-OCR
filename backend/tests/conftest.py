@@ -25,6 +25,7 @@ os.environ.setdefault("MINIO_ACCESS_KEY", "test")
 os.environ.setdefault("MINIO_SECRET_KEY", "test")
 os.environ.setdefault("MINIO_BUCKET", "study-ocr-test")
 os.environ.setdefault("JWT_SECRET", "test_secret_" + "x" * 32)
+os.environ.setdefault("AUDIT_HMAC_KEY", "test_audit_" + "y" * 32)
 # 测试不启动 APScheduler：否则每个 TestClient 都会连 Redis 并注册后台任务
 os.environ.setdefault("SCHEDULER_ENABLED", "false")
 

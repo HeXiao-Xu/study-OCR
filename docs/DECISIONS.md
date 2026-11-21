@@ -1731,3 +1731,42 @@
   `1.2.156.10197.1.501`（sm2sign-with-SM3）齐全；`ca_init.sh issue alice submitter` 后公钥一致性自检通过、
   `secrets/certs/` 只有证书文件；`certs.py` 的 15 条用例覆盖正常/过期/未生效/吊销/错公钥/错角色/非法输入；
   `pytest tests/test_crypto` 220 passed、全量 646 passed、`alembic check` 零差异。
+
+---
+
+## D-081 审计链：哈希载荷绑全部字段（比 SCHEMA 公式多绑两项）、payload 不落列、业务审计行留 S5
+
+- **日期**：2026-11-21（S4-7）
+- **背景**：SCHEMA §6.1 / API.md §7 给出的公式是
+  `entry_hash = HMAC_SM3(key, prev_hash ‖ ts ‖ actor_id ‖ action ‖ target_id ‖ payload_sha256)`，
+  但 SCHEMA 的 `audit_logs` **没有 `payload_sha256` 列**，也没有 `ts` 列（只有 `created_at`）；
+  任务卡还要求"业务日志写入"，而阶段 4 规则是只写 `crypto/`（S4-7 已按任务卡跨出）。
+- **决策**：
+  1. **哈希载荷用 canonical JSON 绑定全部审计字段**：
+     `{prev_hash, ts, actor_id, actor_role, action, target_type, target_id, payload_sha256}`。
+     比 SCHEMA 的文字公式**多绑 `actor_role` 与 `target_type`**：不改这两列就无法"改一行不被发现"；
+     验证方与写入方同一实现，论文公式按实现写并说明与 SCHEMA 文字的差异；
+  2. **`payload_sha256` 不落列**：校验时从 `detail_json` 重算（`SM3(canonical_json(detail or {}))`）——
+     少一列即少一处可篡改面，改 detail 必然导致 entry_hash 对不上；
+  3. **`ts` 由 Python 显式赋 UTC**（`created_at`），哈希里用 `ISO-8601 + 微秒 + +00:00`；
+     不用 DB `now()`，避免时钟/精度差异导致"写完自己验不过"（集成测试"写完立即 verify"覆盖）；
+  4. **并发串行**：写事务内 `pg_advisory_xact_lock(8071701)` 再取链尾（D-015）；
+     锁**不单独释放**，随事务提交/回滚自动释放；
+  5. **审计 key**：新增必填配置 `AUDIT_HMAC_KEY`（≥32 字符；prod 拒绝示例占位值），与 JWT key 分离；
+     不进日志/接口；
+  6. **业务动作的审计行本卡不接入**：每条审计行必须与业务变更同事务，接入要改 auth/
+     invoice/reocr 等多个 service，超出本卡"链 + 校验 + API + 脚本"的交付面；
+     遗留 #21/#27/#54/#61 已重定向到 S5；`template_create/report_create/issue_cert` 枚举同样留 S5（#20/#37）；
+  7. **"锚定"= 每日全链复算**：`anchor_audit_task` 从占位改为真实 `verify_chain` 并记日志；
+     SCHEMA 没有锚定表，**不发明**；不做外部时间戳/公证（能力边界见下）；
+  8. **失败归类**：`prev_hash_mismatch` / `entry_hash_mismatch` / `payload_invalid`，
+     返回首个断点的 1 起序号与行 id（API.md 的 `broken_at/broken_id/reason`）。
+- **代价/边界**：
+  - 防"改了不被发现"，**不防"被读"**；同时持有审计 key 的人可整体重写——**不是区块链**；
+  - 无外部锚：删掉整条链无法发现（遗留 #98）；
+  - 换 `AUDIT_HMAC_KEY` 会让历史链全部验不过（无 key_id/多 key 方案，遗留 #99）；
+  - 全量校验 O(n)（遗留 #97）。
+- **验证**：单测 667 / 集成 259 全绿；3 条链正常；改 detail → `broken_at=2, entry_hash_mismatch`；
+  改 entry_hash → 断在该行；删中间行 → `prev_hash_mismatch`；**并发 50 条后 `verify ok` 且
+  `count(distinct prev_hash)=50`**；HTTP 403/40301 与 422 边界齐全；`scripts/verify_chain.py`
+  真库输出 `{"ok": true, "checked_count": 0, ...}`、退出码 0。

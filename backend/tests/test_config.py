@@ -21,6 +21,7 @@ _ENV_KEYS = (
     "MINIO_BUCKET",
     "MINIO_SECURE",
     "JWT_SECRET",
+    "AUDIT_HMAC_KEY",
     "MAX_UPLOAD_MB",
     "HEALTH_TIMEOUT_S",
 )
@@ -42,6 +43,7 @@ _BASE = dict(
     minio_secret_key="sk",
     minio_bucket="bucket",
     jwt_secret="s" * 32,
+    audit_hmac_key="a" * 32,
 )
 
 
@@ -105,7 +107,10 @@ def test_confidence_settings_defaults() -> None:
     assert settings.confidence_weight_anchor + settings.confidence_weight_value == pytest.approx(1.0)
 
 
-@pytest.mark.parametrize("missing", ["database_url", "redis_url", "minio_bucket", "jwt_secret"])
+@pytest.mark.parametrize(
+    "missing",
+    ["database_url", "redis_url", "minio_bucket", "jwt_secret", "audit_hmac_key"],
+)
 def test_settings_missing_required_field_raises(missing: str) -> None:
     data = {key: value for key, value in _BASE.items() if key != missing}
     with pytest.raises(ValidationError):
@@ -115,6 +120,11 @@ def test_settings_missing_required_field_raises(missing: str) -> None:
 def test_settings_rejects_short_jwt_secret() -> None:
     with pytest.raises(ValidationError):
         _settings(jwt_secret="too_short")
+
+
+def test_settings_rejects_short_audit_hmac_key() -> None:
+    with pytest.raises(ValidationError):
+        _settings(audit_hmac_key="too_short")
 
 
 def test_settings_cors_origins_accepts_comma_separated() -> None:
@@ -142,6 +152,7 @@ def test_get_settings_reports_missing_fields_actionably(monkeypatch, tmp_path) -
         "MINIO_SECRET_KEY",
         "MINIO_BUCKET",
         "JWT_SECRET",
+        "AUDIT_HMAC_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.chdir(tmp_path)  # 确保读不到 backend/.env
@@ -163,6 +174,19 @@ def test_prod_rejects_weak_jwt_secret(monkeypatch, tmp_path) -> None:
     for key, value in _BASE.items():
         monkeypatch.setenv(key.upper(), value)
     monkeypatch.setenv("JWT_SECRET", "change_me_jwt_secret_at_least_32_chars_long")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ConfigError, match="prod"):
+            get_settings()
+    finally:
+        get_settings.cache_clear()
+
+def test_prod_rejects_weak_audit_hmac_key(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    for key, value in _BASE.items():
+        monkeypatch.setenv(key.upper(), value)
+    monkeypatch.setenv("AUDIT_HMAC_KEY", "change_me_audit_hmac_key_at_least_32_chars")
     get_settings.cache_clear()
     try:
         with pytest.raises(ConfigError, match="prod"):

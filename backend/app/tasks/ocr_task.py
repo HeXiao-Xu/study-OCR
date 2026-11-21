@@ -62,6 +62,37 @@ def _run_pipeline(db, job) -> None:
 
 
 async def anchor_audit_task(ctx: dict) -> dict:
-    """S4-7 的每日审计链锚定占位：现在只返回未实现，不写任何假审计。"""
-    logger.info("审计锚定任务尚未实现（S4-7）", extra={"event": "audit_anchor_skipped"})
-    return {"anchored": False, "reason": "S4-7 未实现"}
+    """S4-7：每日审计链校验（只读复算，不写审计行、不改链）。
+
+    "锚定"在本项目里的含义就是**每日再验证一次并留下运行日志**：SCHEMA 没有锚定表，
+    不做外部时间戳/公证（论文"安全边界"如实写；删掉整条链仍无法发现）。
+    """
+    from app.core.database import session_scope
+    from app.services.audit import verify_chain
+
+    with session_scope() as db:
+        result = verify_chain(db)
+
+    if result.ok:
+        logger.info(
+            "审计链校验通过",
+            extra={"event": "audit_chain_ok", "checked_count": result.checked_count},
+        )
+    else:
+        logger.error(
+            "审计链校验失败",
+            extra={
+                "event": "audit_chain_broken",
+                "checked_count": result.checked_count,
+                "broken_at": result.broken_at,
+                "broken_id": result.broken_id,
+                "reason": result.reason,
+            },
+        )
+    return {
+        "anchored": result.ok,
+        "checked_count": result.checked_count,
+        "broken_at": result.broken_at,
+        "broken_id": result.broken_id,
+        "reason": result.reason,
+    }

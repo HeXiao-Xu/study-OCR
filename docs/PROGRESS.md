@@ -6,18 +6,19 @@
 
 ## 当前状态
 
-- 阶段：**阶段 4 进行中**（S4-1 ~ S4-6 已完成，密钥/签名/信封/证书闭环）；下一张卡 **S4-7 审计日志哈希链**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-6**（共 40 张卡，全部 ✅ 通过）
-- 最近完成：**S4-6 自建 CA 与角色证书**（OpenSSL 签发、运行期指纹/有效期/公钥/吊销校验；全量 646 条单元全绿）
+- 阶段：**阶段 4 进行中**（S4-1 ~ S4-7 已完成，密码链路 + 审计链闭环）；下一张卡 **S4-8 密码模块单测与国标向量验证**
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-7**（共 41 张卡，全部 ✅ 通过）
+- 最近完成：**S4-7 审计日志哈希链**（HMAC-SM3 链 + 行级锁 + verify-chain API/脚本；单测 667 / 集成 259 全绿）
 - 附加改动（2026-11-20）：D-069 真实横版票抽取修复、D-070 确认流程简化（去重识别/逐字段操作）、D-071 删除改硬删（仅 draft，可重传）；业务状态统一显示为 待确认/待复核/已复核（前端派生）
-- 下一步：**S4-7 审计日志哈希链 ★关键**
+- 下一步：**S4-8 密码模块单测与国标测试向量验证 ★关键**
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
   - `gmssl==3.2.2` + `cryptography==50.0.2`（+ `pycryptodomex==3.24.2`）已装并锁版本；numpy 1.26.4 / paddle 2.6.2 未变
   - **本机没有 openssl CLI**：统一用 `scripts/openssl.sh` / `scripts/openssl.ps1`（Docker 内 OpenSSL 3.5.9，D-078）
-  - 本地领先 origin **77 个 commit**，`git push` 由用户执行
+  - **新增必填配置 `AUDIT_HMAC_KEY`**（≥32 字符，D-081）；`backend/.env` 已本地生成，`.env.example` 已加占位符
+  - 本地领先 origin **78 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -71,7 +72,7 @@
 [x] S4-4 数字信封（SM2 包裹会话密钥） ★关键
 [x] S4-5 密钥生成与私钥口令保护 ★关键
 [x] S4-6 X.509 自建 CA 与角色证书
-[ ] S4-7 审计日志哈希链 ★关键
+[x] S4-7 审计日志哈希链 ★关键
 [ ] S4-8 密码模块单测与国标测试向量验证 ★关键
 [ ] S4-9 RSA-OAEP+PSS 与 AES-GCM 对照实现
 
@@ -103,6 +104,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S4-7 | `backend/app/services/audit.py`（新：`GENESIS_HASH` / `ADVISORY_LOCK_KEY=8071701` / `ChainVerification` / `payload_sha256` / `chain_hash` / `append_audit`（事务内 `pg_advisory_xact_lock` 后取链尾）/ `verify_chain`（按 id 流式复算，返回首个断点）/ `list_audit_logs`）、`backend/app/schemas/audit.py`（`AuditLogOut` / `AuditListQuery` / `AuditVerifyData`）、`backend/app/api/v1/admin.py` + `main.py`（`GET /admin/audit`、`GET /admin/audit/verify-chain`，admin 专用）、`core/config.py` + `.env.example`（新增必填 `AUDIT_HMAC_KEY` ≥32，prod 拒绝示例值）、`tasks/ocr_task.py`（`anchor_audit_task` 从占位改为每日真实复算）、`scripts/verify_chain.py`（断开退出码 1）、`backend/tests/{test_audit.py,test_audit_chain.py}`（18 单测 + 11 集成）、`docs/{spec,plan}/s4-7-audit-chain.md` | ① 3 条链：首行 `prev_hash=0×64`、逐行 prev 指向上一行 `entry_hash`；`verify ok=True, checked_count=3`；② 改中间行 `detail_json` → `ok=False, broken_at=2, broken_id=第二行, reason=entry_hash_mismatch`；③ 改 entry_hash → 断在该行（broken_at=1）；④ 删中间行 → 下一行 prev 对不上（broken_at=2, prev_hash_mismatch）；⑤ **并发 50 条**（10 线程各自事务）→ 全部成功、`verify ok`、`count(distinct prev_hash)=50`（不分叉）；⑥ 回滚不产生审计行；⑦ HTTP：admin 列表/校验 200、reviewer/submitter **403/40301**、`action=not_an_action`/`from>to`/`page=0` → **422**；⑧ `scripts/verify_chain.py` 真库输出 `{"ok": true, "checked_count": 0, ...}` 退出码 0；⑨ 单测 667 passed（646+21）、集成 259 passed（248+11）、`alembic check` 零差异（无迁移） | ✅ 通过（D-081：哈希载荷超集、payload 不落列、业务审计行留 S5） |
 | S4-6 | `backend/app/crypto/certs.py`（新：`CertStatus{ok/cert_expired/cert_not_yet_valid/cert_revoked/cert_public_key_mismatch/cert_role_mismatch}`、`CertificateInfo`、`parse_certificate`、`check_certificate`；`cryptography` 解析证书/扩展/有效期/指纹，**公钥从 DER 的 SPKI BIT STRING 取**（cryptography 不支持 SM2 公钥）；角色取自 OU）、`scripts/ca_init.sh`（`init`/`issue`/`show`/`verify`；签发时解锁私钥**经 stdin** 做 CSR，私钥不落盘）、`scripts/unlock_key.py`（`.p8.enc` → PKCS#8 PEM 仅走 stdout）、`scripts/_openssl_docker.sh`（共享 docker 封装，`openssl.sh` 瘦身复用）、`backend/tests/test_crypto/fixtures/{ca,alice,bob}.crt.pem` + 公钥（公开夹具）、`backend/tests/test_crypto/test_certs.py`（15 条）、`docs/{spec,plan}/s4-6-certs.md` | ① 夹具由真 OpenSSL 3.5 生成：`openssl x509 -text` 可见 **KeyUsage(Digital Signature, Non Repudiation, Key Encipherment)**、**EKU=clientAuth**、SKI/AKI，签名算法 **sm2sign-with-SM3（1.2.156.10197.1.501）**；② `openssl verify -CAfile ca.crt alice.crt` → **OK**；③ 运行期 `parse_certificate` 指纹与 `openssl -fingerprint -sha256` 逐字一致（`9636254f…`）；公钥提取与 `sign.pub.pem` 一致；④ `check_certificate`：正常 `ok`、`now=not_after+1s` `cert_expired`、`now=not_before-1s` `cert_not_yet_valid`、`revoked=True` `cert_revoked`（优先级最高）、错公钥 `cert_public_key_mismatch`、错角色 `cert_role_mismatch`；⑤ 真跑 `ca_init.sh init` + `issue alice submitter`：证书签发成功、**公钥一致性自检通过**、`secrets/certs/` 只有 `alice.crt.pem`、无临时密钥文件；⑥ `pytest tests/test_crypto` **220 passed**（205+15），全量 **646 passed**（631+15），`alembic check` 零差异 | ✅ 通过（D-080：不做链验签的边界、stdin 签发、OU 取角色；证书落库属 S5） |
 | S4-5 | `backend/app/crypto/keystore.py`（新：`EncryptedPrivateKey`（frozen/extra=forbid、iterations≥200000）、`KeyPair`、`KeystoreError`、`derive_kek`、`key_fingerprint`、`private_key_hex_from_pkcs8`（DER 原语解析）、`wrap_private_key`/`unwrap_private_key`/`load_keypair`；PBKDF2-HMAC-SHA256+AES-256-GCM，AAD 绑定元数据；解锁失败统一"口令错误"）、`backend/app/crypto/sm/sm2.py`（追加 `public_key_from_private`）、`scripts/keygen.py`（OpenSSL 生成 → 加锁 → 解锁 → 签名自检；临时 PEM 即删；口令只走 env/getpass）、`backend/tests/test_crypto/test_keystore.py`（22 条）+ `test_sm2.py`（+2）、`docs/{spec,plan}/s4-5-keystore.md` | ① 真 OpenSSL 3.5 生成：`genpkey -algorithm SM2` → PKCS#8，`pkey -pubout` 与 `dG` 推导**逐字节一致**；② `keygen.py` 全链路：产物只有 `sign.p8.enc`（498B JSON 密文）与 `sign.pub.pem`，**无临时 PEM 残留**；自检"解锁+签名+验签"通过；③ **OpenSSL 独立验签**：`pkeyutl -verify -rawin -digest sm3 -pkeyopt distid:1234567812345678` → `Signature Verified Successfully`（不传 distid 失败，见遗留 #88）；④ 错误口令 → `KeystoreError("口令错误")`；篡改密文/盐/nonce/iterations（AAD）→ 同一错误；空/7 字符口令 → `ValueError`；⑤ PKCS#8 解析拒绝非法 DER/31B 标量/越界标量；⑥ 模型 frozen/extra=forbid/iterations 下限/key_fp 格式；⑦ `key_fp = SHA-256(0x04‖X‖Y)`，128/130 hex 同指纹；⑧ `pytest tests/test_crypto` **205 passed**（181+24），全量 **631 passed**（607+24），`alembic check` 零差异（无迁移）；⑨ `backend/` 无任何真实私钥材料（`BEGIN PRIVATE KEY` 仅出现在文档说明；`secrets/` 未入库） | ✅ 通过（D-079：密钥生成/口令保护口径；`key_records` 落库属 S5） |
 | S4-4 | `backend/app/crypto/sm/sm2.py`（追加 `encrypt_bytes/decrypt_bytes`：C1C3C2、C1 无 04 前缀、只收 1–32B、K 用 `secrets`、SM3 计数器 KDF）、`backend/app/crypto/envelope.py`（新：`Envelope` / `EnvelopeError` / `seal` / `open_sealed`；CEK 每封信封新生成；MAC 覆盖 `header‖wrapped_key‖IV‖密文‖证书指纹`；顺序 解 CEK→验 MAC 解密→sha256）、`backend/app/crypto/sm/sm3.py`（改：OpenSSL `hashlib` 快路径 + gmssl 回退，`hmac_sm3` 两条路径）、`backend/app/crypto/sm/sm4.py`（改：`cryptography`/OpenSSL 后端 + `trailer` 参数）、`backend/requirements.txt`（`cryptography==50.0.2`）、`backend/tests/test_crypto/{test_sm3,test_sm4,test_sm2,test_envelope}.py`（+35 条）、`docs/{spec,plan}/s4-4-envelope.md` | ① **2MB seal+open 实测 0.095s**（seal 0.054s / open 0.041s，任务卡要求 <1s；254KB 真实票据尺寸 22.4ms）；② 信封往返：空/1B/1KB/2MB、中文 JSON；`wrapped_key` 112B（C1 64+C3 32+C2 16）；③ 同明文两次：iv/密文/MAC/wrapped_key 全不同（新 CEK）；④ 篡改 ciphertext/iv/mac → `mac_mismatch`；篡改 wrapped_key 的 **C2 段与 C3 段** → `mac_mismatch`（C3 段靠"wrapped_key 进 MAC"发现）；篡改 cert_fp → `mac_mismatch`；篡改 payload_sha256 → `digest_mismatch`；错私钥 → `mac_mismatch/bad_envelope`；坏 base64/长度 → `bad_envelope`；⑤ SM2 加解密：1/16/32B 往返、>32B `ValueError`、同明文两次密文不同、C1 不在曲线 `ValueError`、**与 gmssl `encrypt/decrypt` 双向互操作**；⑥ SM3 双后端：monkeypatch 回退到 gmssl 后国标向量与 HMAC 向量仍一致；SM4 与 gmssl 参考实现逐字节一致；⑦ `pytest tests/test_crypto` **181 passed**（146 + 35），全量 **607 passed**（572 + 35），`alembic check` 零差异 | ✅ 通过（D-077：OpenSSL 后端、cryptography 直接依赖、SM2 加密自组合、C3/MAC 覆盖取舍） |
@@ -186,14 +188,14 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 17 | ✅ 已闭合（S3-1）：`intake.prepare_pages` 已接进 Worker，PDF 多页与照片重拍提示均走该入口 | — | — |
 | 18 | 重拍提示在合成集上触发了 18/60（多为远景/贴边） | 合成集里"故意拍坏"的样本本来就多，属预期 | S3 的前端上传页展示引导与提示；真实用户场景触发率应远低于此 |
 | 19 | 票种判对率是**合成集**上的 100% | 真实票据（尤其遮挡严重的）会更低 | 论文如实写"合成集 100%，真实样本仅定性"；S6 用真实样本抽检 |
-| 20 | `audit_logs.action` 仍缺 `template_create` / `report_create` / `issue_cert` | API.md 要求写审计，SCHEMA 枚举未覆盖 | 在 S2-8 / S5-1 / S4-6 开始前按 D-040 流程补 SCHEMA + 迁移 |
-| 21 | `login_failed` / `logout` / `forbidden` 审计行尚未写入 | 哈希链在 S4-7 才实现，写裸行会破坏链式不变式 | S4-7 实现链时一并写入；当前只有带 `username_sha256` 的应用日志（D-040） |
+| 20 | `audit_logs.action` 仍缺 `template_create` / `report_create` / `issue_cert` | API.md 要求写审计，SCHEMA 枚举未覆盖；S4-7 只做链、没写这些动作，未提前加枚举 | S5 写这些动作时按 D-040 流程补 SCHEMA + 迁移（S4-7 已确认加值不影响链） |
+| 21 | `login_failed` / `logout` / `forbidden` 审计行尚未写入 | ✅ 链已就绪（S4-7）；但审计行接入需要改动 auth 路径并与业务同事务，属 S5 范围 | S5 在 auth 服务里调 `append_audit`（当前只有带 `username_sha256` 的应用日志，D-040） |
 | 22 | 登出后 access token 在剩余 30min 内仍有效 | 无状态 JWT 的固有代价 | 论文"不足"如实写；要即时失效需引入黑名单/会话表（D-039） |
 | 23 | 无登录失败计数 / 自动锁定 / 限流 | `users.status='locked'` 只能由管理动作设置 | S7 安全加固按需补；当前统一 401 文案，不泄露账号存在性 |
 | 24 | 生产 `/invoices` 列表/详情接口尚未接入隔离层 | S2-3 只用测试专用路由证明 HTTP 404 语义（接口属 S2-5） | S2-5 必须调用 `filter_visible` / `get_visible_or_404`，并补"手工换 id 得 404"验收 |
 | 25 | keyset/游标分页未做（当前 offset） | 5 万行深页（page=1000）p95 25.4ms，offset 够用 | S2-5/S5 若出现更深页或更大规模再评估，只改分页层、端点不动（D-042） |
 | 26 | `q` 用 `ILIKE` 子串，无 trigram/GIN 索引 | 5 万行 p95 32.3ms，可接受 | 真实数据规模上升时评估 `pg_trgm`；论文里作为范围限定写明 |
-| 27 | 字段修改的审计行（`action=confirm_field`）未写 | 哈希链在 S4-7；当前只写应用日志（仅字段名，不含值） | S4-7 实现链时补 before/after（脱敏），D-040 原则 |
+| 27 | 字段修改的审计行（`action=confirm_field`）未写 | ✅ 链已就绪（S4-7）；行接入随 S5 的字段修改接口 | S5 在 `update_fields` 同事务调 `append_audit`，before/after 脱敏（D-040） |
 | 28 | 真 HTTP 建单链路待 S2-6 | 契约建票是 `POST /invoices/upload`（S2-6） | S2-6 调用 `create_draft` 后补 curl 建单→改字段→详情；S3-6 复用本卡字段修改 |
 | 29 | 字段修改的 42201 较严（任何未决冲突都回滚） | 契约字面如此；S3-6 的 confirm 改为逐字段列出，PATCH 仍整体回滚 | 若评审要求 PATCH 也逐字段回滚，先改 API.md（D-065） |
 | 30 | 上传后的 `ocr_jobs` 只落 `pending`，未真正入队/执行 | ARQ 框架属 S2-7，当前没有 Worker | S2-7 用 ARQ 投递并在提交后入队；上传接口形状不变（D-044） |
@@ -203,7 +205,7 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 34 | 僵尸恢复仍用 `created_at` 近似 | 0004 已加 `started_at`，但恢复逻辑仍按 `created_at`；队列积压超 30min 可能误判 | 若要精确，把 `recover_stale_jobs` 的判据换成 `started_at`（需先确认积压场景） |
 | 35 | 仍缺"重跑失败作业"入口 | `job_service` 对终态作业直接跳过，客户端重试会命中 sha256 去重（409） | S3-8（批量上传/单条重试）里补；当前按失败人工处理 |
 | 36 | layout 的 `regions/aspect_ratio` 仍由 YAML 提供（DB 契约没有这两列） | 模板 CRUD 管不到版面区域 | ✅ S3-1 已定：分类/版式用 YAML，抽取规格用 DB `field_specs_json`（缺票种回退 YAML，`metrics.rules_source` 可见）；全入库需先改 SCHEMA |
-| 37 | `template_create` 审计动作仍缺枚举值、未写审计行 | SCHEMA 枚举没有该值（D-040 已登记同类缺口） | 在 S4-7 前与 `report_create`/`issue_cert` 一起补 SCHEMA + 迁移 |
+| 37 | `template_create` 审计动作仍缺枚举值、未写审计行 | SCHEMA 枚举没有该值；S4-7 不写该动作，未提前加 | S5 与 `report_create`/`issue_cert` 一起补 SCHEMA + 迁移（D-040） |
 | 38 | seed 是指令而非启动自动执行 | `create_app()` 启动不连库（测试/健康检查要能离线跑） | 部署脚本（S2-12/S7）调用 `scripts/seed_templates.py`；已有数据跳过 |
 | 39 | 业务页面用占位（我的票据/上传/待核对/待审核/模板/规则/证书/审计） | S2-10/S2-11/S5 的页面还没做 | 对应任务卡逐个替换 `Placeholder.vue`；页面明确标"待实现"，不放假数据 |
 | 40 | 前端没有单测框架 | 目前只有 `typecheck` + `build` + 浏览器冒烟 | 若后续交互复杂（上传/轮询/字段编辑），评估引入 Vitest（需用户确认新依赖） |
@@ -214,18 +216,18 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 45 | 详情页影像可见，但**仅限本地明文调试**（`STORAGE_ALLOW_PLAINTEXT=true` 且 `is_cipher=false`） | S4 信封未接入；生产/密文下接口返回 409，页面显示"待 S4" | S4-4/S4-6 接入后在此处解密；论文如实写"影像加密链路未完成前仅本地演示" |
 | 46 | 字段编辑只改值，不提供冲突候选选择/批量确认 | S3-6 补了逐字段“确认”与整单确认；**冲突候选选择 UI 仍未做**（S3-5 只做了画框） | 候选选择留 S5/S7 前端打磨；当前冲突需手工改值后确认 |
 | 47 | 字段中文标签/票种/状态文案维护在前端 | 后端没有字典接口（API.md 未定义） | 新增字段时同步 `web/src/utils/format.ts` 与后端 `INVOICE_FIELD_NAMES` |
-| 48 | `anchor_audit_task` 仍是占位（只日志） | 审计哈希链在 S4-7 | S4-7 替换实现，调度骨架不动；现在不得伪造审计行 |
+| 48 | ✅ 已闭合（S4-7）：`anchor_audit_task` 每日真实复算审计链（断链记 error），不写审计行、不发明锚定表 | — | — |
 | 49 | 成功执行后锁保留到 TTL（默认 1h），失败才释放 | 防止同一 tick 多副本重复执行；TTL 必须小于调度周期 | 默认每日任务下 1h 足够；若将来改高频 cron，必须同步调小 TTL |
 | 52 | ✅ 已闭合（S3-4）：`ExtractedField.raw_value` + `field_value` 存票面原文、`normalized_value` 存归一值 | 推导值（`derived/paired`）没有单一原文，回退归一值 | — |
 | 53 | 置信度阈值/权重初值来自任务卡（0.90/0.60、0.35/0.65），**未用真实分布校准** | 40 张合成集上 review 占 52%（110/213），队列偏长；权重调参只能靠经验 | S6 用真实票据的"低置信字段是否真错"分布回填阈值与权重（`confidence_eval.py` 可直接复用）；当前口径已记 D-058 |
-| 54 | `field_reread` 审计行仍未写 | 只加了枚举（0005），审计哈希链在 S4-7；现在写行等于伪造 hash | S4-7 实现链时与 login_failed/logout/forbidden/confirm_field 一起补 |
+| 54 | `field_reread` 审计行仍未写 | ✅ 链已就绪（S4-7）；行接入随 S5 的 reocr 路径 | S5 在 `run_reocr` 同事务调 `append_audit`（D-040） |
 | 55 | `reocr` 契约只允许"本人"触发，reviewer 在核对台不能直接重识别 | API.md §2 原文如此；擅自放宽权限是安全变更 | 与 S3-6 的确认权限一起定；届时改契约 + 测试 |
 | 56 | 任务卡的"整块区域重识别"接口未做 | API.md 没有对应入口，`reocr` 只覆盖按字段 | S3-5 画框时若需要再补契约（bbox 入参 + 候选返回） |
 | 57 | 旧版本写入的 `invoice_fields.bbox_json` 是校正图坐标 | 本卡起新识别写原图坐标；本地旧测试票无字段行，不受影响 | 生产若已有旧数据，需一次性重跑识别或写脚本按 `to_original` 迁移（当前无旧数据，不写脚本） |
 | 58 | S3-3 之前写入的 `invoice_fields.field_value` 是归一值而非票面原文 | 本卡起新识别按契约写原文；旧行不自动迁移（本地无字段行） | 生产如有旧数据需重跑识别；如需保留人工修正值则需逐行迁移脚本（当前无需求） |
 | 59 | 详情页红底只覆盖"冲突候选 / manual 档"，**没有校验器错误文案**（如金额≠金额+税额） | 校验错误在确认动作（S3-6）才算，避免两处规则漂移 | S3-6 confirmation 接口返回 `FieldError{field,code,message}` 后接到详情页 |
 | 60 | 行框接口 `GET /invoices/{id}/lines` 是本卡**新增契约** | API.md 原先没有行级读取接口；"点字定位字段"需要它 | 已写入 API.md §2；若评审认为多余可只保留字段框（前端失败自动降级） |
-| 61 | `confirm_field` 审计行仍未写 | 只加了应用日志；哈希链 S4-7 未实现，写行=伪造 hash | S4-7 与 login_failed/logout/forbidden/field_reread 一起补 |
+| 61 | `confirm_field` 审计行仍未写 | ✅ 链已就绪（S4-7）；行接入随 S5 字段修改接口 | S5 与 #27 一起补 |
 | 62 | confirm 只有"本人"入口，reviewer 不能确认/反确认 | 契约如此；`confirmed` 后无回退路径（S5 才允许 void/审核） | S5 审核流再定 reviewer 复核与反确认；论文写明这是刻意的审计约束 |
 | 63 | 逐字段“确认”按钮只做了 typecheck/build，未做浏览器点击自动化 | 它走的是已被 `test_confirm` 覆盖的 `PATCH /fields confirm=true` 路径 | 若后续引入前端测试框架（遗留 #40），补一条点击用例 |
 | 64 | 重复票只能"发现"，不能跨用户合并/作废 | 本次只做检测 + confirm 阻断；作废是本人/管理动作 | S5/S6 审核流再定合并或作废入口；当前提示用户自行处理原票 |
@@ -265,10 +267,26 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 93 | **CA 私钥未做口令保护**（`secrets/ca/ca.key.pem` 明文，仅 chmod 600） | 拿到主机即可重签任意证书；与用户私钥的 PBKDF2 保护不对等 | 演示可接受；生产应离线保存/HSM；若要口令保护可复用 keystore 的包裹逻辑（S5+） |
 | 94 | 角色来自证书的 OU | 改角色必须重签证书；没有"角色变更"流程 | S5 管理动作：重签 + 旧证书置 revoked |
 | 95 | 证书有效期 10 年、无自动轮换 | 与任务卡"演示周期内不过期"的取舍一致 | 生产应缩短并做轮换；论文写明 |
+| 96 | **业务动作的审计行尚未接入**（登录/登出/越权/字段确认/重读/复核等） | 链目前只有测试行；演示时 `verify-chain` 可能显示 0 条 | S5 各接口在同一事务里调 `append_audit`（#21/#27/#54/#61 已重定向） |
+| 97 | `verify_chain` 是全表 O(n) 扫描 | 当前数据量下毫秒级；十万行以上会变慢 | 需要增量校验/分段锚时再评估（S7）；论文如实写 O(n) |
+| 98 | 没有外部锚（时间戳/公证） | 删掉整条链无法发现；"每日锚定"只是再复算一次 | 生产可接可信时间戳；论文"安全边界"如实写 |
+| 99 | **审计 HMAC key 轮换无方案** | 换 `AUDIT_HMAC_KEY` 会让历史链全部验不过 | 生产需要每行记录 key_id + 多 key 验证；本期不做，论文写明 |
 
 ## 变更日志
 
 ### 2026-11-21
+
+- **S4-7 完成**：审计日志哈希链。
+  · `services/audit.py`：`entry_hash = HMAC-SM3(key, canonical_json({prev_hash, ts, actor_id,
+    actor_role, action, target_type, target_id, payload_sha256}))`；`payload_sha256` 从
+    `detail_json` 重算（不落列）；创世 `prev_hash=0×64`；写入事务内 `pg_advisory_xact_lock(8071701)`
+    后取链尾，保证并发不分叉；
+  · `GET /admin/audit`（筛选/分页）与 `GET /admin/audit/verify-chain`（返回首个断点
+    `broken_at/broken_id/reason`），仅 admin；新增必填配置 `AUDIT_HMAC_KEY`；
+  · `scripts/verify_chain.py` 命令行校验（断链退出码 1）；`anchor_audit_task` 由占位改为
+    **每日真实复算**（不写审计行、不发明锚定表）；
+  · 实测：3 条链正常；改 detail/entry_hash/删行都报正确断点；**并发 50 条仍是单链**；
+    HTTP 权限与 422 边界齐全；单测 667、集成 259 全绿。
 
 - **S4-6 完成**：X.509 自建 CA 与角色证书。
   · `scripts/ca_init.sh`：`init` 建 CA（SM2-SM3，CA:TRUE + keyCertSign/cRLSign）、

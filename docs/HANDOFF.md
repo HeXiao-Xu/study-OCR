@@ -1,14 +1,14 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-21 15:10（阶段 4：S4-1 ~ S4-6 完成；开新会话用）
+> 最后更新：2026-11-21 15:45（阶段 4：S4-1 ~ S4-7 完成；开新会话用）
 
 ## 1. 一句话现状
 
 **阶段 3 已完成**（S3-1 ~ S3-8 + 补充卡 S3-9）；**阶段 4 进行中**：S4-1（canonical + SM3）、
-S4-2（SM2 签名）、S4-3（SM4 EtM）、S4-4（数字信封）、S4-5（密钥与口令保护）、S4-6（CA 与角色证书）
-已完成；密码链路已能"生成密钥/证书 → 签名 → 加密信封 → 拆封 → 验签"。
-**下一步：S4-7 审计日志哈希链 ★关键**。
+S4-2（SM2 签名）、S4-3（SM4 EtM）、S4-4（数字信封）、S4-5（密钥与口令保护）、S4-6（CA 与角色证书）、
+S4-7（审计哈希链）已完成；密码链路 + 审计链闭环。
+**下一步：S4-8 密码模块单测与国标测试向量验证 ★关键**（收口阶段 4）。
 
 当前浏览器可走通（`http://127.0.0.1:5173`）：
 
@@ -73,6 +73,9 @@ scripts/ca_init.sh               ← S4-6：init/issue/show/verify（CSR 经 std
 scripts/unlock_key.py            ← S4-6：`.p8.enc` → PKCS#8 PEM 仅 stdout（给 ca_init 的管道）
 scripts/_openssl_docker.sh       ← D-078/共享：openssl_docker / openssl_docker_stdin
 scripts/openssl.sh / .ps1        ← D-078：宿主机没有 openssl，用 Docker 内 OpenSSL 3.5.9
+backend/app/services/audit.py    ← S4-7：审计哈希链（append/verify/list；咨询锁串行；canonical 载荷）
+backend/app/api/v1/admin.py      ← S4-7：GET /admin/audit + /admin/audit/verify-chain（admin）
+scripts/verify_chain.py          ← S4-7：命令行全链校验（断链退出码 1）
 backend/app/services/repository.py  ← S2-3：行级隔离（策略表 + filter_visible + get_visible_or_404，deny-by-default）
 backend/app/services/pagination.py  ← S2-4：分页/排序协议（PageParams/PageResult、白名单排序、同一 stmt 求 total）
 backend/app/services/invoice_service.py  ← S2-5/S3-9：建草稿/状态机/列表/详情/**硬删**/字段修改/复核
@@ -156,6 +159,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S4-4 数字信封 | **2MB seal+open 0.095s**（seal 0.054 / open 0.041；254KB 真实票尺寸 22.4ms）；`wrapped_key` 112B=C1 64+C3 32+C2 16；C2 段与 C3 段篡改都 `mac_mismatch`；`payload_sha256` 篡改 `digest_mismatch`；SM2 与 gmssl 双向互操作；SM3 双后端同向量、SM4 与 gmssl 参考实现逐字节一致 | `pytest tests/test_crypto`（181 passed，累计）+ `pytest` 607 passed |
 | S4-5 密钥库 | OpenSSL 生成 PKCS#8 → `dG` 与 `pkey -pubout` 逐字节一致；产物只有 `.p8.enc`（498B 密文 JSON）+ `.pub.pem`；自检解锁+签名+验签通过；**OpenSSL 独立验签成功**（`-pkeyopt distid:1234567812345678`）；错误口令/篡改密文/盐/迭代全失败；`key_fp=SHA-256(0x04‖X‖Y)` | `pytest tests/test_crypto`（205 passed，累计）+ `pytest` 631 passed |
 | S4-6 证书 | CA + 用户证书真签发；`openssl verify` **OK**；`x509 -text` 含 KeyUsage(DS/NR/KE)、EKU=clientAuth、SKI/AKI、签名算法 `sm2sign-with-SM3`；运行期指纹与 openssl 一致；过期/未生效/吊销/错公钥/错角色五类判定齐全；签发后公钥一致性自检通过，无临时密钥文件 | `pytest tests/test_crypto`（220 passed，累计）+ `pytest` 646 passed |
+| S4-7 审计链 | 3 条链 prev 逐行相连、创世 0×64；改 detail → `broken_at=2/entry_hash_mismatch`；改 entry_hash → 断在该行；删中间行 → `prev_hash_mismatch`；**并发 50 条后 verify ok 且 distinct prev=50**；HTTP 403/40301、422 边界；`scripts/verify_chain.py` 真库 `{"ok": true, "checked_count": 0}` 退出码 0 | 单测 667 passed + 集成 259 passed |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -168,8 +172,13 @@ cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
 (cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 365 passed（默认跳过集成）
 (cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 169 passed（需 Docker）
-# S4-1 ~ S4-6 密码封装（离线、不连库）：220 passed（含 SM3/SM2/SM4 国标向量、2MB 信封 <1s、密钥库、证书）
-(cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto -q)
+# S4-1 ~ S4-7 密码封装 + 审计链（离线/连库）：单测 667、集成 259
+(cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto -q)        # 220（密码封装）
+(cd backend && ../.venv/Scripts/python.exe -m pytest -q)                          # 667（默认跳过集成）
+(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration -q)           # 259（需 Docker）
+# 审计链校验（读 backend/.env → 全链复算；断链退出码 1）
+.venv/Scripts/python.exe scripts/verify_chain.py
+curl -s localhost:8000/api/v1/admin/audit/verify-chain -H "Authorization: Bearer <admin-token>"
 # 生成密钥（OpenSSL 在 Docker 里跑；口令只走环境变量/交互，不进命令行历史）
 STUDYOCR_KEY_PASSPHRASE='demo-pass-1234' .venv/Scripts/python.exe scripts/keygen.py --name alice --role submitter
 # 建 CA + 给已生成的密钥签发角色证书（私钥经 stdin 做 CSR，不落盘）
@@ -315,38 +324,33 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-078 | 宿主机没有 openssl CLI：用 Docker 内 OpenSSL 3.5.9（`scripts/openssl.sh`，固定镜像）生成密钥/证书；不装系统软件、不用 `_kg` 造假密钥 |
 | D-079 | 私钥口令保护：OpenSSL 生成 PKCS#8 → PBKDF2-HMAC-SHA256(200k,16B 盐)→AES-256-GCM，AAD 绑元数据；`key_fp=SHA-256(0x04‖X‖Y)`；解锁失败统一"口令错误"；`key_records` 落库属 S5（SCHEMA 无 key_fp/status 列） |
 | D-080 | 证书：OpenSSL 签发（CSR 经 stdin，私钥不落盘）；**运行期不做链验签**（只指纹/有效期/公钥/吊销/OU 角色）；角色取自 OU（SCHEMA 无 role 列）；失败取值 `cert_expired/cert_not_yet_valid/cert_revoked/cert_public_key_mismatch/cert_role_mismatch` |
+| D-081 | 审计链：HMAC-SM3 绑**全部**审计字段（比 SCHEMA 公式多 `actor_role`/`target_type`）；`payload_sha256` 不落列、从 detail 重算；`ts` 用 Python 显式 UTC；咨询锁常量 8071701；**业务审计行留 S5**（#21/#27/#54/#61 已重定向）；"锚定"=每日复算，无外部锚 |
 
-## 7. 下一步：S4-7 审计日志哈希链（★关键）
+## 7. 下一步：S4-8 密码模块单测与国标测试向量验证（★关键，阶段 4 收口）
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章 S4-7；
-- 流程（AGENTS §11）：spec（`docs/spec/s4-7-*.md`）→ plan → 写码（用户已授权"不逐步确认"）；
-- **⚠️ 本卡是阶段 4 唯一跨出 `crypto/` 的卡**：任务卡明确要求
-  `backend/app/services/audit.py`、`GET /api/v1/admin/audit/verify`、`scripts/verify_chain.py`，
-  必然要动 services + API + 测试；按任务卡执行（S4-8 回到 `crypto/`）；
-- **S4-7 范围**（任务卡原文）：
-  1. `audit.py`：字段 `prev_hash / entry_hash / ts / actor_id / action / object_type / object_id /
-     payload_sha256 / trace_id`；`entry_hash = HMAC_SM3(prev_hash ‖ ts ‖ actor ‖ action ‖ payload_sha256)`，
-     HMAC key 从环境变量读（进 `Settings` + `.env.example`），拼接用 **canonical 编码**固定；
-     创世条目 `prev_hash` = 32 字节 0；
-  2. **写入串行**：`pg_advisory_xact_lock` 锁链尾（保证不分叉）；`verify_chain()` 顺序复算，
-     返回首个断链 `index` 与原因；暴露到 `GET /api/v1/admin/audit/verify`（admin）与 `scripts/verify_chain.py`；
-  3. 单测：正常链通过；改中间一条 payload 报断链（正确 index）；**并发 50 条写入后仍为单链**；
-- **必须先定的口径（spec 里写死）**：
-  1. `ts` 用 UTC + 固定格式（如 `YYYY-MM-DDTHH:MM:SS.ffffff+00:00`，参与哈希的字符串要与存储一致）；
-  2. HMAC key 从 `Settings` 读（新增 `AUDIT_HMAC_KEY`），缺失时启动即 `ConfigError`（同既有配置口径）；
-  3. `audit_logs.action` 现有枚举（0001/0002/0005）：`login/login_failed/logout/forbidden/
-     template_*/upload/ocr/extract/confirm_field/field_reread/…`；**`template_create`/`report_create`/
-     `issue_cert` 仍缺**（遗留 #20/#37）——是否本卡补枚举 + 迁移 0008、以及是否本卡接入各业务审计行，
-     在 spec 里决定；建议：**本卡只做"链 + 校验 + API + 脚本 + 测试"**，业务行接入随 S5 各接口
-     （否则要改多个 service，超出本卡边界），并在 PROGRESS 写明；
-  4. 并发测试需要真实 PostgreSQL（`@pytest.mark.integration`），单测用纯函数 + 假连接；
-- **坑**（任务卡原文）：不加锁并发写会让两条记录共用同一 `prev_hash`（链分叉且无法检出）；
-  `ts` 必须 UTC 且哈希里的格式固定，别用本地时间字符串；`prev_hash` 创世值不要写成空串；
-- **验收**：篡改中间一条 payload 后 verify 报出正确 index；50 并发写入后 verify 通过。
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章 S4-8；
+- 流程（AGENTS §11）：spec（`docs/spec/s4-8-*.md`）→ plan → 写码（用户已授权"不逐步确认"）；
+- **本卡是收口卡**：`test_vectors.py` + `test_pipeline.py`，把"自己签自己验"升级为"标准向量 + 跨实现 + 端到端"；
+- **S4-8 范围**（任务卡原文）：
+  1. **SM3**：GB/T 32905 附录向量（`abc` → `66c7f0f4…` 等；出处写进测试注释）；
+  2. **SM4**：GB/T 32907 示例密钥/明文**单块加密**向量（已有，确认口径）；
+  3. **SM2**：确定性摘要 + 随机 k + 验签成功/失败/篡改；**与 OpenSSL 命令行交叉验证一次**
+     （`scripts/openssl.sh pkeyutl -verify -rawin -digest sm3 -pkeyopt distid:1234567812345678`，遗留 #88）；
+  4. **端到端链路**：`canonical_json → SM3 → SM2 签名 → SM4 加密 → 信封 → 解封 → 验签`，
+     含 **1 bit 篡改**用例（改 payload 后验签失败）；
+  5. **覆盖率**：`pytest --cov=app.crypto --cov-report=term-missing`，行覆盖 **≥85%**，
+     把覆盖率与向量来源写进 `docs/PROGRESS.md`；
+- **现状（已具备，别重复造）**：`tests/test_crypto/` 已有 220 条（SM3/SM4/SM2 国标向量、
+  信封 2MB、密钥库、证书）；缺的是 `test_vectors.py`（集中向量清单 + 出处）与
+  `test_pipeline.py`（跨模块端到端 + 篡改）、以及 **coverage 实测**；
+- **注意**：`pytest-cov` **可能未安装**（`requirements.txt` 里没有）——加依赖要按 AGENTS §2.1 说明理由
+  并记 DECISIONS；也可先用 `coverage` 模块（若已装）或临时 `pip install pytest-cov` 并补 requirements；
+- **验收**：`pytest backend/tests/test_crypto -q --cov=app/crypto` 全绿且 **≥85%**；
+  向量出处（标准号 + 附录）写进测试与 PROGRESS；论文可直接引用。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地领先 origin **77 个 commit**（S3-1 ~ S3-9 + D-069~D-080 + S4-1~S4-6），AI 不推，由用户 `git push`；
+1. **push**：本地领先 origin **78 个 commit**（S3-1 ~ S3-9 + D-069~D-081 + S4-1~S4-7），AI 不推，由用户 `git push`；
 2. ✅ 已闭合（S4-1）：`gmssl==3.2.2` 已装并锁进 `requirements.txt` / `requirements.lock.txt`（D-073）；
    装完 numpy/paddle/paddleocr 未变、全量单测 631 passed；`cryptography==50.0.2` 已在环境与 lock，S4-4 起升为直接依赖（D-077）；
 3. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`、

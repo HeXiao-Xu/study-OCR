@@ -62,6 +62,8 @@ class Settings(BaseSettings):
 
     # ---------- 安全 ----------
     jwt_secret: str
+    # S4-7：审计链 HMAC-SM3 的 key（与 JWT 分开；缺失/过短启动即失败）
+    audit_hmac_key: str
     max_upload_mb: int = 20  # D-018：单文件上限，前后端共用
 
     # ---------- 认证（S2-2）----------
@@ -165,6 +167,13 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET 至少 32 个字符（HS256 的安全下限）")
         return value
 
+    @field_validator("audit_hmac_key")
+    @classmethod
+    def _check_audit_hmac_key(cls, value: str) -> str:
+        if len(value) < 32:
+            raise ValueError("AUDIT_HMAC_KEY 至少 32 个字符（HMAC-SM3 的安全下限）")
+        return value
+
     @field_validator("reread_pad_min_px")
     @classmethod
     def _check_reread_pad(cls, value: int) -> int:
@@ -244,6 +253,13 @@ _WEAK_JWT_SECRETS = {
     "please_change_me",
 }
 
+# S4-7：审计 HMAC key 的示例占位符，prod 同样拒绝
+_WEAK_AUDIT_KEYS = {
+    "change_me_audit_hmac_key",
+    "change_me_audit_hmac_key_at_least_32_chars",
+    "change_me_audit_hmac_key_at_least_32_chars_long",
+}
+
 
 def _format_validation_error(exc: PydanticValidationError) -> str:
     """把 Pydantic 的报错整理成"缺什么、哪一项不合法"的可读清单。"""
@@ -267,4 +283,6 @@ def get_settings() -> Settings:
 
     if settings.is_prod and settings.jwt_secret in _WEAK_JWT_SECRETS:
         raise ConfigError("prod 环境禁止使用示例 JWT_SECRET，请更换为随机值")
+    if settings.is_prod and settings.audit_hmac_key in _WEAK_AUDIT_KEYS:
+        raise ConfigError("prod 环境禁止使用示例 AUDIT_HMAC_KEY，请更换为随机值")
     return settings
