@@ -1699,3 +1699,35 @@
   `.p8.enc` + `.pub.pem`、无临时 PEM；自检解锁+签名+验签通过；**OpenSSL 独立验签成功**
   （显式 distid）；错误口令/篡改密文/篡改盐/篡改 iterations 全部失败；
   `pytest tests/test_crypto` 205 passed、全量 631 passed、`alembic check` 零差异。
+
+---
+
+## D-080 证书：OpenSSL 签发（CSR 经 stdin，私钥不落盘）、运行期不做链验签、角色取自 OU
+
+- **日期**：2026-11-21（S4-6）
+- **背景**：任务卡要求自建 CA + 角色证书；`certificates` 表只有
+  `subject_dn/serial_no/issuer_dn/key_algo/public_key_pem/cert_pem/not_before/not_after/fingerprint_sha256/revoked/revoked_at`，
+  **没有 `role` 列**；任务卡给的记录结构是 `(cert_pem, serial, not_before, not_after, fingerprint_sha256, role, public_key_hex, revoked_at)`。
+  另外 `cryptography` 不能解析 SM2 公钥（`public_key()` 抛 `UnsupportedAlgorithm`）。
+- **决策**：
+  1. **证书一律 OpenSSL CLI 签发**（Docker 内 3.5.9，D-078）；`ca_init.sh` 提供
+     `init`（CA:TRUE + keyCertSign/cRLSign）/ `issue` / `show` / `verify`；
+  2. **CSR 的私钥经 stdin**：`unlock_key.py` 把 `.p8.enc` 解锁成 PKCS#8 PEM 只写 stdout，
+     `ca_init.sh` 用 `openssl req -new -key /dev/stdin` 生成 CSR → **明文私钥不落盘、无临时 PEM**；
+  3. **运行期不做 X.509 链验签**（刻意简化）：只做指纹、有效期、公钥一致性、吊销位、角色五项；
+     链校验在部署期由 `ca_init.sh verify`（`openssl verify -CAfile`）做一次。
+     边界：单 CA 拓扑；多级 CA/跨机构互信不适用；
+  4. **角色取自 subject 的 OU**（`CN=<name>/O=学校/OU=<role>`）；SCHEMA 不新增 role 列
+     （AGENTS §9：SCHEMA 优先）；角色变更 = 重签 + 旧证吊销；
+  5. **公钥提取**走证书 DER 的 `tbsCertificate → SPKI → BIT STRING`（pycryptodomex 原语），
+     因为 `cryptography` 对 SM2 公钥抛 `UnsupportedAlgorithm`；
+  6. 失败取值 `CertStatus{ok, cert_expired, cert_not_yet_valid, cert_revoked,
+     cert_public_key_mismatch, cert_role_mismatch}`；判定顺序 **吊销 → 有效期 → 公钥 → 角色**；
+  7. 测试夹具是**预生成的公开证书**（CA/alice/bob，无任何私钥），测试不依赖 Docker；
+     签发流程由 `ca_init.sh` 真跑覆盖。
+- **代价**：没有链验签与 CRL/OCSP，"证书可信"依赖本地登记表；CA 私钥是明文文件（仅 chmod 600，
+  演示用；生产应离线/HSM——遗留 #93）；证书有效期 10 年、无轮换（#95）。
+- **验证**：`openssl verify` OK；`x509 -text` 的 KeyUsage/EKU/SKI/AKI 与签名算法
+  `1.2.156.10197.1.501`（sm2sign-with-SM3）齐全；`ca_init.sh issue alice submitter` 后公钥一致性自检通过、
+  `secrets/certs/` 只有证书文件；`certs.py` 的 15 条用例覆盖正常/过期/未生效/吊销/错公钥/错角色/非法输入；
+  `pytest tests/test_crypto` 220 passed、全量 646 passed、`alembic check` 零差异。

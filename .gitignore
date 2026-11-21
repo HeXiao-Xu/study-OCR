@@ -24,6 +24,9 @@ secrets/
 *.p12
 *.pfx
 !deploy/certs/README.md
+# 例外：S4-6 的证书测试夹具是**公开证书/公钥**（无任何私钥），必须入库才能在不依赖 Docker 的情况下跑测试
+!backend/tests/test_crypto/fixtures/*.crt.pem
+!backend/tests/test_crypto/fixtures/*.pub.pem
 
 # ===== 票据样本（含个人信息风险，绝不入库）=====
 # 只允许 MANIFEST.md 与生成脚本入库，图片/PDF 一律本地
