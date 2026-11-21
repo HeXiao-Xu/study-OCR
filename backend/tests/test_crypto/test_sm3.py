@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.crypto.sm.sm3 import sm3_digest, sm3_hex
+from app.crypto.sm.sm3 import hmac_sm3, sm3_digest, sm3_hex
 
 # GB/T 32905-2016 附录 A 示例
 VECTOR_ABC = "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0"
@@ -105,3 +105,62 @@ def test_sm3_digest_different_sizes_have_different_digests() -> None:
     sizes = [55, 56, 63, 64, 65]
 
     assert len({sm3_digest(b"a" * n).hex() for n in sizes}) == len(sizes)
+
+
+# ---------------------------------------------------------------- HMAC-SM3（S4-3）
+# HMAC 不是国标定义的算法，没有"国标向量"；以下期望值由 OpenSSL 3（Node v25
+# `createHmac('sm3', key)`）独立计算，用于跨实现对照（D-076）。
+
+HMAC_VECTORS = [
+    (
+        b"key",
+        b"The quick brown fox jumps over the lazy dog",
+        "bd4a34077888162b210645b8ebf74b9af357303789357a27c7fc457244ebd398",
+    ),
+    (b"k" * 100, b"data", "d2e3191973421dc0792b6ec5e1a5b5c26652d764b024ba8c20221f0396fedfe8"),
+    (b"", b"", "0d23f72ba15e9c189a879aefc70996b06091de6e64d31b7a84004356dd915261"),
+    (b"secret", b"canonical-payload", "34be46034c9ae95ecb3022723c6143be9bb264ef2e76ba81381960dee8dad064"),
+]
+
+
+@pytest.mark.parametrize(
+    ("key", "data", "expected"),
+    HMAC_VECTORS,
+    ids=["openssl_vector", "long_key", "empty_key_and_data", "business_shape"],
+)
+def test_hmac_sm3_matches_openssl_cross_vector(key: bytes, data: bytes, expected: str) -> None:
+    assert hmac_sm3(key, data).hex() == expected
+
+
+def test_hmac_sm3_returns_32_bytes() -> None:
+    mac = hmac_sm3(b"key", b"data")
+
+    assert isinstance(mac, bytes)
+    assert len(mac) == 32
+
+
+def test_hmac_sm3_is_not_plain_concat_hash() -> None:
+    key, data = b"secret", b"canonical-payload"
+
+    assert hmac_sm3(key, data) != sm3_digest(key + data)
+
+
+def test_hmac_sm3_hashes_overlong_key_first() -> None:
+    # RFC 2104：key 长于分组长时，先哈希；因此两条调用必须等价。
+    long_key = b"k" * 100
+
+    assert hmac_sm3(long_key, b"data") == hmac_sm3(sm3_digest(long_key), b"data")
+
+
+def test_hmac_sm3_accepts_bytearray_and_memoryview() -> None:
+    expected = hmac_sm3(b"key", b"data")
+
+    assert hmac_sm3(bytearray(b"key"), memoryview(b"data")) == expected
+
+
+def test_hmac_sm3_rejects_str_inputs() -> None:
+    with pytest.raises(TypeError):
+        hmac_sm3("key", b"data")  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError):
+        hmac_sm3(b"key", "data")  # type: ignore[arg-type]

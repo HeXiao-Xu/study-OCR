@@ -1559,3 +1559,37 @@
   `s=B1B6AA29DF212FD8763182BC0D421CA1BB9038FD1F7F42D4840B69C485BBC1AA`（逐位对上）；
   双重哈希陷阱、`s+n` 可塑性、`04` 开头公钥、畸形输入全部有用例；
   `pytest tests/test_crypto` 105 passed、全量 531 passed、`alembic check` 零差异。
+
+---
+
+## D-076 对称层：Encrypt-then-MAC（`aad‖IV‖密文`）、自写 CBC/PKCS7、HMAC-SM3 用 OpenSSL 交叉向量
+
+- **日期**：2026-11-21（S4-3，用户授权按 spec 自行拍板）
+- **背景**：任务卡要求 SM4-CBC + PKCS7 + 随机 IV + HMAC-SM3 的 Encrypt-then-MAC，
+  并"先验 MAC 再解密"。实测 gmssl==3.2.2 的 `CryptSM4.crypt_cbc` **无条件**补/去 PKCS7，
+  且 `pkcs7_unpadding = lambda data: data[:-data[-1]]`（`gmssl/func.py:16`）**完全不校验填充**，
+  满足不了"去填充失败必须抛 `IntegrityError`"；它也无法让 MAC 覆盖精确密文。
+- **决策**：
+  1. **Encrypt-then-MAC**：`mac = HMAC-SM3(mac_key, aad ‖ IV ‖ ciphertext)`，
+     `mac_key = SM3(key ‖ "mac")`（加密 key 与 MAC key 分离）；比较用 `hmac.compare_digest`。
+     IV 必须进 MAC——只覆盖密文时攻击者可翻转 IV 可控翻转明文首块。
+  2. **CBC 链接与 PKCS7 由本层实现**（约 40 行），SM4 分组本体仍用 gmssl
+     （`CryptSM4.set_key` + `one_round`）。理由见上；这是"补库的缺陷"，不是重写算法本体。
+  3. **IV 随机源**：`secrets.token_bytes(16)`（任务卡写 `os.urandom`；AGENTS §6 统一 `secrets`）。
+  4. **返回 bytes**：`Sm4Ciphertext(iv, ciphertext, mac)` 都是 bytes（任务卡写 hex）；
+     hex 只进日志（沿 S4-1 口径），S4-4 直接 base64。
+  5. **失败归类**：`IntegrityError.reason ∈ {mac_mismatch, bad_padding, bad_ciphertext}`；
+     结构性长度错误（key 16B / iv 16B / mac 32B）抛 `ValueError`。异常信息只含归类，不含明文/密钥。
+  6. **`hmac_sm3` 补进 `crypto/sm/sm3.py`**（AGENTS §10.4 的对外清单一直缺它）：RFC 2104、块长 64B、
+     key>64B 先哈希、输出 32B。
+  7. **HMAC-SM3 没有国标向量**（HMAC 不是 GB/T 定义内容）——测试用 **OpenSSL 3**
+     （Node v25 `createHmac('sm3')`）独立计算的 4 组交叉向量，测试注释写明出处，不冒充国标；
+     SM4 本体用 **GB/T 32907-2016 A.1** 国标向量，CBC 层用 OpenSSL `sm4-cbc` 逐字节交叉。
+  8. **不做 GCM**（gmssl 的 SM4 只有 ECB/CBC），**不开放 ECB 入口**（只作内部向量测试）。
+- **代价**：CBC + HMAC 的密文比原始数据多一整个填充块 + 32B MAC；纯 Python SM4 慢
+  （性能在 S6-3 量化）；`SM3(key‖"mac")` 是简易 KDF，严格场景应用 HKDF（留给 S4-9 对照）。
+- **验证**：SM4 国标向量 → `681edf34d206965e86b3e94f536e4246`；
+  固定 IV CBC → `61e48c1ebc69763fa57932a3713e512791d54fb1fc299da8a8a6054b475eaf5c`
+  （与 Node `createCipheriv('sm4-cbc')` 相同）；HMAC 4 组向量与 Node 相同（`bd4a3407…` 等）；
+  篡改/截断/错 key → `mac_mismatch`，坏填充 → `bad_padding`，坏填充+坏 MAC 先报 `mac_mismatch`；
+  `pytest tests/test_crypto` 146 passed、全量 572 passed、`alembic check` 零差异。

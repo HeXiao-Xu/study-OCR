@@ -10,12 +10,16 @@ hex↔bytes 转换导致出现半截摘要。因此 AGENTS §6 规定**业务代
 """
 from __future__ import annotations
 
+from typing import Final
+
 from gmssl.sm3 import sm3_hash
 
-__all__ = ["sm3_digest", "sm3_hex"]
+__all__ = ["hmac_sm3", "sm3_digest", "sm3_hex"]
 
 _DIGEST_BYTES = 32
 _DIGEST_HEX_LEN = _DIGEST_BYTES * 2
+# SM3 的分组长度（HMAC 按 RFC 2104 用 64 字节块；与 SHA-256 相同）。
+_HMAC_BLOCK_BYTES: Final = 64
 
 
 def sm3_digest(data: bytes | bytearray | memoryview) -> bytes:
@@ -44,11 +48,33 @@ def sm3_hex(data: bytes | bytearray | memoryview) -> str:
     return sm3_digest(data).hex()
 
 
-def _as_bytes(data: bytes | bytearray | memoryview) -> bytes:
+def hmac_sm3(
+    key: bytes | bytearray | memoryview,
+    data: bytes | bytearray | memoryview,
+) -> bytes:
+    """HMAC-SM3（RFC 2104；SM3 块长 64B、输出 32B），返回 32 字节。
+
+    用途：Encrypt-then-MAC 的完整性校验（S4-3/S4-4）。key 长于 64B 时按 RFC 先哈希；
+    调用方负责恒时比较（`hmac.compare_digest`），不要用 `!=` 比 MAC。
+    """
+    key_bytes = _as_bytes(key, function="hmac_sm3")
+    message = _as_bytes(data, function="hmac_sm3")
+    if len(key_bytes) > _HMAC_BLOCK_BYTES:
+        key_bytes = sm3_digest(key_bytes)
+    padded_key = key_bytes.ljust(_HMAC_BLOCK_BYTES, b"\x00")
+    inner = sm3_digest(bytes(byte ^ 0x36 for byte in padded_key) + message)
+    return sm3_digest(bytes(byte ^ 0x5C for byte in padded_key) + inner)
+
+
+def _as_bytes(
+    data: bytes | bytearray | memoryview,
+    *,
+    function: str = "sm3_digest",
+) -> bytes:
     if isinstance(data, bytes):
         return data
     if isinstance(data, (bytearray, memoryview)):
         return bytes(data)
     raise TypeError(
-        f"sm3_digest 只接受 bytes/bytearray/memoryview，收到 {type(data).__name__}"
+        f"{function} 只接受 bytes/bytearray/memoryview，收到 {type(data).__name__}"
     )

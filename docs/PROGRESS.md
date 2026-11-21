@@ -6,17 +6,17 @@
 
 ## 当前状态
 
-- 阶段：**阶段 4 进行中**（S4-1 / S4-2 已完成，签名链路打通）；下一张卡 **S4-3 SM4-CBC + HMAC-SM3 对称层**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-2**（共 36 张卡，全部 ✅ 通过）
-- 最近完成：**S4-2 SM2 签名与验签**（GB/T 32918.5 公开向量逐位对账；全量 531 条单元全绿）
+- 阶段：**阶段 4 进行中**（S4-1 / S4-2 / S4-3 已完成，签名 + 对称加密层打通）；下一张卡 **S4-4 数字信封（SM2 包裹会话密钥）**
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-3**（共 37 张卡，全部 ✅ 通过）
+- 最近完成：**S4-3 SM4-CBC + HMAC-SM3 Encrypt-then-MAC**（国标向量 + OpenSSL 逐字节对照；全量 572 条单元全绿）
 - 附加改动（2026-11-20）：D-069 真实横版票抽取修复、D-070 确认流程简化（去重识别/逐字段操作）、D-071 删除改硬删（仅 draft，可重传）；业务状态统一显示为 待确认/待复核/已复核（前端派生）
-- 下一步：**S4-3 SM4-CBC + HMAC-SM3 的 Encrypt-then-MAC 对称层 ★关键**
+- 下一步：**S4-4 数字信封（SM2 包裹会话密钥）★关键**
 - 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
   - `gmssl==3.2.2`（+ `pycryptodomex==3.24.2`）已装并锁版本；装入后 numpy 1.26.4 / paddle 2.6.2 未变
-  - 本地领先 origin **71 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **72 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -66,7 +66,7 @@
 ## 阶段 4：密码模块（M3）
 [x] S4-1 SM3 摘要与 canonical JSON 规范化 ★关键
 [x] S4-2 SM2 签名与验签（防双重哈希） ★关键
-[ ] S4-3 SM4-CBC + HMAC-SM3 的 Encrypt-then-MAC 对称层 ★关键
+[x] S4-3 SM4-CBC + HMAC-SM3 的 Encrypt-then-MAC 对称层 ★关键
 [ ] S4-4 数字信封（SM2 包裹会话密钥） ★关键
 [ ] S4-5 密钥生成与私钥口令保护 ★关键
 [ ] S4-6 X.509 自建 CA 与角色证书
@@ -102,6 +102,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S4-3 | `backend/app/crypto/sm/sm3.py`（追加 `hmac_sm3`：RFC 2104、块长 64、长 key 先哈希；返回 32B）、`backend/app/crypto/sm/sm4.py`（新：`IntegrityError(reason)` / `Sm4Ciphertext` / `derive_mac_key` / `encrypt` / `decrypt` + 内部 CBC/PKCS7/分组；IV 用 `secrets`；MAC 覆盖 `aad‖IV‖密文`；解密前先验 MAC + `compare_digest`）、`backend/tests/test_crypto/{test_sm3,test_sm4}.py`（+41 条）、`docs/{spec,plan}/s4-3-sm4-envelope-crypto.md` | ① **GB/T 32907-2016 A.1 国标向量**：key=PT=`0123456789abcdeffedcba9876543210` → `681edf34d206965e86b3e94f536e4246`；② **OpenSSL 交叉**：固定 IV 的 CBC 向量与 Node `createCipheriv('sm4-cbc')` 逐字节相同（`61e48c1e…af5c`）；HMAC-SM3 4 组向量与 Node `createHmac('sm3')` 相同（`bd4a3407…ebd398` 等）；③ 往返 0/1/15/16/17/31/32/100/1000 B 与中文载荷；空明文可往返；④ 同明文两次 IV/密文/MAC 全不同；⑤ 篡改密文 1 bit / 改 IV / 改 MAC / 错误 key / 截断分组 → `IntegrityError("mac_mismatch")`；⑥ **坏填充**（MAC 合法、末字节 0x00/0x05/0x11）→ `IntegrityError("bad_padding")`；坏填充+坏 MAC → 先报 `mac_mismatch`（证明"先验 MAC 再解密"）；⑦ aad 绑定：同 aad 通过、换 aad 失败；⑧ key≠16B / iv≠16B / mac≠32B → `ValueError`；异常信息不含明文；⑨ `pytest tests/test_crypto` **146 passed**（S4-1/2 105 + 本卡 41），全量 **572 passed**（531 + 41），`alembic check` 零差异（无迁移） | ✅ 通过（D-076：EtM 口径、自写 CBC/PKCS7 的理由、HMAC 交叉向量出处） |
 | S4-2 | `backend/app/crypto/sm/sm2.py`（新：`sign_bytes` / `verify_bytes` / `DEFAULT_USER_ID` / `SM2_N`；只走 `sign_with_sm3`，K 用 `secrets` + 拒绝采样；DER 签名；公钥归一化 + 曲线校验 + 覆盖 gmssl `lstrip("04")` 缺陷；验签 r,s 范围校验 + 畸形返回 False）、`backend/app/crypto/signature.py`（新：`SignatureRecord`（frozen/extra=forbid）、`VerifyResult`、`sign_canonical` / `verify_record` / `verify_canonical`）、`backend/tests/test_crypto/{test_sm2,test_signature,_keys}.py`（51 条）、`docs/{spec,plan}/s4-2-sm2-signature.md` | ① **GB/T 32918.5 附录 A.1 公开向量**逐位对上：`M="message digest"`、`k=59276E27…` → `r=F5A03B06…20B3`、`s=B1B6AA29…C1AA`，验签 True；② ZA/摘要与标准一致（`ZA=B2E14C5C…`、`e=F0B43E94…`，实测）；③ 1 bit 改消息 / 改签名 / 错误公钥 → False；④ 同明文两次签名不同（`secrets`），固定 K 两次相同；⑤ **双重哈希陷阱**：把 `sm3_digest(payload)` 当消息再签 → 对摘要 True、对原 payload False；⑥ **gmssl 缺陷回归**：x 以 `04` 开头的公钥（`d=7F3A…6146`）签名/验签正确（未修 bug 时 gmssl 把 128 hex 剥成 126 并抛 `TypeError`，已实测）；⑦ **可塑性**：`s+n` 的 DER 变体 → False（gmssl 本身会验过）；⑧ 畸形签名 6 种 → False 不抛；非法私钥/公钥/K/非曲线点 → `ValueError`；⑨ 记录三类失败：载荷改 `digest_mismatch`、载荷+digest 同改 `bad_signature`、签名改/错公钥 `bad_signature`；模型 frozen/extra=forbid/naive 时间拒绝；⑩ `pytest tests/test_crypto` **105 passed**（S4-1 54 + 本卡 51），全量 **531 passed**（480 + 51），`alembic check` 零差异（本卡无迁移）；⑪ 独立实现对照：Node `createHash('sm3')` 与 `sm3_hex(canonical_json(...))` 同值 `d646a76e…` | ✅ 通过（D-075：签名策略裁决 + gmssl 七条缺陷处理；`hmac_sm3` 仍留 S4-3） |
 | S4-1 | `backend/app/crypto/canonical.py`（新：`canonical_json` 校验遍历 + 标准库转义、`canonical_sha256`、`CanonicalJSONError`；拒 float/Decimal/非 str 键/超 2^53 整数/循环/代理项）、`backend/app/crypto/sm/sm3.py`（新：`sm3_digest` 32B、`sm3_hex` 仅日志；gmssl 唯一入口 + `list()` 副本挡原地修改）、`backend/tests/test_crypto/{__init__,test_canonical,test_sm3}.py`（54 条）、`scripts/{canonical_fixture.json,canonical_cross_check.py,canonical_cross_check.mjs}`、`backend/requirements{,.lock}.txt`（`gmssl==3.2.2` + `pycryptodomex==3.24.2`）、`docs/{spec,plan}/s4-1-canonical-sm3.md` | ① SM3 国标向量全过：`abc`→`66c7f0f4…`、`b"abcd"*16`→`debe9ff9…`、空串→`1ab21d83…`；② 键序不同 → 同字节同摘要（`{"b":1,"a":2}` 与 `{"a":2,"b":1}` 均 `b'{"a":2,"b":1}'`）；③ 中文不转义（`{"name":"发票"}` → 原样 UTF-8，无 `\u`）；负数/嵌套 list/null 精确字节；④ `100`(int)/`"100"`/`"100.00"` 三种字节三种摘要，`float 100.0` 与 `Decimal("100.00")` 被拒（`CanonicalJSONError`）；⑤ 非 str 键、`2^53`、`bytes/tuple/set/自定义对象`、循环引用、孤立代理项全部被拒；⑥ `bytearray` 入参调用后未被修改（gmssl 原地改入参已被封装挡住）；`str` 入参 `TypeError`；⑦ **跨语言**：`canonical_cross_check.py` 与 `.mjs` 三字段逐字相等（`canonical_utf8_b64` / `sm3=ae5c73b0…` / `sha256=d733f2fa…`）；用 JS 默认 UTF-16 排序算出的 SM3 是 `1504e4f3…`（证明 fixture 能抓住该坑，D-074 #11）；⑧ `pytest tests/test_crypto` **54 passed**，全量单测 **480 passed**（基线 426 + 54），`alembic check` 零差异（本卡无迁移）；⑨ 装 gmssl 后 numpy 1.26.4 / paddle 2.6.2 / paddleocr 2.7.3 未变 | ✅ 通过（D-073 依赖落地、D-074 canonical 口径；`hmac_sm3` 留 S4-3） |
 | S3-9（补充卡） | `alembic/versions/0007_invoice_review.py`（`reviewed_by` FK users、`reviewed_at` + 索引）、`models/invoices.py`、`schemas/invoice.py`（`InvoiceOut` 两字段、`review_status` 过滤）、`services/invoice_service.py`（`update_fields` 删除金额角色限制 + 复核锁定、`review_invoice`、列表过滤）、`api/v1/invoices.py`（`POST /{id}/review`）、`web/src/{types,invoices api,InvoiceDetail,InvoiceList}`、`backend/tests/test_review.py`（新）+ 改 `test_invoices`、`docs/{spec,plan}/s3-9-two-level-review.md` | ① 提交人改金额：不勾选 **422/42202**、勾选 **200**（原 403 删除）；② 提交人确认 113 → v4；审核人 review → **200**，`reviewed_by=15`、`reviewed_at` 落库、v5；③ 列表 `review_status=pending` 空、`reviewed=[113]`；④ 复核后提交人改字段 → **409/40900**；重复复核 → **200 且 v 不变**（幂等）；⑤ 迁移 0007 upgrade/downgrade/upgrade，`alembic check` 零差异；⑥ 单元 422 / 集成 245 passed，`typecheck`/`build` 通过；⑦ UI 断言 reviewer 详情“已复核”通过，截图 `backend/eval/results/s39-reviewed.png` | ✅ 通过（D-068 取代 D-017 金额限制；复核即锁定，无反复核） |
@@ -242,10 +243,27 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 75 | `sm2.sign_bytes` 暴露 `k_hex`（只为国标向量/确定性测试） | 生产误传会复用 K → 私钥可恢复（SM2 与 ECDSA 同理） | S5 只调 `sign_canonical`（无 k 参数）；上线前可加"业务层禁止直接 import sm2"的检查 |
 | 76 | `VerifyResult` 目前不含 `cert_invalid` | 证书链/吊销校验属 S4-6 | S4-6 完成后 `verify_record` 接入证书校验并补该取值 |
 | 77 | SM2 性能未测（gmssl 纯 Python 点运算，无常数时间保证） | 论文性能与侧信道分析靠 S6-3 / S6-4 | S6-3 补 sign/verify p50/p95；S6-4 如实写"无常数时间实现" |
+| 78 | 对称层未做流式加密（一次性读入内存） | 票据影像上限 20MB，可接受；2MB 目标在 S4-4 验收 | 若将来支持大文件/视频，评估分块 + 分段 MAC |
+| 79 | `mac_key = SM3(key‖"mac")` 是简易 KDF | 不是 HKDF，但独立于加密 key，满足 EtM 分离 | S4-9 的 AES-GCM/RSA 对照里可并列 HKDF 版本，论文写取舍 |
+| 80 | HMAC-SM3 无国标向量（HMAC 非国标定义内容） | 用 OpenSSL 3 交叉向量替代，测试注释已写明出处 | 保持"不冒充国标"的写法；S6-4 可补第三方实现交叉验证 |
+| 81 | CBC 解密失败仍会执行一次 CBC 运算（MAC 通过后才解密） | 攻击者无 key 无法构造 MAC 合法密文，不构成 padding oracle | 论文安全分析里写明"先验 MAC"的因果 |
+| 82 | **纯 Python SM4 性能不达标**：2MB seal+unseal 实测 **28.1s**（任务卡 S4-4 要求 <1s） | S4-4 的信封性能验收会卡住；内存/CPU 也吃紧 | S4-4 前二选一：① 引入 `cryptography`（OpenSSL 后端，SM4-CBC 快 2–3 个数量级；AGENTS 已规划该依赖，S4-5 也要用）；② 维持纯 Python 并把 2MB 目标改成"文档化偏差"。**必须实测后再定，不许粉饰** |
+| 83 | 对称层加密一次性读入内存（无流式） | 20MB 上限下内存峰值约 3 倍明文，可接受 | 若 S4-4 换 OpenSSL 后端，可顺带评估分块 |
 
 ## 变更日志
 
 ### 2026-11-20
+
+- **S4-3 完成**：SM4-CBC + HMAC-SM3 的 Encrypt-then-MAC 对称层。
+  · `sm3.py` 补 `hmac_sm3`（RFC 2104，块长 64B，key>64B 先哈希）——AGENTS §10.4 清单里一直缺的那个；
+  · `sm4.py`：PKCS7 + CBC + 随机 IV（`secrets`）+ `mac_key = SM3(key‖"mac")` +
+    `mac = HMAC-SM3(mac_key, aad‖IV‖密文)`；解密严格按"验 MAC → 解密 → 严格去填充"；
+  · 自写 CBC 链接与 PKCS7 的原因：gmssl `crypt_cbc` 无条件填充，且
+    `pkcs7_unpadding = data[:-data[-1]]`（`gmssl/func.py:16`）完全不校验，满足不了"填充失败抛异常"；
+    SM4 分组本体仍用 gmssl（国标向量证明）；
+  · 实测：GB/T 32907 A.1 向量通过；固定 IV 的 CBC 与 Node/OpenSSL `sm4-cbc` 逐字节一致；
+    HMAC-SM3 4 组向量与 Node `createHmac('sm3')` 一致；
+  · 无接口/无迁移/无表变更；`pytest tests/test_crypto` 146 passed、全量 572 passed（D-076）。
 
 - **S4-2 完成**：SM2 签名与验签（签名链路打通）。
   · `crypto/sm/sm2.py`：唯一入口 `sign_bytes` / `verify_bytes`，**只走 `sign_with_sm3`**
