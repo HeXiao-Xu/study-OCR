@@ -150,6 +150,14 @@ def test_invoice_no_length_depends_on_ticket_type() -> None:
     assert issue is not None and issue.code == "invalid_invoice_no"
 
 
+def test_train_ticket_accepts_both_8_and_20_digit_numbers() -> None:
+    # 铁路电子客票是 20 位发票号码（真实样例 26539149820000052808）
+    assert validate_invoice_no("26539149820000052808", "train_ticket") is None
+    assert validate_invoice_no("17125473", "train_ticket") is None
+    issue = validate_invoice_no("12345", "train_ticket")
+    assert issue is not None and issue.code == "invalid_invoice_no"
+
+
 # ---------------------------------------------------------------------------
 # 统一社会信用代码
 # ---------------------------------------------------------------------------

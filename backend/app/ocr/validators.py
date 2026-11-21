@@ -220,12 +220,18 @@ def validate_invoice_code(value: str | None) -> ValidationIssue | None:
 
 
 def validate_invoice_no(value: str | None, ticket_type: str | None = None) -> ValidationIssue | None:
-    """发票号码：数电票 20 位，其余 8 位（与 S1-1 的标注规则一致）。"""
+    """发票号码：数电票 20 位；火车票新旧两种（8 位票号 / 20 位电子客票号）；其余 8 位。"""
     if not value:
         return None
     digits = re.sub(r"\s", "", str(value))
-    expected = 20 if ticket_type == "vat_digital" else 8
-    if not re.fullmatch(rf"\d{{{expected}}}", digits):
+    if ticket_type == "vat_digital":
+        pattern, expected = r"\d{20}", "20"
+    elif ticket_type == "train_ticket":
+        # 铁路电子客票的发票号码是 20 位（26539149820000052808 这类）；老票仍可能是 8 位
+        pattern, expected = r"\d{8}|\d{20}", "8 或 20"
+    else:
+        pattern, expected = r"\d{8}", "8"
+    if not re.fullmatch(pattern, digits):
         return ValidationIssue("invoice_no", "invalid_invoice_no",
                                f"发票号码应为 {expected} 位数字：{value}")
     return None
