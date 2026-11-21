@@ -35,6 +35,7 @@ from sqlalchemy.engine import URL
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
+from app.api.deps import get_task_queue
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.exceptions import AppError, NotFoundError, PayloadTooLargeError
@@ -179,6 +180,7 @@ def _client_for(
     algo: str | None = None,
     settings_updates: dict | None = None,
     credential_store=None,
+    task_queue=None,
 ) -> TestClient:
     base = get_settings()
     updates = dict(settings_updates or {})
@@ -199,6 +201,8 @@ def _client_for(
     app.dependency_overrides[get_settings] = lambda: settings
     if credential_store is not None:
         app.dependency_overrides[get_credential_store] = lambda: credential_store
+    if task_queue is not None:
+        app.dependency_overrides[get_task_queue] = lambda: task_queue
     return TestClient(app, raise_server_exceptions=False)
 
 

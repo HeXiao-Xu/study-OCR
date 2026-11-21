@@ -2054,3 +2054,33 @@
   真机冒烟（开发库 + 真 MinIO/Redis）：提交→验签→approve→archive（`AR-2026-0001`）→检索 1 条→
   导出 2873B→`open_archive.py` exit 0（4 成员、manifest BOM）→重复归档 409→归档后签名 409→
   审计 54 行链 OK；业务行/对象/临时包已清理。
+
+## D-090 端到端联调：用确定性 OCR 桩串真密码链路、错误码按契约对齐、并发 approve 从 HTTP 验证
+
+- **日期**：2026-11-21（S5-7，阶段 5 收口）
+- **背景**：任务卡要求一条测试覆盖"登录→上传→确认→建单→签名/提交→验签/解密→审核→归档"，
+  外加异常码、并发 approve、安全不变量和演示脚本。真 Paddle 在集成测试里加载模型慢且受字体/环境影响，
+  容易把联调卡变成 flaky；同时发现 API.md §10 的 42202 场景说明与 S5-5 实现（409）不一致。
+- **决策**：
+  1. **测试与 demo 的 OCR 用确定性桩**（固定票面：20 位发票号 / 日期 / 合计 100+13=113），
+     但**上传接口、OCR 作业真实执行路径（`execute_job_attempt` + `run_pipeline`）、字段落库、确认闸门、
+     SM2/SM4 签名/信封、FakeStorage 的 MinIO 语义、Redis 凭据、PostgreSQL 事务与审计链全部是真的**。
+     真 Paddle 的端到端由 S1/S3 的 100+ 用例与 `scripts/ocr_baseline.py` 覆盖；测试/demo 均显式标注 OCR 桩。
+  2. **错误码按 API.md §10 对齐**：401/40101（无 token）、403/40301（submitter 调财务）、
+     409/40900（新幂等键重复提交、未验签 approve、非法状态迁移）、409/40901（同影像重复上传、一票两单）、
+     422/42200（错口令）、422/42202（归档缺 confirm）、409/50021（篡改签名域）。
+     **修正**：42202 原表写"审批未带有效 verify_token"，与 §5 review 契约冲突；审批缺 token 是 **409**，
+     42202 只用于"金额字段缺 confirm_amount"与"归档缺 confirm"。
+     注意同幂等键重复提交是 **200 + duplicated=true**（S5-2 契约），不是 409。
+  3. **并发 approve 从 HTTP 层验证**：两个独立 TestClient 同时打 `/finance/reports/{id}/review`，
+     断言 `{200,409}`、`review_logs` 恰 1 行、token 已消费（S5-5 的行锁在 HTTP 入口同样成立）。
+  4. **安全不变量固化进测试**：`invoice_files.is_cipher=true`、MinIO 对象不是 JPEG/PNG 明文、
+     `invoices/invoice_files/report_forms` 无 `bytea` 列、表单/文件信封用财务私钥 `open_sealed` 后
+     sha256 分别等于 `payload_sha256` 与 `invoice_files.sha256`、verify/decrypt 响应不含密文字段。
+  5. **demo 可重复**：`scripts/e2e_demo.py` 用确定性桩 + 开发库，逐步打印 `X-Trace-Id`；
+     默认清理业务行/对象、保留审计（审计只增不减），`--keep` 保留数据。
+- **代价/限制**：e2e 未覆盖真 Paddle 与 ARQ worker 消费（分别由 S3 测试/基线、S2-7/S3-8 作业测试覆盖）；
+  demo 每跑一次审计行增加；并发只测 approve，不压测 verify/decrypt。
+- **验证**：`pytest tests/test_e2e_flow.py -m integration` **4 passed**；全量单测 **756**、集成 **355**、
+  `alembic check` 零差异；`python scripts/e2e_demo.py` 13 步全部 200（含 upload/confirm/create/sign/submit/
+  verify/decrypt/preview/approve/archive），归档 `AR-2026-0003`，审计 70 行链 OK，清理后退出 0。
