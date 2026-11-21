@@ -1,23 +1,22 @@
 """SM4-CBC + HMAC-SM3 的 Encrypt-then-MAC 对称层。
 
-用途：S4-4 数字信封用它加密票据影像/字段 JSON；本卡先把"对称层"定死。
+用途：S4-4 数字信封用它加密票据影像/字段 JSON。
 
 ```
 iv  = secrets.token_bytes(16)
 ct  = SM4-CBC(PKCS7(plaintext), iv)
-mac = HMAC-SM3(mac_key, aad ‖ iv ‖ ct)      # Encrypt-then-MAC
-mac_key = SM3(key ‖ "mac")                  # 加密 key 与 MAC key 必须不同
+mac = HMAC-SM3(mac_key, aad ‖ iv ‖ ct ‖ trailer)   # Encrypt-then-MAC
+mac_key = SM3(key ‖ "mac")                          # 加密 key 与 MAC key 必须不同
 ```
 
-**为什么 CBC 链接与 PKCS7 由本层实现**：gmssl 的 `CryptSM4.crypt_cbc` 在加密时无条件补
-PKCS7、解密时无条件去填充，而它的去填充是 `lambda data: data[:-data[-1]]`
-（`gmssl/func.py:16`）——**完全不校验填充**，无法满足"去填充失败抛 IntegrityError"。
-SM4 分组本体仍由 gmssl 提供（`set_key` + `one_round`），本层只做 XOR 链接与填充校验；
-国标 ECB 单块向量（GB/T 32907-2016 A.1）证明分组层正确，CBC 另有 OpenSSL 交叉向量。
+**后端**：SM4 分组与 CBC 由 `cryptography`（OpenSSL C 实现）完成；纯 Python 的 gmssl 版本
+2MB 要 14s，无法满足"2MB 影像 1 秒内"（S4-4 验收），性能实测见 D-077。
+PKCS7 填充与去填充仍由本层实现并**严格校验**——高层库不替我们判断填充合法性，
+而"填充失败必须抛 IntegrityError"是本层的契约。
 
-**为什么 MAC 覆盖 IV**：只覆盖密文时，攻击者翻转 IV 的第一块就能可控地翻转明文首块
-（CBC 的经典构造攻击）。`aad` 留给 S4-4 把信封头（magic/cipher_algo/key_algo/
-recipient_cert_fp）一起绑进 MAC。
+**为什么 MAC 覆盖 IV 与 trailer**：只覆盖密文时，攻击者翻转 IV 的第一块就能可控地翻转明文首块
+（CBC 的经典构造攻击）。`aad` 放信封头（magic/cipher_algo/key_algo/version）与 `wrapped_key`，
+`trailer` 放收方证书指纹——顺序与 SCHEMA `envelopes.mac_b64` 的说明一致（见 D-077）。
 
 失败归类（与 AGENTS §10.4 对齐）：`mac_mismatch` / `bad_padding` / `bad_ciphertext`；
 结构性长度错误（key 16B、iv 16B、mac 32B）抛 `ValueError`。**解密前必须先验 MAC**，
@@ -30,7 +29,7 @@ import secrets
 from dataclasses import dataclass
 from typing import Final
 
-from gmssl.sm4 import SM4_DECRYPT, SM4_ENCRYPT, CryptSM4
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from app.crypto.sm.sm3 import hmac_sm3, sm3_digest
 
@@ -47,6 +46,9 @@ BLOCK_SIZE: Final = 16
 _KEY_BYTES: Final = 16
 _MAC_BYTES: Final = 32
 _MAC_DERIVATION_LABEL: Final = b"mac"
+
+if not hasattr(algorithms, "SM4"):  # pragma: no cover - 环境级缺陷，启动即暴露
+    raise ImportError("当前 OpenSSL/cryptography 未提供 SM4（本项目的对称层依赖它）")
 
 
 class IntegrityError(Exception):
@@ -72,30 +74,51 @@ def derive_mac_key(key: bytes) -> bytes:
     return sm3_digest(_require_key(key) + _MAC_DERIVATION_LABEL)
 
 
-def encrypt(key: bytes, plaintext: bytes, *, aad: bytes = b"") -> Sm4Ciphertext:
-    """加密并计算 MAC（Encrypt-then-MAC）。"""
+def encrypt(
+    key: bytes,
+    plaintext: bytes,
+    *,
+    aad: bytes = b"",
+    trailer: bytes = b"",
+) -> Sm4Ciphertext:
+    """加密并计算 MAC（Encrypt-then-MAC）。
+
+    `aad` / `trailer` 是调用方要绑定的关联数据（信封头与证书指纹），
+    MAC 输入固定为 `aad ‖ IV ‖ 密文 ‖ trailer`。
+    """
     key_bytes = _require_key(key)
     payload = _require_bytes(plaintext, name="plaintext")
     associated = _require_bytes(aad, name="aad")
+    trailing = _require_bytes(trailer, name="trailer")
 
     iv = secrets.token_bytes(BLOCK_SIZE)
     ciphertext = _cbc_encrypt(key_bytes, iv, _pkcs7_pad(payload))
-    mac = hmac_sm3(derive_mac_key(key_bytes), associated + iv + ciphertext)
+    mac = hmac_sm3(derive_mac_key(key_bytes), associated + iv + ciphertext + trailing)
     return Sm4Ciphertext(iv=iv, ciphertext=ciphertext, mac=mac)
 
 
-def decrypt(key: bytes, sealed: Sm4Ciphertext, *, aad: bytes = b"") -> bytes:
+def decrypt(
+    key: bytes,
+    sealed: Sm4Ciphertext,
+    *,
+    aad: bytes = b"",
+    trailer: bytes = b"",
+) -> bytes:
     """先验 MAC、再解密、最后严格去填充；任何一步失败都抛 `IntegrityError`。"""
     key_bytes = _require_key(key)
     if not isinstance(sealed, Sm4Ciphertext):
         raise TypeError(f"sealed 必须是 Sm4Ciphertext，收到 {type(sealed).__name__}")
     associated = _require_bytes(aad, name="aad")
+    trailing = _require_bytes(trailer, name="trailer")
     if len(sealed.iv) != BLOCK_SIZE:
         raise ValueError("iv 必须是 16 字节")
     if len(sealed.mac) != _MAC_BYTES:
         raise ValueError("MAC 必须是 32 字节")
 
-    expected = hmac_sm3(derive_mac_key(key_bytes), associated + sealed.iv + sealed.ciphertext)
+    expected = hmac_sm3(
+        derive_mac_key(key_bytes),
+        associated + sealed.iv + sealed.ciphertext + trailing,
+    )
     # 恒定时间比较：避免通过响应时间侧信道逐字节猜测 MAC。
     if not hmac_module.compare_digest(expected, sealed.mac):
         raise IntegrityError("mac_mismatch")
@@ -112,9 +135,8 @@ def _encrypt_block(key: bytes, block: bytes) -> bytes:
     """SM4 单分组加密（仅供国标向量测试；业务一律走 `encrypt`）。"""
     if len(block) != BLOCK_SIZE:
         raise ValueError("分组必须是 16 字节")
-    cipher = CryptSM4(mode=SM4_ENCRYPT)
-    cipher.set_key(key, SM4_ENCRYPT)
-    return bytes(cipher.one_round(cipher.sk, list(block)))
+    encryptor = Cipher(algorithms.SM4(key), modes.ECB()).encryptor()
+    return encryptor.update(block) + encryptor.finalize()
 
 
 def _cbc_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
@@ -123,15 +145,8 @@ def _cbc_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
         raise ValueError("iv 必须是 16 字节")
     if len(data) % BLOCK_SIZE:
         raise ValueError("待加密数据必须按 16 字节对齐")
-    cipher = CryptSM4(mode=SM4_ENCRYPT)
-    cipher.set_key(key, SM4_ENCRYPT)
-    previous = iv
-    out = bytearray()
-    for offset in range(0, len(data), BLOCK_SIZE):
-        mixed = _xor(data[offset : offset + BLOCK_SIZE], previous)
-        previous = bytes(cipher.one_round(cipher.sk, list(mixed)))
-        out += previous
-    return bytes(out)
+    encryptor = Cipher(algorithms.SM4(key), modes.CBC(iv)).encryptor()
+    return encryptor.update(data) + encryptor.finalize()
 
 
 def _cbc_decrypt(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
@@ -140,16 +155,8 @@ def _cbc_decrypt(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
         raise ValueError("iv 必须是 16 字节")
     if not ciphertext or len(ciphertext) % BLOCK_SIZE:
         raise ValueError("密文必须非空且按 16 字节对齐")
-    cipher = CryptSM4(mode=SM4_DECRYPT)
-    cipher.set_key(key, SM4_DECRYPT)
-    previous = iv
-    out = bytearray()
-    for offset in range(0, len(ciphertext), BLOCK_SIZE):
-        block = ciphertext[offset : offset + BLOCK_SIZE]
-        decrypted = bytes(cipher.one_round(cipher.sk, list(block)))
-        out += _xor(decrypted, previous)
-        previous = block
-    return bytes(out)
+    decryptor = Cipher(algorithms.SM4(key), modes.CBC(iv)).decryptor()
+    return decryptor.update(ciphertext) + decryptor.finalize()
 
 
 def _pkcs7_pad(data: bytes) -> bytes:
@@ -165,10 +172,6 @@ def _pkcs7_unpad(data: bytes) -> bytes:
     if not 1 <= padding <= BLOCK_SIZE or data[-padding:] != bytes([padding]) * padding:
         raise IntegrityError("bad_padding")
     return data[:-padding]
-
-
-def _xor(left: bytes, right: bytes) -> bytes:
-    return bytes(a ^ b for a, b in zip(left, right))
 
 
 def _require_key(key: bytes) -> bytes:

@@ -23,6 +23,12 @@
 
 签名值统一用 **DER `SEQUENCE{ r INTEGER, s INTEGER }` 的十六进制**（约 70–72 字节），
 与 SCHEMA `signatures.signature_b64`（base64）一一对应；不用裸 `r‖s`。
+
+**SM2 加密（S4-4）**：`encrypt_bytes` / `decrypt_bytes` 按 GB/T 32918.4 组合 C1C3C2
+（C1 不带 `0x04` 前缀），只加密 1–32 字节的会话密钥；会话随机数 K 同样只来自 `secrets`——
+gmssl 的 `encrypt` 用 `func.random_hex` 且无法注入 K，所以这里用它的点运算 + 自写 KDF 组合，
+不重写曲线与 SM3。解密**不比对 C3**（gmssl 也不比对），完整性由信封的 HMAC-SM3 与
+`payload_sha256` 保证。
 """
 from __future__ import annotations
 
@@ -33,7 +39,16 @@ from typing import Final
 from Cryptodome.Util.asn1 import DerSequence
 from gmssl.sm2 import CryptSM2
 
-__all__ = ["DEFAULT_USER_ID", "SM2_N", "sign_bytes", "verify_bytes"]
+from app.crypto.sm.sm3 import sm3_digest
+
+__all__ = [
+    "DEFAULT_USER_ID",
+    "SM2_N",
+    "decrypt_bytes",
+    "encrypt_bytes",
+    "sign_bytes",
+    "verify_bytes",
+]
 
 # 国标推荐的 256 位素域曲线 sm2p256v1（GB/T 32918.5）
 SM2_P: Final = 0xFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFF
@@ -46,6 +61,12 @@ DEFAULT_USER_ID: Final = b"1234567812345678"
 
 _MAX_SIGN_ATTEMPTS: Final = 8
 _HEX_DIGITS: Final = frozenset("0123456789abcdef")
+
+# SM2 加密（S4-4）：C1(64) ‖ C3(32) ‖ C2(n)；C1 不带 0x04 前缀，n ∈ [1, 32]
+_C1_BYTES: Final = 64
+_C3_BYTES: Final = 32
+_MAX_SM2_PLAINTEXT: Final = 32
+_MIN_SM2_CIPHERTEXT: Final = _C1_BYTES + _C3_BYTES + 1
 
 
 def sign_bytes(
@@ -106,6 +127,81 @@ def verify_bytes(
 # ---------------------------------------------------------------- 内部实现
 
 
+def encrypt_bytes(
+    plaintext: bytes | bytearray | memoryview,
+    *,
+    public_key_hex: str,
+) -> bytes:
+    """SM2 公钥加密（GB/T 32918.4，C1C3C2 排列，C1 不带 `0x04` 前缀）。
+
+    只用于包裹 16 字节会话密钥（CEK），明文上限 32 字节——SM2 加密的是"密钥"不是"数据"，
+    大块数据一律走 SM4（AES/RSA 同理）。
+    """
+    message = _as_bytes(plaintext, name="plaintext")
+    if not 1 <= len(message) <= _MAX_SM2_PLAINTEXT:
+        raise ValueError(
+            f"SM2 只加密会话密钥（1–{_MAX_SM2_PLAINTEXT} 字节）；大块数据请用 SM4"
+        )
+    public_key = _normalize_public_key(public_key_hex)
+    cipher = _build("", public_key)
+
+    for _ in range(_MAX_SIGN_ATTEMPTS):
+        k = int(_random_scalar_hex(), 16)
+        c1 = cipher._kg(k, cipher.ecc_table["g"])
+        shared = cipher._kg(k, public_key)
+        if c1 is None or shared is None:
+            continue
+        t = _kdf(shared, len(message))
+        if not any(t):
+            # 国标 A5：KDF 输出全零时换 K 重来（概率 2^-256，防御性写法）
+            continue
+        c2 = _xor(message, t)
+        c3 = sm3_digest(bytes.fromhex(shared[:64]) + message + bytes.fromhex(shared[64:]))
+        return bytes.fromhex(c1) + c3 + c2
+    raise RuntimeError("SM2 加密连续失败：K 反复无效，疑似随机源异常")
+
+
+def decrypt_bytes(
+    ciphertext: bytes | bytearray | memoryview,
+    *,
+    private_key_hex: str,
+) -> bytes:
+    """SM2 私钥解密。
+
+    **不比对 C3**：gmssl 的 `decrypt` 算了 C3 却不比对，本项目的完整性也不依赖它
+    （AGENTS §10.4）。被篡改的包裹密钥会让 CEK 变错，最终由信封的 HMAC-SM3 / payload_sha256 拦下。
+    """
+    data = _as_bytes(ciphertext, name="ciphertext")
+    private_key = _validate_private_key(private_key_hex)
+    if not _MIN_SM2_CIPHERTEXT <= len(data) <= _C1_BYTES + _C3_BYTES + _MAX_SM2_PLAINTEXT:
+        raise ValueError("SM2 密文长度非法（C1 64 + C3 32 + C2 1–32）")
+    c1 = data[:_C1_BYTES].hex()
+    c2 = data[_C1_BYTES + _C3_BYTES :]
+    _normalize_public_key(c1)  # 国标 B1：C1 必须落在曲线上
+    cipher = _build(private_key, "")
+    shared = cipher._kg(int(private_key, 16), c1)
+    if shared is None:
+        raise ValueError("SM2 解密失败：C1 无效")
+    return _xor(c2, _kdf(shared, len(c2)))
+
+
+def _kdf(shared_hex: str, length: int) -> bytes:
+    """SM3 计数器模式 KDF（GB/T 32918.1）：`SM3(Z ‖ ct)` 拼接后截断 length 字节。"""
+    material = bytes.fromhex(shared_hex)
+    blocks: list[bytes] = []
+    counter = 1
+    remaining = length
+    while remaining > 0:
+        blocks.append(sm3_digest(material + counter.to_bytes(4, "big")))
+        counter += 1
+        remaining -= 32
+    return b"".join(blocks)[:length]
+
+
+def _xor(left: bytes, right: bytes) -> bytes:
+    return bytes(a ^ b for a, b in zip(left, right))
+
+
 def _build(private_key_hex: str, public_key_hex: str) -> CryptSM2:
     sm2 = CryptSM2(private_key=private_key_hex, public_key=public_key_hex, mode=1, asn1=True)
     # gmssl 的 __init__ 会执行 public_key.lstrip("04")（按字符集剥离，会吃掉 x 开头的 04）；
@@ -114,12 +210,16 @@ def _build(private_key_hex: str, public_key_hex: str) -> CryptSM2:
     return sm2
 
 
-def _as_bytes(data: bytes | bytearray | memoryview) -> bytes:
+def _as_bytes(
+    data: bytes | bytearray | memoryview,
+    *,
+    name: str = "SM2 入参",
+) -> bytes:
     if isinstance(data, bytes):
         return data
     if isinstance(data, (bytearray, memoryview)):
         return bytes(data)
-    raise TypeError(f"SM2 只接受 bytes/bytearray/memoryview，收到 {type(data).__name__}")
+    raise TypeError(f"{name} 只接受 bytes/bytearray/memoryview，收到 {type(data).__name__}")
 
 
 def _validate_private_key(value: str) -> str:

@@ -6,17 +6,17 @@
 
 ## 当前状态
 
-- 阶段：**阶段 4 进行中**（S4-1 / S4-2 / S4-3 已完成，签名 + 对称加密层打通）；下一张卡 **S4-4 数字信封（SM2 包裹会话密钥）**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-3**（共 37 张卡，全部 ✅ 通过）
-- 最近完成：**S4-3 SM4-CBC + HMAC-SM3 Encrypt-then-MAC**（国标向量 + OpenSSL 逐字节对照；全量 572 条单元全绿）
+- 阶段：**阶段 4 进行中**（S4-1 ~ S4-4 已完成，信封链路打通）；下一张卡 **S4-5 密钥生成与私钥口令保护**
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-4**（共 38 张卡，全部 ✅ 通过）
+- 最近完成：**S4-4 数字信封**（2MB seal+open **0.095s**，<1s 达标；全量 607 条单元全绿）
 - 附加改动（2026-11-20）：D-069 真实横版票抽取修复、D-070 确认流程简化（去重识别/逐字段操作）、D-071 删除改硬删（仅 draft，可重传）；业务状态统一显示为 待确认/待复核/已复核（前端派生）
-- 下一步：**S4-4 数字信封（SM2 包裹会话密钥）★关键**
-- 已知阻塞：无
+- 下一步：**S4-5 密钥生成与私钥口令保护 ★关键**
+- 已知阻塞：无（**环境缺口**：本机没有 `openssl` 命令行，S4-5 的密钥生成需要替代方案，见 HANDOFF §7）
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
-  - `gmssl==3.2.2`（+ `pycryptodomex==3.24.2`）已装并锁版本；装入后 numpy 1.26.4 / paddle 2.6.2 未变
-  - 本地领先 origin **72 个 commit**，`git push` 由用户执行
+  - `gmssl==3.2.2` + `cryptography==50.0.2`（+ `pycryptodomex==3.24.2`）已装并锁版本；numpy 1.26.4 / paddle 2.6.2 未变
+  - 本地领先 origin **73 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -67,7 +67,7 @@
 [x] S4-1 SM3 摘要与 canonical JSON 规范化 ★关键
 [x] S4-2 SM2 签名与验签（防双重哈希） ★关键
 [x] S4-3 SM4-CBC + HMAC-SM3 的 Encrypt-then-MAC 对称层 ★关键
-[ ] S4-4 数字信封（SM2 包裹会话密钥） ★关键
+[x] S4-4 数字信封（SM2 包裹会话密钥） ★关键
 [ ] S4-5 密钥生成与私钥口令保护 ★关键
 [ ] S4-6 X.509 自建 CA 与角色证书
 [ ] S4-7 审计日志哈希链 ★关键
@@ -102,6 +102,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S4-4 | `backend/app/crypto/sm/sm2.py`（追加 `encrypt_bytes/decrypt_bytes`：C1C3C2、C1 无 04 前缀、只收 1–32B、K 用 `secrets`、SM3 计数器 KDF）、`backend/app/crypto/envelope.py`（新：`Envelope` / `EnvelopeError` / `seal` / `open_sealed`；CEK 每封信封新生成；MAC 覆盖 `header‖wrapped_key‖IV‖密文‖证书指纹`；顺序 解 CEK→验 MAC 解密→sha256）、`backend/app/crypto/sm/sm3.py`（改：OpenSSL `hashlib` 快路径 + gmssl 回退，`hmac_sm3` 两条路径）、`backend/app/crypto/sm/sm4.py`（改：`cryptography`/OpenSSL 后端 + `trailer` 参数）、`backend/requirements.txt`（`cryptography==50.0.2`）、`backend/tests/test_crypto/{test_sm3,test_sm4,test_sm2,test_envelope}.py`（+35 条）、`docs/{spec,plan}/s4-4-envelope.md` | ① **2MB seal+open 实测 0.095s**（seal 0.054s / open 0.041s，任务卡要求 <1s；254KB 真实票据尺寸 22.4ms）；② 信封往返：空/1B/1KB/2MB、中文 JSON；`wrapped_key` 112B（C1 64+C3 32+C2 16）；③ 同明文两次：iv/密文/MAC/wrapped_key 全不同（新 CEK）；④ 篡改 ciphertext/iv/mac → `mac_mismatch`；篡改 wrapped_key 的 **C2 段与 C3 段** → `mac_mismatch`（C3 段靠"wrapped_key 进 MAC"发现）；篡改 cert_fp → `mac_mismatch`；篡改 payload_sha256 → `digest_mismatch`；错私钥 → `mac_mismatch/bad_envelope`；坏 base64/长度 → `bad_envelope`；⑤ SM2 加解密：1/16/32B 往返、>32B `ValueError`、同明文两次密文不同、C1 不在曲线 `ValueError`、**与 gmssl `encrypt/decrypt` 双向互操作**；⑥ SM3 双后端：monkeypatch 回退到 gmssl 后国标向量与 HMAC 向量仍一致；SM4 与 gmssl 参考实现逐字节一致；⑦ `pytest tests/test_crypto` **181 passed**（146 + 35），全量 **607 passed**（572 + 35），`alembic check` 零差异 | ✅ 通过（D-077：OpenSSL 后端、cryptography 直接依赖、SM2 加密自组合、C3/MAC 覆盖取舍） |
 | S4-3 | `backend/app/crypto/sm/sm3.py`（追加 `hmac_sm3`：RFC 2104、块长 64、长 key 先哈希；返回 32B）、`backend/app/crypto/sm/sm4.py`（新：`IntegrityError(reason)` / `Sm4Ciphertext` / `derive_mac_key` / `encrypt` / `decrypt` + 内部 CBC/PKCS7/分组；IV 用 `secrets`；MAC 覆盖 `aad‖IV‖密文`；解密前先验 MAC + `compare_digest`）、`backend/tests/test_crypto/{test_sm3,test_sm4}.py`（+41 条）、`docs/{spec,plan}/s4-3-sm4-envelope-crypto.md` | ① **GB/T 32907-2016 A.1 国标向量**：key=PT=`0123456789abcdeffedcba9876543210` → `681edf34d206965e86b3e94f536e4246`；② **OpenSSL 交叉**：固定 IV 的 CBC 向量与 Node `createCipheriv('sm4-cbc')` 逐字节相同（`61e48c1e…af5c`）；HMAC-SM3 4 组向量与 Node `createHmac('sm3')` 相同（`bd4a3407…ebd398` 等）；③ 往返 0/1/15/16/17/31/32/100/1000 B 与中文载荷；空明文可往返；④ 同明文两次 IV/密文/MAC 全不同；⑤ 篡改密文 1 bit / 改 IV / 改 MAC / 错误 key / 截断分组 → `IntegrityError("mac_mismatch")`；⑥ **坏填充**（MAC 合法、末字节 0x00/0x05/0x11）→ `IntegrityError("bad_padding")`；坏填充+坏 MAC → 先报 `mac_mismatch`（证明"先验 MAC 再解密"）；⑦ aad 绑定：同 aad 通过、换 aad 失败；⑧ key≠16B / iv≠16B / mac≠32B → `ValueError`；异常信息不含明文；⑨ `pytest tests/test_crypto` **146 passed**（S4-1/2 105 + 本卡 41），全量 **572 passed**（531 + 41），`alembic check` 零差异（无迁移） | ✅ 通过（D-076：EtM 口径、自写 CBC/PKCS7 的理由、HMAC 交叉向量出处） |
 | S4-2 | `backend/app/crypto/sm/sm2.py`（新：`sign_bytes` / `verify_bytes` / `DEFAULT_USER_ID` / `SM2_N`；只走 `sign_with_sm3`，K 用 `secrets` + 拒绝采样；DER 签名；公钥归一化 + 曲线校验 + 覆盖 gmssl `lstrip("04")` 缺陷；验签 r,s 范围校验 + 畸形返回 False）、`backend/app/crypto/signature.py`（新：`SignatureRecord`（frozen/extra=forbid）、`VerifyResult`、`sign_canonical` / `verify_record` / `verify_canonical`）、`backend/tests/test_crypto/{test_sm2,test_signature,_keys}.py`（51 条）、`docs/{spec,plan}/s4-2-sm2-signature.md` | ① **GB/T 32918.5 附录 A.1 公开向量**逐位对上：`M="message digest"`、`k=59276E27…` → `r=F5A03B06…20B3`、`s=B1B6AA29…C1AA`，验签 True；② ZA/摘要与标准一致（`ZA=B2E14C5C…`、`e=F0B43E94…`，实测）；③ 1 bit 改消息 / 改签名 / 错误公钥 → False；④ 同明文两次签名不同（`secrets`），固定 K 两次相同；⑤ **双重哈希陷阱**：把 `sm3_digest(payload)` 当消息再签 → 对摘要 True、对原 payload False；⑥ **gmssl 缺陷回归**：x 以 `04` 开头的公钥（`d=7F3A…6146`）签名/验签正确（未修 bug 时 gmssl 把 128 hex 剥成 126 并抛 `TypeError`，已实测）；⑦ **可塑性**：`s+n` 的 DER 变体 → False（gmssl 本身会验过）；⑧ 畸形签名 6 种 → False 不抛；非法私钥/公钥/K/非曲线点 → `ValueError`；⑨ 记录三类失败：载荷改 `digest_mismatch`、载荷+digest 同改 `bad_signature`、签名改/错公钥 `bad_signature`；模型 frozen/extra=forbid/naive 时间拒绝；⑩ `pytest tests/test_crypto` **105 passed**（S4-1 54 + 本卡 51），全量 **531 passed**（480 + 51），`alembic check` 零差异（本卡无迁移）；⑪ 独立实现对照：Node `createHash('sm3')` 与 `sm3_hex(canonical_json(...))` 同值 `d646a76e…` | ✅ 通过（D-075：签名策略裁决 + gmssl 七条缺陷处理；`hmac_sm3` 仍留 S4-3） |
 | S4-1 | `backend/app/crypto/canonical.py`（新：`canonical_json` 校验遍历 + 标准库转义、`canonical_sha256`、`CanonicalJSONError`；拒 float/Decimal/非 str 键/超 2^53 整数/循环/代理项）、`backend/app/crypto/sm/sm3.py`（新：`sm3_digest` 32B、`sm3_hex` 仅日志；gmssl 唯一入口 + `list()` 副本挡原地修改）、`backend/tests/test_crypto/{__init__,test_canonical,test_sm3}.py`（54 条）、`scripts/{canonical_fixture.json,canonical_cross_check.py,canonical_cross_check.mjs}`、`backend/requirements{,.lock}.txt`（`gmssl==3.2.2` + `pycryptodomex==3.24.2`）、`docs/{spec,plan}/s4-1-canonical-sm3.md` | ① SM3 国标向量全过：`abc`→`66c7f0f4…`、`b"abcd"*16`→`debe9ff9…`、空串→`1ab21d83…`；② 键序不同 → 同字节同摘要（`{"b":1,"a":2}` 与 `{"a":2,"b":1}` 均 `b'{"a":2,"b":1}'`）；③ 中文不转义（`{"name":"发票"}` → 原样 UTF-8，无 `\u`）；负数/嵌套 list/null 精确字节；④ `100`(int)/`"100"`/`"100.00"` 三种字节三种摘要，`float 100.0` 与 `Decimal("100.00")` 被拒（`CanonicalJSONError`）；⑤ 非 str 键、`2^53`、`bytes/tuple/set/自定义对象`、循环引用、孤立代理项全部被拒；⑥ `bytearray` 入参调用后未被修改（gmssl 原地改入参已被封装挡住）；`str` 入参 `TypeError`；⑦ **跨语言**：`canonical_cross_check.py` 与 `.mjs` 三字段逐字相等（`canonical_utf8_b64` / `sm3=ae5c73b0…` / `sha256=d733f2fa…`）；用 JS 默认 UTF-16 排序算出的 SM3 是 `1504e4f3…`（证明 fixture 能抓住该坑，D-074 #11）；⑧ `pytest tests/test_crypto` **54 passed**，全量单测 **480 passed**（基线 426 + 54），`alembic check` 零差异（本卡无迁移）；⑨ 装 gmssl 后 numpy 1.26.4 / paddle 2.6.2 / paddleocr 2.7.3 未变 | ✅ 通过（D-073 依赖落地、D-074 canonical 口径；`hmac_sm3` 留 S4-3） |
@@ -247,12 +248,26 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 79 | `mac_key = SM3(key‖"mac")` 是简易 KDF | 不是 HKDF，但独立于加密 key，满足 EtM 分离 | S4-9 的 AES-GCM/RSA 对照里可并列 HKDF 版本，论文写取舍 |
 | 80 | HMAC-SM3 无国标向量（HMAC 非国标定义内容） | 用 OpenSSL 3 交叉向量替代，测试注释已写明出处 | 保持"不冒充国标"的写法；S6-4 可补第三方实现交叉验证 |
 | 81 | CBC 解密失败仍会执行一次 CBC 运算（MAC 通过后才解密） | 攻击者无 key 无法构造 MAC 合法密文，不构成 padding oracle | 论文安全分析里写明"先验 MAC"的因果 |
-| 82 | **纯 Python SM4 性能不达标**：2MB seal+unseal 实测 **28.1s**（任务卡 S4-4 要求 <1s） | S4-4 的信封性能验收会卡住；内存/CPU 也吃紧 | S4-4 前二选一：① 引入 `cryptography`（OpenSSL 后端，SM4-CBC 快 2–3 个数量级；AGENTS 已规划该依赖，S4-5 也要用）；② 维持纯 Python 并把 2MB 目标改成"文档化偏差"。**必须实测后再定，不许粉饰** |
+| 82 | ✅ **已闭合（S4-4）**：SM4 换 `cryptography`（OpenSSL）、SM3/HMAC 换 `hashlib`（OpenSSL）；2MB seal+open **0.095s** | 纯 Python 往返 28.1s 的偏差已消除；gmssl 保留为 SM3 回退 | 保持 `cryptography==50.0.2` 锁版本；若平台 OpenSSL 缺 SM4 启动即报错 |
 | 83 | 对称层加密一次性读入内存（无流式） | 20MB 上限下内存峰值约 3 倍明文，可接受 | 若 S4-4 换 OpenSSL 后端，可顺带评估分块 |
+| 84 | SM2 加密是"gmssl 点运算 + 自写 KDF"组合（gmssl 的 `encrypt` 无法注入 K 且用 `random`） | 组合代码需在升级 gmssl 时回归（测试已覆盖往返/互操作/边界） | gmssl 升级前先跑 `test_sm2.py`；S4-9 的 RSA-OAEP 对照可佐证流程等价 |
+| 85 | 2MB <1s 的性能断言在极慢机器/CI 上可能抖动 | 实测 0.095s，约 10 倍余量 | 若 CI 抖动，改为基准脚本 + 宽松阈值，但论文数字用手测实测值 |
+| 86 | **本机没有 `openssl` 命令行**（PATH/MSYS2/Git 都没有） | S4-5 的任务卡要求用 `openssl genpkey` 生成 SM2 密钥；S4-6 要求用 CLI 签证书 | S4-5 改走"`secrets` 生成 d + gmssl `_kg` 求公钥"（与 OpenSSL 等价的 EC 运算，注释"生产建议 HSM/OpenSSL"）；S4-6 改走 `cryptography` 构造 X.509（AGENTS §2 已列该用途） |
+| 87 | 信封只到"字节 → Envelope 记录"，大影像的 MinIO 对象名（`ciphertext_storage_key`）未做 | 属业务层（S5）与存储层 | S5 封装接口时决定：小载荷进 `ciphertext_b64`、影像密文存 MinIO 并登记对象名 |
 
 ## 变更日志
 
 ### 2026-11-20
+
+- **S4-4 完成**：数字信封（SM2 包裹 CEK + SM4-CBC EtM）。
+  · 性能改造（任务卡 <1s 的硬要求）：SM3/HMAC 走 `hashlib`（OpenSSL，2MB 0.008s，gmssl 回退），
+    SM4-CBC 走 `cryptography`（OpenSSL，2MB 0.03s）；纯 Python 版本实测 28.1s，差两个数量级；
+  · `sm2.py` 补 `encrypt_bytes/decrypt_bytes`：C1C3C2、C1 不带 04 前缀、只加密 1–32B 会话密钥、
+    K 用 `secrets`（gmssl 的 `encrypt` 用 `func.random_hex` 且无法注入 K），KDF 用 SM3 计数器模式；
+  · `envelope.py`：CEK 每封信封新生成；MAC 覆盖 `header‖wrapped_key‖IV‖密文‖证书指纹`
+    （比 SCHEMA 多绑 wrapped_key，用来发现"只改 C3 段"的篡改）；拆封顺序 解 CEK → 验 MAC 解密 → sha256；
+  · 实测：**2MB seal+open 0.095s**（254KB 真实票据 22.4ms）；与 gmssl 的 SM2 加解密双向互操作；
+  · 无接口/无迁移/无表变更；`pytest tests/test_crypto` 181 passed、全量 607 passed（D-077）。
 
 - **S4-3 完成**：SM4-CBC + HMAC-SM3 的 Encrypt-then-MAC 对称层。
   · `sm3.py` 补 `hmac_sm3`（RFC 2104，块长 64B，key>64B 先哈希）——AGENTS §10.4 清单里一直缺的那个；

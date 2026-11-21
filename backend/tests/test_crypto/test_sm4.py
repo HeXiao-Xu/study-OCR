@@ -97,6 +97,37 @@ def test_aad_is_bound_into_mac() -> None:
     assert exc.value.reason == "mac_mismatch"
 
 
+def test_trailer_is_bound_into_mac() -> None:
+    """信封把收方证书指纹放在密文之后（SCHEMA 的覆盖顺序），必须同样进 MAC。"""
+    sealed = encrypt(KEY, b"payload", trailer=b"cert-fp")
+
+    assert decrypt(KEY, sealed, trailer=b"cert-fp") == b"payload"
+
+    with pytest.raises(IntegrityError) as exc:
+        decrypt(KEY, sealed, trailer=b"other-fp")
+    assert exc.value.reason == "mac_mismatch"
+
+
+def test_cbc_matches_gmssl_reference_implementation() -> None:
+    """与 S4-3 用过的 gmssl one_round + 手写 CBC 对照，证明换 OpenSSL 后端后口径不变。"""
+    from gmssl.sm4 import SM4_ENCRYPT, CryptSM4
+
+    def gmssl_cbc(key: bytes, iv: bytes, data: bytes) -> bytes:
+        cipher = CryptSM4()
+        cipher.set_key(key, SM4_ENCRYPT)
+        previous, out = iv, b""
+        for offset in range(0, len(data), 16):
+            block = bytes(a ^ b for a, b in zip(data[offset : offset + 16], previous))
+            previous = bytes(cipher.one_round(cipher.sk, list(block)))
+            out += previous
+        return out
+
+    plaintext = "hello 国密 world".encode("utf-8")
+    padded = _pkcs7_pad(plaintext)
+
+    assert _cbc_encrypt(KEY, FIXED_IV, padded) == gmssl_cbc(KEY, FIXED_IV, padded)
+
+
 # ---------------------------------------------------------------- 篡改（Encrypt-then-MAC）
 
 

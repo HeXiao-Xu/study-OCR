@@ -1593,3 +1593,39 @@
   （与 Node `createCipheriv('sm4-cbc')` 相同）；HMAC 4 组向量与 Node 相同（`bd4a3407…` 等）；
   篡改/截断/错 key → `mac_mismatch`，坏填充 → `bad_padding`，坏填充+坏 MAC 先报 `mac_mismatch`；
   `pytest tests/test_crypto` 146 passed、全量 572 passed、`alembic check` 零差异。
+
+---
+
+## D-077 性能改造：SM3/HMAC 走 OpenSSL、SM4 换 cryptography；SM2 加密自组合；信封 MAC 超集
+
+- **日期**：2026-11-21（S4-4，用户授权按 spec 自行拍板）
+- **背景**：任务卡 S4-4 要求"2MB 影像 seal→unseal **< 1s**"。S4-3 的纯 Python 实现实测
+  **SM4 2MB 往返 28.1s、SM3 2MB 7.5s**，差两个数量级——不换后端就只能造假。
+  同时本机**没有 `openssl` 命令行**（S4-5/S4-6 的另一个缺口，见遗留 #86）。
+- **决策**：
+  1. **SM3/HMAC 双后端**：优先 `hashlib.new("sm3")`（OpenSSL C 实现，2MB **0.008s**），
+     平台没有 OpenSSL SM3 时回退 gmssl（纯 Python，保留"入参副本 + hex→bytes"的原处理）。
+     两条路径用同一组国标/交叉向量测试（monkeypatch `_OPENSSL_SM3`），回归有据。
+  2. **SM4 换 `cryptography`（OpenSSL）**：`Cipher(algorithms.SM4(key), modes.CBC/ECB)`；
+     PKCS7 与 EtM 逻辑不变（填充仍严格校验）；`_encrypt_block/_cbc_encrypt/_cbc_decrypt`
+     保留为内部函数，国标向量与 gmssl 参考实现逐字节对照仍在。
+  3. **`cryptography==50.0.2` 升为直接依赖**（写进 `requirements.txt`；它本来就在环境与 lock 里，
+     AGENTS §2 也已把它列为项目依赖，S4-5 还要用 AES-GCM/PBKDF2/PKCS#8）。
+  4. **SM2 加密自组合**：不用 gmssl 的 `CryptSM2.encrypt`（它内部取 K 用 `func.random_hex`，
+     K 可预测且**无法注入**），改用 `_kg` + 自写 SM3 计数器 KDF 组合 GB/T 32918.4 流程
+     （C1C3C2、C1 不带 `0x04` 前缀、只加密 1–32B 会话密钥、K 只来自 `secrets`）；
+     与 gmssl 的 `encrypt/decrypt` **双向互操作**已验证。
+  5. **解密不比对 C3**（AGENTS §10.4 的口径；gmssl 也不比对），改为把 **`wrapped_key` 绑进信封 MAC**
+     （`header‖wrapped_key‖IV‖密文‖证书指纹`，比 SCHEMA 的覆盖说明多绑一项）——
+     否则攻击者单独改 C3 段（改不到 CEK）无人发现。
+  6. **信封拆封顺序**：解 CEK → 验 MAC 解密 → `payload_sha256` 比对。
+     AGENTS §10.4 写的"验 MAC → 解 CEK"物理上不可能：MAC key 由 CEK 派生（`SM3(CEK‖"mac")`），
+     必须先解出 CEK；这一点按任务卡口径执行并在此说明。
+  7. **失败归类**：`EnvelopeError.reason ∈ {bad_envelope, mac_mismatch, bad_padding, digest_mismatch}`；
+     `bad_envelope` 是本卡新增的结构类（base64/长度/C1 非法），与 AGENTS 的四个密码学归类并列。
+- **代价**：多一个直接依赖（已在环境）；gmssl 的 SM4 不再用于生产（只作交叉测试参考）；
+  SM2 加密组合代码在 gmssl 升级时必须回归（`test_sm2.py` 已覆盖往返/互操作/边界）。
+- **验证**：**2MB seal+open = 0.095s**（seal 0.054s / open 0.041s；254KB 真实票据尺寸 22.4ms）；
+  SM3 双后端在 55/56/64/1000B 边界上逐字节一致；SM4 与 gmssl 参考实现逐字节一致；
+  `wrapped_key` 的 C2 段/C3 段篡改都报 `mac_mismatch`；SM2 与 gmssl 双向互操作；
+  `pytest tests/test_crypto` 181 passed、全量 607 passed、`alembic check` 零差异。

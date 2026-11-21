@@ -10,7 +10,14 @@ from __future__ import annotations
 import pytest
 from Cryptodome.Util.asn1 import DerSequence
 
-from app.crypto.sm.sm2 import DEFAULT_USER_ID, SM2_N, sign_bytes, verify_bytes
+from app.crypto.sm.sm2 import (
+    DEFAULT_USER_ID,
+    SM2_N,
+    decrypt_bytes,
+    encrypt_bytes,
+    sign_bytes,
+    verify_bytes,
+)
 from tests.test_crypto._keys import (
     EDGE_PRIVATE,
     EDGE_PUBLIC,
@@ -230,3 +237,81 @@ def test_sign_bytes_accepts_bytearray_and_memoryview() -> None:
         sign_bytes(memoryview(b"abc"), private_key_hex=VECTOR_PRIVATE, public_key_hex=VECTOR_PUBLIC, k_hex=VECTOR_K)
         == expected
     )
+
+
+# ---------------------------------------------------------------- SM2 加解密（S4-4）
+
+
+@pytest.mark.parametrize("size", [1, 16, 32])
+def test_sm2_encrypt_decrypt_round_trip(size: int) -> None:
+    cek = bytes(range(size))
+
+    ciphertext = encrypt_bytes(cek, public_key_hex=VECTOR_PUBLIC)
+
+    assert len(ciphertext) == 64 + 32 + size  # C1 ‖ C3 ‖ C2，C1 不带 04 前缀
+    assert decrypt_bytes(ciphertext, private_key_hex=VECTOR_PRIVATE) == cek
+
+
+def test_sm2_encrypt_rejects_plaintext_outside_1_to_32_bytes() -> None:
+    for bad in (b"", b"x" * 33, b"x" * 100):
+        with pytest.raises(ValueError):
+            encrypt_bytes(bad, public_key_hex=VECTOR_PUBLIC)
+
+
+def test_sm2_encrypt_uses_fresh_randomness() -> None:
+    first = encrypt_bytes(b"\x00" * 16, public_key_hex=VECTOR_PUBLIC)
+    second = encrypt_bytes(b"\x00" * 16, public_key_hex=VECTOR_PUBLIC)
+
+    assert first != second
+    assert decrypt_bytes(first, private_key_hex=VECTOR_PRIVATE) == decrypt_bytes(second, private_key_hex=VECTOR_PRIVATE)
+
+
+def test_sm2_decrypt_rejects_bad_length() -> None:
+    for bad in (b"", b"x" * 96, b"x" * 129):
+        with pytest.raises(ValueError):
+            decrypt_bytes(bad, private_key_hex=VECTOR_PRIVATE)
+
+
+def test_sm2_decrypt_rejects_c1_not_on_curve() -> None:
+    # C1 = (0,0) 不在 sm2p256v1 上
+    with pytest.raises(ValueError):
+        decrypt_bytes(b"\x00" * 64 + b"\x00" * 32 + b"\x01" * 16, private_key_hex=VECTOR_PRIVATE)
+
+
+def test_sm2_decrypt_detects_tampered_c1_or_c2() -> None:
+    plaintext = b"0123456789abcdef"
+    ciphertext = bytearray(encrypt_bytes(plaintext, public_key_hex=VECTOR_PUBLIC))
+
+    tampered_c2 = bytearray(ciphertext)
+    tampered_c2[-1] ^= 0x01
+    assert decrypt_bytes(bytes(tampered_c2), private_key_hex=VECTOR_PRIVATE) != plaintext
+
+    tampered_c1 = bytearray(ciphertext)
+    tampered_c1[0] ^= 0xFF
+    try:
+        result = decrypt_bytes(bytes(tampered_c1), private_key_hex=VECTOR_PRIVATE)
+    except ValueError:
+        result = None  # C1 落到曲线外也是合法拒绝
+    assert result != plaintext
+
+
+def test_sm2_encrypt_interops_with_gmssl_decrypt() -> None:
+    """我们加密 → gmssl（C1C3C2）能解开，证明格式与国标排列一致。"""
+    from gmssl.sm2 import CryptSM2
+
+    plaintext = b"fedcba9876543210"
+    ciphertext = encrypt_bytes(plaintext, public_key_hex=VECTOR_PUBLIC)
+
+    gmssl_cipher = CryptSM2(private_key=VECTOR_PRIVATE, public_key=VECTOR_PUBLIC, mode=1)
+    assert gmssl_cipher.decrypt(ciphertext) == plaintext
+
+
+def test_sm2_decrypt_interops_with_gmssl_encrypt() -> None:
+    """gmssl 加密 → 我们能解开（接受标准 C1C3C2 布局）。"""
+    from gmssl.sm2 import CryptSM2
+
+    plaintext = b"0123456789abcdef"
+    gmssl_cipher = CryptSM2(private_key="", public_key=VECTOR_PUBLIC, mode=1)
+    ciphertext = gmssl_cipher.encrypt(plaintext)
+
+    assert decrypt_bytes(ciphertext, private_key_hex=VECTOR_PRIVATE) == plaintext

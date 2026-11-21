@@ -1,13 +1,13 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-21 14:20（阶段 4：S4-1/S4-2/S4-3 完成；开新会话用）
+> 最后更新：2026-11-21 14:35（阶段 4：S4-1 ~ S4-4 完成；开新会话用）
 
 ## 1. 一句话现状
 
-**阶段 3 已完成**（S3-1 ~ S3-8 + 补充卡 S3-9）；**阶段 4 进行中**：S4-1（canonical JSON + SM3）、
-S4-2（SM2 签名/验签）、S4-3（SM4-CBC + HMAC-SM3 对称层）已完成，`gmssl==3.2.2` 已装并锁版本。
-**下一步：S4-4 数字信封（SM2 包裹会话密钥）★关键**。
+**阶段 3 已完成**（S3-1 ~ S3-8 + 补充卡 S3-9）；**阶段 4 进行中**：S4-1（canonical + SM3）、
+S4-2（SM2 签名）、S4-3（SM4-CBC EtM）、S4-4（数字信封）已完成；密码链路已能"签名 → 信封 → 拆封"。
+**下一步：S4-5 密钥生成与私钥口令保护 ★关键**。
 
 当前浏览器可走通（`http://127.0.0.1:5173`）：
 
@@ -61,8 +61,10 @@ backend/app/api/{deps.py,v1/auth.py}  ← S2-2：Bearer 解析、get_current_use
 backend/app/crypto/canonical.py  ← S4-1：canonical_json / canonical_sha256（键码点序、拒 float/Decimal/超大 int）
 backend/app/crypto/sm/sm3.py     ← S4-1/S4-3：sm3_digest(bytes)->32B、hmac_sm3（RFC 2104）、sm3_hex 仅日志
 backend/app/crypto/sm/sm4.py     ← S4-3：SM4-CBC + PKCS7 + EtM（mac=HMAC-SM3(mac_key, aad‖IV‖密文)；先验 MAC）
-backend/app/crypto/sm/sm2.py     ← S4-2：sign_bytes/verify_bytes（只走 sign_with_sm3；K=secrets；DER 签名；公钥归一化）
+backend/app/crypto/sm/sm2.py     ← S4-2/S4-4：sign_bytes/verify_bytes（只走 sign_with_sm3；K=secrets；DER 签名）
+                                    + encrypt_bytes/decrypt_bytes（C1C3C2、1–32B、SM3 计数器 KDF）
 backend/app/crypto/signature.py  ← S4-2：SignatureRecord + VerifyResult(ok/digest_mismatch/bad_signature) + sign/verify_canonical
+backend/app/crypto/envelope.py   ← S4-4：Envelope + EnvelopeError + seal/open_sealed（CEK 每封新生成；MAC 绑 header‖wrapped_key‖IV‖密文‖指纹）
 backend/app/services/repository.py  ← S2-3：行级隔离（策略表 + filter_visible + get_visible_or_404，deny-by-default）
 backend/app/services/pagination.py  ← S2-4：分页/排序协议（PageParams/PageResult、白名单排序、同一 stmt 求 total）
 backend/app/services/invoice_service.py  ← S2-5/S3-9：建草稿/状态机/列表/详情/**硬删**/字段修改/复核
@@ -143,6 +145,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S4-1 canonical + SM3 | SM3 国标向量全过（`abc`/512bit/空串）；键序不同同摘要；`100`/`"100"`/`"100.00"` 三种字节；float/Decimal/非 str 键/`2^53`/循环/代理项全被拒；跨语言 Python↔Node 三字段逐字相等（`sm3=ae5c73b0…`，JS 默认 UTF-16 排序会得 `1504e4f3…`） | `pytest tests/test_crypto`（54 passed）+ `scripts/canonical_cross_check.{py,mjs}` |
 | S4-2 SM2 签名 | **GB/T 32918.5 A.1 公开向量**逐位一致：`k=59276E27…` → `r=F5A03B06…20B3`、`s=B1B6AA29…C1AA`；双重哈希陷阱（摘要当消息 → 原消息验不过）；`s+n` 可塑变体被拒（gmssl 会验过）；`04` 开头公钥回归（gmssl 未修时 128→126 并抛 `TypeError`）；同明文两次签名不同、固定 K 相同 | `pytest tests/test_crypto`（105 passed，S4-1 54 + S4-2 51） |
 | S4-3 SM4 对称层 | **GB/T 32907 A.1 向量** `681edf34…4246`；固定 IV 的 CBC 与 Node/OpenSSL `sm4-cbc` 逐字节相同（`61e48c1e…af5c`）；HMAC-SM3 4 组向量与 Node 相同（`bd4a3407…`）；篡改/截断/错 key → `mac_mismatch`，MAC 合法的坏填充 → `bad_padding`，坏填充+坏 MAC 先报 `mac_mismatch` | `pytest tests/test_crypto`（146 passed，累计） |
+| S4-4 数字信封 | **2MB seal+open 0.095s**（seal 0.054 / open 0.041；254KB 真实票尺寸 22.4ms）；`wrapped_key` 112B=C1 64+C3 32+C2 16；C2 段与 C3 段篡改都 `mac_mismatch`；`payload_sha256` 篡改 `digest_mismatch`；SM2 与 gmssl 双向互操作；SM3 双后端同向量、SM4 与 gmssl 参考实现逐字节一致 | `pytest tests/test_crypto`（181 passed，累计）+ `pytest` 607 passed |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -155,7 +158,7 @@ cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
 (cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 365 passed（默认跳过集成）
 (cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 169 passed（需 Docker）
-# S4-1/S4-2/S4-3 密码封装（离线、不连库）：146 passed（含 SM3/SM2/SM4 国标向量）
+# S4-1 ~ S4-4 密码封装（离线、不连库）：181 passed（含 SM3/SM2/SM4 国标向量、2MB 信封 <1s）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto -q)
 # 跨语言一致性：Python 与 Node 各算一遍，三字段（canonical_b64/sm3/sha256）必须逐字相等
 .venv/Scripts/python.exe scripts/canonical_cross_check.py
@@ -283,47 +286,43 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-074 | canonical JSON 11 条硬规则：码点序、无空格、拒 float/Decimal/非 str 键/`|int|>2^53-1`/循环/代理项；金额必须字符串；**JS 默认按 UTF-16 码元排序会算出不同摘要**（`1504e4f3…` vs 正确 `ae5c73b0…`） |
 | D-075 | SM2 裁决：**只走国标 SM2-SM3**（`e=SM3(ZA‖M)`，ID=`1234567812345678`），`sign_bytes(data)` 传入参是 canonical 字节而非摘要；签名 DER 存 base64；K 只用 `secrets`；逐条封堵 gmssl 七个坑（`mode` 默认 0、`lstrip("04")`、不重试、不查 r/s 范围、畸形抛异常、默认 ID、`func.random_hex`） |
 | D-076 | 对称层 EtM：`mac=HMAC-SM3(mac_key, aad‖IV‖密文)`、`mac_key=SM3(key‖"mac")`、`compare_digest`；**CBC/PKCS7 自实现**（gmssl 的 `pkcs7_unpadding` 不校验）；失败归类 `mac_mismatch/bad_padding/bad_ciphertext`；HMAC-SM3 用 OpenSSL 交叉向量（无国标 HMAC 向量） |
+| D-077 | 性能改造：SM3/HMAC 走 `hashlib`（OpenSSL，2MB 0.008s，gmssl 回退）、SM4 走 `cryptography`（OpenSSL，2MB 0.03s）；`cryptography` 升为直接依赖；SM2 加密自组合（gmssl `encrypt` 的 K 不可注入）；信封 MAC 多绑 `wrapped_key`（不依赖 C3） |
 
-## 7. 下一步：S4-4 数字信封（SM2 包裹会话密钥）（★关键）
+## 7. 下一步：S4-5 密钥生成与私钥口令保护（★关键）
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章 S4-4；
-- 流程（AGENTS §11）：spec（`docs/spec/s4-4-*.md`）→ plan → 写码（用户已授权"不逐步确认"）；
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章 S4-5；
+- 流程（AGENTS §11）：spec（`docs/spec/s4-5-*.md`）→ plan → 写码（用户已授权"不逐步确认"）；
 - **阶段 4 规则**：只写 `backend/app/crypto/` 与 `backend/tests/test_crypto/`，**不碰业务接口**；
-- **已交付的地基**（S4-4 直接拼装，不要重写）：
-  - `sm4.encrypt/decrypt`（Encrypt-then-MAC、`aad` 参数、失败归类）；
-  - `sm3.sm3_digest / hmac_sm3`；
-  - `sm2.sign_bytes/verify_bytes` —— **注意：还没有 SM2 加解密封装**，S4-4 要补
-    `encrypt_bytes/decrypt_bytes`（`mode=1` C1C3C2；gmssl 的 C1 **不带 0x04 前缀**；
-    入参只允许 ≤32B——SM2 只包会话密钥，明文一律走 SM4，超长直接 `ValueError`）；
-  - `canonical_json`（`payload_sha256` 用原始明文字节算，不用 canonical）。
-- **S4-4 范围**（任务卡原文）：
-  1. `crypto/envelope.py`：`seal(plaintext, recipient_public_key_hex, recipient_cert_fp, meta)`
-     → `Envelope{cipher_mode:"SM4-CBC", iv_b64, ciphertext_b64, mac_b64, wrapped_key_b64,
-     key_algo:"SM2", recipient_cert_fp, payload_sha256, created_at}`；
-     `CEK = secrets.token_bytes(16)`（每次信封新生成，禁止复用）；
-  2. `open_sealed(envelope, private_key_hex)`：SM2 解出 CEK（**不指望 C3 校验**，gmssl 不比对）
-     → S4-3 解密（先验 MAC）→ 校验 `payload_sha256` → 返回明文；失败必须归类
-     （`mac_mismatch`/`bad_padding`/`digest_mismatch`/`bad_signature`/`cert_invalid`）；
-  3. `certs.py` 是 S4-6 的活：S4-4 先收"公钥 hex + 证书指纹"两个显式参数，
-     S4-6 再从证书解析并接入 `cert_invalid`；
-  4. 单测：往返；篡改 `wrapped_key_b64` / `ciphertext_b64` / `mac_b64` / `iv_b64` 都抛明确异常；
-     错私钥；SM2 入参 >32B；`payload_sha256` 不符；头部/aad 换值；
-  5. 性能：任务卡要求 **2MB 影像 seal→unseal < 1s**。
-- **必须注意的坑**（任务卡）：SM2/RSA 只加密 16–32B 会话密钥，**不要拿去加密图像**；
-  C1C3C2 与 04 前缀处理不一致会跨实现解不开；**不要相信 SM2 解密能发现密文篡改**（它不报错），
-  完整性由 HMAC-SM3 + `payload_sha256` 保证。
-- **⚠️ 性能预警（S4-3 实测，必须先在 spec 里决策）**：纯 Python SM4（gmssl one_round + 自写 CBC）
-  加密 2MB **14.0s**、解密 **14.1s**，往返 **28.1s**，离任务卡 <1s 差两个数量级。
-  可选路线：① 引入 `cryptography`（OpenSSL 后端的 SM4-CBC，AGENTS 已规划该依赖，S4-5 也要用），
-  ② 维持纯 Python 并把"2MB <1s"改成文档化偏差（论文如实写）。**先实测再定，不许粉饰**（遗留 #82）。
-- **验收**：`pytest backend/tests/test_crypto/test_envelope.py -q`；2MB 往返（按决策口径）；
-  篡改 `wrapped_key_b64` / `ciphertext_b64` 抛明确异常。
+- **已交付的地基**：`sm2.py` 的密钥校验/`_kg`、`sm3.py` 双后端、`sm4.py` EtM、`envelope.py`（`key_fp` 可复用其指纹口径）；
+- **S4-5 范围**（任务卡原文）：
+  1. `crypto/keystore.py`：生成 SM2 密钥对；私钥用 **口令 + PBKDF2-HMAC-SHA256（iters ≥ 200000、
+     16B 盐）→ 32B KEK → AES-256-GCM 包裹 PKCS#8**；输出文件字段
+     `{kdf, iterations, salt, nonce, ciphertext, key_fp}`；解锁失败统一提示"口令错误"；
+  2. 单测：生成→加锁→解锁→用解锁私钥签名 的脚本跑通；错误口令、被篡改密文、空口令；
+     `grep -rn "PRIVATE KEY" backend/ docs/` 除测试向量外无命中；日志里搜不到口令；
+  3. `scripts/keygen.py`（生成 + 落 `secrets/keys/` + 打印公开信息，绝不打印私钥）；
+- **⚠️ 两个环境/技术缺口（必须在 spec 里先解决，别硬编）**：
+  1. **本机没有 `openssl` 命令行**（PATH / MSYS2 / Git 都没有）。任务卡要求
+     `openssl genpkey -algorithm SM2` 生成密钥——不可用。替代：`secrets` 生成 `d ∈ [1, n-2]` +
+     gmssl `_kg` 求公钥（与 OpenSSL 同一套 EC 运算；`_kg` 是库内部 API，需在注释里写明
+     "原型可用、生产建议 HSM/OpenSSL"，并且**只用它做点乘，不碰随机源**）；
+  2. **`cryptography` 不支持 SM2 私钥的 PKCS#8 编解码**（它的 `ec` 模块不认 sm2p256v1）。
+     要么用 pycryptodomex 的 DER 原语（`DerSequence`/`DerObjectId`/`DerOctetString`）
+     按 RFC 5915 + PKCS#8 组合出 DER（**用库的 ASN.1 原语，不手写编码器**），
+     要么改存"密钥 JSON + AES-GCM"并在 SPEC/DECISIONS 里如实说明偏离 SCHEMA 的代价。
+     **优先前者**；若 DER 组装验证不了（没有 openssl 可交叉校验），就只做自往返 + 结构断言，
+     并在论文"不足"里写清楚。
+- **必须注意的坑**（任务卡原文）：私钥**不入库、不进日志、不进异常堆栈、不进接口响应**；
+  `key_records` 只登记 `storage_path`（SCHEMA 2.3：`CHECK (storage_path NOT LIKE '%PRIVATE KEY%')`）；
+  PBKDF2 迭代太低等于没保护；不要把 `_kg` 当生产密钥生成实现。
+- **验收**：`pytest backend/tests/test_crypto/test_keystore.py`；
+  `scripts/keygen.py` 生成→加锁→解锁→签名 全链路跑通；全仓 grep 私钥字样无命中。
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地领先 origin **72 个 commit**（S3-1 ~ S3-9 + D-069~D-076 + S4-1/S4-2/S4-3），AI 不推，由用户 `git push`；
+1. **push**：本地领先 origin **73 个 commit**（S3-1 ~ S3-9 + D-069~D-077 + S4-1~S4-4），AI 不推，由用户 `git push`；
 2. ✅ 已闭合（S4-1）：`gmssl==3.2.2` 已装并锁进 `requirements.txt` / `requirements.lock.txt`（D-073）；
-   装完 numpy/paddle/paddleocr 未变、全量单测 572 passed；
+   装完 numpy/paddle/paddleocr 未变、全量单测 607 passed；`cryptography==50.0.2` 已在环境与 lock，S4-4 起升为直接依赖（D-077）；
 3. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`、
    `s37-dup.png`、`ui-111-new.png` 等；真实 PDF 的框选对齐需要人眼确认；
 4. `taxi_ticket` 整单 0.200：S3-3 已试过低置信二次识别（整体 97.3% 提升，但出租车票字太少，提升有限）；

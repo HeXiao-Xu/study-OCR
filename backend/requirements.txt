@@ -76,6 +76,10 @@ arq==0.28.0
 gmssl==3.2.2
 pycryptodomex==3.24.2
 
+# OpenSSL 后端（S4-4 起直接依赖）：SM4-CBC 走它，2MB 加密 0.03s（纯 Python gmssl 要 14s）；
+# S4-5 还要用它做 AES-256-GCM / PBKDF2-HMAC-SHA256 / PKCS#8 私钥包裹。AGENTS §2 已列为项目依赖。
+cryptography==50.0.2
+
 # --- 测试 ---
 httpx==0.28.1
 pytest==9.2.0

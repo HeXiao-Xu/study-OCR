@@ -164,3 +164,39 @@ def test_hmac_sm3_rejects_str_inputs() -> None:
 
     with pytest.raises(TypeError):
         hmac_sm3(b"key", "data")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------- 双后端（S4-4）
+
+
+def _use_gmssl_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.crypto.sm import sm3 as sm3_module
+
+    monkeypatch.setattr(sm3_module, "_OPENSSL_SM3", False)
+
+
+def test_sm3_digest_gmssl_fallback_matches_vectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """平台没有 OpenSSL SM3 时必须回退 gmssl，且结果一字不差。"""
+    _use_gmssl_fallback(monkeypatch)
+
+    assert sm3_digest(b"abc").hex() == VECTOR_ABC
+    assert sm3_digest(SIXTY_FOUR_ABCD).hex() == VECTOR_512BIT
+    assert sm3_digest(b"").hex() == VECTOR_EMPTY
+
+
+def test_hmac_sm3_gmssl_fallback_matches_vectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    _use_gmssl_fallback(monkeypatch)
+
+    for key, data, expected in HMAC_VECTORS:
+        assert hmac_sm3(key, data).hex() == expected
+
+
+def test_sm3_backends_agree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同输入两条路径逐字节一致（覆盖 55/56/64 填充边界）。"""
+    payloads = [b"", b"abc", b"a" * 55, b"a" * 56, b"a" * 64, b"a" * 1000]
+    fast = [sm3_digest(item) for item in payloads]
+
+    _use_gmssl_fallback(monkeypatch)
+    slow = [sm3_digest(item) for item in payloads]
+
+    assert fast == slow
