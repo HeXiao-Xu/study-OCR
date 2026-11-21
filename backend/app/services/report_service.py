@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import logging
 from base64 import b64decode
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -59,14 +58,15 @@ from app.schemas.report import (
 from app.services.audit import append_audit
 from app.services.pagination import paginate
 from app.services.repository import filter_visible, get_visible_or_404
+from app.utils.time import BUSINESS_TZ, business_day_bounds
 
 logger = logging.getLogger("app.reports")
 
-#: 业务日/业务月换算只在这里做（AGENTS §4.3：一个地方换算）
-BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
-
 #: 可写明细的单据状态（API.md §4：仅 draft 或 rejected）
 WRITABLE_STATUSES = frozenset({ReportStatus.DRAFT.value, ReportStatus.REJECTED.value})
+
+#: 验签结论的"失败"取值（SCHEMA §9.16c；其余未列值按 failed 处理）
+VERIFY_FAILED_RESULTS = frozenset({"digest_mismatch", "bad_signature", "cert_invalid"})
 
 #: 状态机（API.md §4 / SCHEMA §9.14）。`rejected → pending_sign` 是"驳回后重签"
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -313,8 +313,8 @@ def get_report_detail(db: Session, user: User, report_id: int) -> ReportDetailDa
             form, items=items, department=_applicant_dept(db, form.applicant_id)
         ),
         signature=SignatureOut.model_validate(signature) if signature is not None else None,
-        envelope=_envelope_out(db, envelope) if envelope is not None else None,
-        verify_status=_verify_status(signature),
+        envelope=envelope_out(db, envelope) if envelope is not None else None,
+        verify_status=verify_status_of(signature),
     )
 
 
@@ -408,14 +408,21 @@ def _applicant_dept(db: Session, applicant_id: int) -> str | None:
     return db.scalar(select(User.dept).where(User.id == applicant_id))
 
 
-def _verify_status(signature: Signature | None) -> str:
-    """没有签名 → unverified；有签名但还没验 → unverified；验过 → ok / failed。"""
-    if signature is None or signature.verify_result is None:
+def verify_status_from_result(verify_result: str | None) -> str:
+    """把 `signatures.verify_result` 映射成三态（未验 / 通过 / 失败），列表与详情共用。"""
+    if verify_result is None:
         return "unverified"
-    return "ok" if signature.verify_result == "ok" else "failed"
+    return "ok" if verify_result == "ok" else "failed"
 
 
-def _envelope_out(db: Session, envelope: Envelope) -> EnvelopeOut:
+def verify_status_of(signature: Signature | None) -> str:
+    """验签三态：无签名/未验 → `unverified`；`ok` → `ok`；其余 → `failed`（D-086）。"""
+    if signature is None:
+        return "unverified"
+    return verify_status_from_result(signature.verify_result)
+
+
+def envelope_out(db: Session, envelope: Envelope) -> EnvelopeOut:
     fingerprint = db.scalar(
         select(Certificate.fingerprint_sha256).where(
             Certificate.id == envelope.recipient_cert_id
@@ -441,26 +448,10 @@ def _envelope_out(db: Session, envelope: Envelope) -> EnvelopeOut:
     )
 
 
-def _date_bounds(query: ReportListQuery) -> tuple[datetime | None, datetime | None]:
-    """业务日 [date_from, date_to] → UTC 半开区间；只在这里按 Asia/Shanghai 换算。"""
-    start = end = None
-    if query.date_from is not None:
-        start = datetime.combine(query.date_from, time.min, tzinfo=BUSINESS_TZ).astimezone(
-            timezone.utc
-        )
-    if query.date_to is not None:
-        end = datetime.combine(
-            query.date_to + timedelta(days=1), time.min, tzinfo=BUSINESS_TZ
-        ).astimezone(timezone.utc)
-    if start is not None and end is not None and start >= end:
-        raise ValidationFailedError("date_from 不能晚于 date_to")
-    return start, end
-
-
 def _apply_filters(stmt, query: ReportListQuery):
     if query.status is not None:
         stmt = stmt.where(ReportForm.status == query.status)
-    start, end = _date_bounds(query)
+    start, end = business_day_bounds(query.date_from, query.date_to)
     if start is not None:
         stmt = stmt.where(ReportForm.created_at >= start)
     if end is not None:

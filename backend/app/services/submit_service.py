@@ -275,6 +275,13 @@ def submit_report(
         if not _verify_signature(provider, signature, signer_cert, canonical_bytes):
             raise ConflictError("签名校验失败", detail={"reason": "bad_signature"})
 
+        # SCHEMA §5.3："submitted 之后必须已验证"——提交时系统已用证书公钥验过签，
+        # 把结论落库（verifier_id 为空 = 系统自动验签）；财务端独立验签（S5-4）再改写失败态。
+        signature.verified = True
+        signature.verify_result = "ok"
+        signature.verified_at = now
+        signature.verifier_id = None
+
         finance_cert, finance_material = get_finance_recipient(db, provider, now=now)
 
         items = _load_items(db, form.id)

@@ -465,7 +465,31 @@
 - 入参：`verify_status`（`unverified`｜`ok`｜`failed`）、`submitted_from`/`submitted_to`、`q`（单号/申请人）、`page`、`page_size`、`sort_by`（`submitted_at`｜`total_amount`）、`order`
 - 出参：**200**，`data = {items: [{report_id, report_no, applicant_id, applicant_name, total_amount, item_count, submitted_at, verify_status}], total, page, page_size}`
 - 错误：`403/40301` 角色不符；`422/42200` 排序/日期非法
-- 备注：`verify_status` 在提交时算一次落库，**列表不实时验签**；不返回密文全文
+- 备注：`verify_status` 在提交时算一次落库，**列表不实时验签**；不返回密文全文。**S5-3 实现口径（D-086）**：没有独立列，`verify_status` 由该单 active 签名的 `signatures.verify_result` 派生（无签名/未验 → `unverified`，`ok` → `ok`，其余 → `failed`）；提交动作本身是系统自动验签，通过后落 `verified=true/verify_result='ok'/verified_at`（`verifier_id` 为空）；列表只列 `status='submitted'`，整页 2 条 SQL（count + 分页）
+
+### GET /api/v1/finance/pending/export
+- 权限：`reviewer` ｜ 类型：同步（流式响应）｜ 幂等：是 ｜ 实现：S5-3
+- 入参：与 `GET /finance/pending` **相同的筛选**（`verify_status`、`submitted_from`/`submitted_to`、`q`），**无分页**
+- 出参：**200**，`Content-Type: text/csv; charset=utf-8`、`Content-Disposition: attachment; filename="finance-pending-YYYYMMDD.csv"`；
+  **UTF-8 BOM** + `\r\n` 行尾；列固定为 `单号,申请人,金额,票据数,提交时间,验签状态`
+- 错误：`403/40301`；`422/42200`（筛选非法 / 命中超过单次上限 10000 行）
+- 备注：与列表**同一筛选函数**（"看到的 = 导出的"）；金额两位小数；时间 `YYYY-MM-DD HH:MM:SS`（`Asia/Shanghai`）；BOM 是给 Excel 认 UTF-8 的，去掉会中文乱码
+
+### GET /api/v1/finance/{id}
+- 权限：`reviewer` ｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S5-3
+- 入参：无
+- 出参：**200**，`data`：
+
+```json
+{"report": {ReportOut}, "applicant_name": "张三",
+ "signature": {SignatureOut} | null, "envelope": {EnvelopeOut} | null,
+ "verify_status": "ok",
+ "attachments": [{"file_id": 5, "invoice_id": 9, "filename": "a.jpg", "mime": "image/jpeg",
+                  "size": 1024, "sha256": "…", "page_count": 1, "envelope": {EnvelopeOut} | null}]}
+```
+
+- 错误：`404/40400`（不存在，或 reviewer 不可见——例如草稿）；`403/40301`（非 reviewer）
+- 备注：附件**只给元数据**；`attachments[i].envelope` 是文件级信封的元数据（无 `ciphertext_b64`/`wrapped_key_b64`/`ciphertext_storage_key`）；明文影像与字段必须走 S5-4 的 `verify` + `decrypt` 临时凭据，**详情接口不解密**
 
 ### POST /api/v1/finance/reports/{id}/verify
 - 权限：`reviewer` ｜ 类型：同步 ｜ 幂等：否（每次执行都写审计）｜ 实现：S5-4

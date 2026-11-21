@@ -693,6 +693,13 @@ def test_submit_success_encrypts_images_and_seals_report(
             db.scalars(select(AuditLog.action).where(AuditLog.action.in_(["seal", "submit"]))).all()
         )
         assert audit_actions == {"seal", "submit"}
+        # SCHEMA §5.3："submitted 之后必须已验证"——提交即系统自动验签，结论落库
+        signature = db.scalars(
+            select(Signature).where(Signature.form_id == report_id, Signature.status == "active")
+        ).one()
+        assert (signature.verified, signature.verify_result) == (True, "ok")
+        assert signature.verified_at is not None
+        assert signature.verifier_id is None
         assert verify_chain(db).ok is True
 
     # 明文对象已删除，密文对象可被财务私钥解回原文
@@ -888,7 +895,8 @@ def test_detail_exposes_metadata_but_no_secrets(
     assert data["envelope"]["key_algo"] == "SM2"
     assert data["envelope"]["recipient_cert_fp"]
     assert data["envelope"]["wrapped_key_len"] and data["envelope"]["wrapped_key_len"] > 0
-    assert data["verify_status"] == "unverified"   # 签名方不算验签方，S5-4 才置 ok
+    # 提交即系统自动验签（SCHEMA §5.3 submitted 之后必须已验证）；S5-4 财务端独立复验
+    assert data["verify_status"] == "ok"
     for forbidden in ("ciphertext_b64", "wrapped_key_b64", "ciphertext_storage_key"):
         assert forbidden not in response.text
 

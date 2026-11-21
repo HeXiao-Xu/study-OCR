@@ -1,5 +1,6 @@
 /** 票据展示层格式化：金额、时间、票种/状态标签。组件里不各写一套。 */
 import type { ExtractStatus, InvoiceOut, InvoiceStatus, InvoiceType, OcrStatus } from '../types/invoice'
+import type { VerifyStatus } from '../types/finance'
 
 export const INVOICE_TYPE_LABEL: Record<InvoiceType, string> = {
   vat_general: '增值税电子普通发票',
@@ -75,6 +76,19 @@ export const OCR_STATUS_TAG: Record<OcrStatus, 'info' | 'primary' | 'success' | 
   pending: 'info',
   running: 'primary',
   succeeded: 'success',
+  failed: 'danger',
+}
+
+/** 财务待审的验签三态（S5-3/D-086）：未验灰 / 通过绿 / 失败红。 */
+export const VERIFY_STATUS_LABEL: Record<VerifyStatus, string> = {
+  unverified: '未验',
+  ok: '通过',
+  failed: '失败',
+}
+
+export const VERIFY_STATUS_TAG: Record<VerifyStatus, 'info' | 'success' | 'danger'> = {
+  unverified: 'info',
+  ok: 'success',
   failed: 'danger',
 }
 

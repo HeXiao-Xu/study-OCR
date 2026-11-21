@@ -78,8 +78,8 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'finance/pending',
         name: 'finance-pending',
-        component: Placeholder,
-        meta: { title: '待审核', roles: ['reviewer'], placeholder: 'S5' },
+        component: () => import('../views/FinanceList.vue'),
+        meta: { title: '待审核', roles: ['reviewer'] },
       },
       {
         path: 'templates',

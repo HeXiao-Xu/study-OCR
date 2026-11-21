@@ -1901,3 +1901,43 @@
   真机冒烟（开发库 + 真 MinIO）：sign → submit 200；单据信封 `ciphertext_b64`、文件信封密文对象；
   明文对象已删、密文可用财务私钥解回原文（`decrypt_roundtrip_ok=true`）；审计 4 行且 `verify_chain ok`；
   重复提交 `duplicated=true`；`GET /invoices/{id}/image` 409；业务行已清理。
+
+## D-086 财务待审：`verify_status` 不加列（由签名行派生）+ 提交时系统验签落库 + 两条新契约
+
+- **日期**：2026-11-21（S5-3）
+- **背景**：任务卡要求"`verify_status` 在提交时算一次落库、列表不实时验签"，
+  但 **SCHEMA §5.1 没有这个列**（契约优先，不能为它加列）；`signatures` 已有
+  `verified/verify_result/verified_at`（§5.3）。同时 SCHEMA §5.3 写明"`submitted` 之后必须已验证"，
+  而 S5-2 提交验签通过后仍写 `verified=false`——这是需要在本卡一并修正的契约违背。
+  另外任务卡要求 `GET /finance/{id}` 与 CSV 导出，**API.md §5 原稿没有这两条**。
+- **决策**：
+  1. **不新增列**：`verify_status` 由该单 **active 签名**的 `verify_result` 派生——
+     无签名/`NULL` → `unverified`、`ok` → `ok`、其余 → `failed`；列表用 `LEFT JOIN signatures`
+     的三态条件过滤，**请求里不做任何密码运算**（任务卡的坑：实时验签 = N+1 + 几十秒延迟）。
+  2. **修正 S5-2**：提交时用证书公钥验签通过后，把事实落库：`verified=true`、`verify_result='ok'`、
+     `verified_at=now`、`verifier_id=NULL`（SCHEMA 允许"系统自动验签"）。于是待审列表默认“通过”；
+     S5-4 财务端独立复验失败时再改写为失败态（`mac_mismatch`/`bad_padding` 按契约不写本列）。
+  3. **先补契约再写码**：API.md §5 新增 `GET /finance/pending/export`（CSV）与
+     `GET /finance/{id}`（详情元数据，含 `attachments[]` 的文件级信封元数据），形状见 API.md。
+  4. **列表语义**：固定 `status='submitted'`（"待审"）；已审批/驳回/归档不进本列表（S5-5/S5-6 各自视图）。
+  5. **详情只给元数据**：单据 + 签名 + 信封 + 附件（文件名/大小/SHA-256/页数 + 文件级信封元数据）；
+     **不含** `ciphertext_b64`/`wrapped_key_b64`/`ciphertext_storage_key`/`storage_path`；
+     明文影像/字段必须走 S5-4 的 verify + decrypt 临时凭据。
+  6. **CSV**：UTF-8 **BOM** + `\r\n`（Excel 中文不乱码）；列
+     `单号,申请人,金额,票据数,提交时间,验签状态`；`StreamingResponse` 逐块输出；
+     与列表**同一筛选函数**（看到的 = 导出的）；单次上限 10000 行（超出 422，提示收窄）。
+  7. **业务日换算收口**：`utils/time.py::business_day_bounds` 成为唯一入口，
+     `report_service` 的"我的列表"与财务列表共用（AGENTS §4.3）。
+  8. **前端**：`/finance/pending` 占位换真实页（`FinanceList.vue`），筛选/分页仍以 `route.query`
+     为唯一状态源；详情用右侧抽屉；"导出 CSV"走鉴权后的 Blob 下载；影像预览明确标注"待 S5-4"。
+- **代价/限制**：`verify_status` 只有"当前 active 签名"的一个结论，没有多次验签历史；
+  CSV 是"筛选结果先取到内存再逐块 yield"（非数据库游标流式），上限 10000 行；
+  待审列表固定 `submitted`；前端未做端到端点击自动化（typecheck/build + 手动走查）。
+- **验证**：`pytest tests/test_finance.py -m integration` **12 passed**（5 单可见、三态筛选、q/日期、
+  排序白名单、403/401、详情形状与"无密文"、草稿 404、CSV 的 BOM/表头/行数/权限/筛选一致/上限、
+  **整页只 2 条 SELECT**）；`test_submit.py` 仍 **19 passed**（新增"提交后 `verified=true/ok`"断言）；
+  `npm run typecheck && npm run build` 通过。真机冒烟（开发库 + 真 MinIO，5 单）：
+  列表 `total=5`、`verify_status=ok`、详情 200 且附件 1 条带信封元数据；
+  CSV 359B、**BOM=`\xef\xbb\xbf`**、CRLF、表头中文、5 行数据（样例
+  `RPT-202611-0002,Alice,100.00,1,2026-11-21 19:07:32,通过`）；
+  submitter 访问列表/详情均 **403**；业务行与对象已清理，审计累计 24 行且 `verify_chain ok`。
