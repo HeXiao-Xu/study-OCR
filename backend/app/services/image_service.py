@@ -20,7 +20,7 @@ from app.ocr.intake import prepare_input
 from app.services.repository import get_visible_or_404
 from app.services.storage import StorageService
 
-__all__ = ["PDF_DPI", "RenderedImage", "get_invoice_image", "render_image"]
+__all__ = ["PDF_DPI", "RenderedImage", "get_invoice_image", "render_image", "render_pdf_page"]
 
 PDF_DPI = 250
 _VARIANTS = ("original", "preprocessed")
@@ -43,6 +43,11 @@ def _encode_png(image: np.ndarray) -> bytes:
     if not ok:
         raise ValidationFailedError("影像编码失败")
     return buffer.tobytes()
+
+
+def render_pdf_page(data: bytes, page: int = 1, dpi: int = PDF_DPI) -> bytes:
+    """PDF 指定页渲染成 PNG（S5-4 预览复用；与识别口径 250DPI 一致）。"""
+    return _render_pdf_page(data, page, dpi)
 
 
 def _render_pdf_page(data: bytes, page: int, dpi: int = PDF_DPI) -> bytes:

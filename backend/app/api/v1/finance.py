@@ -169,13 +169,14 @@ def get_preview(
 def get_preview_file(
     preview_token: str,
     file_id: int,
+    page: int = Query(1, ge=1, le=20),
     user: User = _REVIEWER,
     settings: Settings = Depends(get_settings),
     store: CredentialStore = Depends(get_credential_store),
     storage: StorageService = Depends(get_storage),
 ) -> Response:
     content, mime = preview_service.read_preview_file(
-        store, storage, preview_token, file_id, settings=settings
+        store, storage, preview_token, file_id, settings=settings, page=page
     )
     return Response(
         content=content,

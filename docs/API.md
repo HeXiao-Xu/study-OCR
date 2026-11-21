@@ -555,8 +555,8 @@
 
 ### GET /api/v1/finance/preview/{preview_token}/files/{file_id}
 - 权限：`reviewer` ｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S5-4
-- 入参：路径参数 `preview_token`、`file_id`（必须是该单据的附件）
-- 出参：**200**，`Content-Type` 取 `invoice_files.mime`，正文是该票据影像的**解密后明文**
+- 入参：路径参数 `preview_token`、`file_id`（必须是该单据的附件）；查询参数 `page`（PDF 页码，默认 1，1–20）
+- 出参：**200**，`Content-Type` 取 `invoice_files.mime`；**PDF 按 250DPI 渲染成 `image/png` 返回**（与票据详情一致），其余类型原样返回明文
 - 错误：`410/41001` 凭据过期；`404/40400` 文件不在该预览里；`403/40301` 非 reviewer
 - 备注：用于"多张票逐个预览"（一个 report 可能有多张影像，单一 token 端点无法寻址）；同样 `no-store`/`nosniff`
 

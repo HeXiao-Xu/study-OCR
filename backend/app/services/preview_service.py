@@ -31,6 +31,7 @@ from app.services.audit import append_audit
 from app.services.credential_store import CredentialStore, preview_key, verify_key
 from app.services.key_service import load_finance_private_key, provider_for
 from app.services.report_crypto import EnvelopeOpenError, open_sealed_steps
+from app.services.image_service import render_pdf_page
 from app.services.repository import get_visible_or_404
 from app.services.storage import StorageService
 from app.services.submit_service import load_items
@@ -210,7 +211,9 @@ def read_preview_file(
     file_id: int,
     *,
     settings: Settings,
+    page: int = 1,
 ) -> tuple[bytes, str]:
+    """读预览影像；PDF 与票据详情一致，按 250DPI 渲染成 PNG 再返回（浏览器 <img> 不能直接显示 PDF）。"""
     meta = _read_meta(store, token)
     mime = (meta.get("files") or {}).get(str(file_id))
     if mime is None:
@@ -219,6 +222,11 @@ def read_preview_file(
         f"{settings.preview_object_prefix}/{token}/files/{file_id}.bin",
         max_bytes=settings.max_upload_mb * 1024 * 1024,
     )
+    if mime == "application/pdf":
+        try:
+            return render_pdf_page(content, page), "image/png"
+        except Exception as exc:  # noqa: BLE001 - 渲染失败按预览不可用处理
+            raise ConflictError("PDF 页面渲染失败") from exc
     return content, mime
 
 
