@@ -6,11 +6,11 @@
 
 ## 当前状态
 
-- 阶段：**阶段 4 已完成**（S4-1 ~ S4-9，密码链路 + 审计链 + 国密/RSA 双实现）；下一阶段 **阶段 5 报销业务闭环（S5-1 起）**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-9**（共 43 张卡，全部 ✅ 通过）
-- 最近完成：**S4-9 RSA/AES 对照实现**（同接口 provider + 两套实现参数化测试 + 对拍脚本；阶段 4 收口）
+- 阶段：**阶段 5 进行中**（S5-1 完成）；下一张卡 **S5-2 签名 → 加密提交链路**
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、S4-1 ~ S4-9、**S5-1**（共 44 张卡，全部 ✅ 通过）
+- 最近完成：**S5-1 报销单创建与明细**（建单/明细/单号序列/`report_create` 审计；DB head → **0008**）
 - 附加改动（2026-11-20）：D-069 真实横版票抽取修复、D-070 确认流程简化（去重识别/逐字段操作）、D-071 删除改硬删（仅 draft，可重传）；业务状态统一显示为 待确认/待复核/已复核（前端派生）
-- 下一步：**S5-1 报销单创建与明细**
+- 下一步：**S5-2 签名 → 加密提交链路**（`submit_service` + `POST /reports/{id}/sign`、`/{id}/submit`）
 - 测试期新增依赖：`pytest-cov==7.1.0` + `coverage==7.17.4`（仅测试，已锁）
 - 已知阻塞：无
 - 环境提醒：
@@ -19,7 +19,7 @@
   - `gmssl==3.2.2` + `cryptography==50.0.2`（+ `pycryptodomex==3.24.2`）已装并锁版本；numpy 1.26.4 / paddle 2.6.2 未变
   - **本机没有 openssl CLI**：统一用 `scripts/openssl.sh` / `scripts/openssl.ps1`（Docker 内 OpenSSL 3.5.9，D-078）
   - **新增必填配置 `AUDIT_HMAC_KEY`**（≥32 字符，D-081）；`backend/.env` 已本地生成，`.env.example` 已加占位符
-  - 本地领先 origin **80 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **82 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -78,7 +78,7 @@
 [x] S4-9 RSA-OAEP+PSS 与 AES-GCM 对照实现
 
 ## 阶段 5：报销业务闭环（M4）
-[ ] S5-1 报销单创建与明细
+[x] S5-1 报销单创建与明细
 [ ] S5-2 签名 → 加密提交链路 ★关键
 [ ] S5-3 财务端待审列表
 [ ] S5-4 验签与解密 ★关键
@@ -105,6 +105,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S5-1 | `backend/app/schemas/report.py`（`ReportCreateRequest`/`ReportItemCreateRequest`/`ReportOut`/`ReportItemOut`/`ReportDetailData`/`ReportListQuery`/`SignatureOut`/`EnvelopeOut`；金额两位小数字符串；信封只给元数据 + 派生 `recipient_cert_fp`/`wrapped_key_len`）、`backend/app/services/report_service.py`（`ALLOWED_TRANSITIONS` 8 值状态机 + `transition()`；`create_report`：`report_no_seq` 单号 + 同事务 `report_create` 审计；`add_item`：票据行 `FOR UPDATE` + 状态分诊 + 金额/重复校验 + 票据 `in_report` + 合计重算；`get_report_detail`；`list_my_reports`）、`backend/app/api/v1/reports.py` + `main.py`（4 条路由，`/mine` 先于 `/{id}`）、`backend/alembic/versions/0008_report_number_and_audit_action.py`（`report_no_seq` + `ck_audit_logs_action` 放开 `report_create`）、`backend/app/models/enums.py`（`AuditAction.REPORT_CREATE`）、`backend/app/services/pagination.py`（可选 `nulls_last`，默认行为不变）、`backend/tests/test_reports.py`（25 条集成）、`docs/{spec,plan}/s5-1-reports.md` | ① `pytest tests/test_reports.py -m integration` → **25 passed**；② 建单 **201**：`report_no` 形如 `RPT-202611-0001`、`status=draft`、`total_amount="0.00"`、`items=[]`、`department` 派生自 `users.dept`；③ 建单审计：1 行 `report_create`（`target_type=form`、`target_id=单 id`、`detail_json={report_no,status}`），`verify_chain` 仍 **ok**；④ 加 3 条明细（100.00/150.00/80.50）→ 合计 **"330.50"**、`item_count=3`，3 张票 `status=in_report` 且 `version=1`；⑤ 金额超票面 → **422/42201**（`data.expected="100.00"`）、负数/三位小数/非数字 → **422/42200**、0 元允许；⑥ 非本人票 **404/40400**、未确认票 **409/40900**、同单重复 **409/40901**、跨单重复 **409/40901**；失败后票据仍 `confirmed`、单据合计仍 0、无明细行（回滚验证）；⑦ **并发**：10 线程各自建单 → 10 个不同单号、库内 10 行；两线程抢同一票据 → **恰好一个成功、另一个 40901**，明细只有 1 行；两线程给**同一单加不同票** → 都成功且 `item_count=2`、合计等于两条之和（单据行锁防丢更新）；⑧ 权限：建单 reviewer **403** / admin **404**、`/mine` reviewer/admin **403/40301**、详情他人 404 / reviewer 草稿 404 / `submitted` 200 / admin 404；⑨ `/mine` 只含本人、`status` 与业务日筛选生效、`sort_by=submitted_at` **空值排最后**、非法 `sort_by` → 422；⑩ 状态机：8 值合法链逐个通过、同状态幂等不加版本、`draft→submitted` 409、`rejected→pending_sign` 允许；⑪ `alembic upgrade head`（head=**0008**）、`downgrade → upgrade` 往返、`alembic check` **零差异**；⑫ 全量单测 **734 passed**、集成 **284 passed**（259+25） | ✅ 通过（D-084；S5-2 的签名/信封/提交未实现；明细只增不删不改） |
 | S4-9 | `backend/app/crypto/rsa_layer.py`（RSA-2048/3072 密钥生成、OAEP-SHA256 包 CEK、PSS-MGF1-SHA256 签名；hash 全部显式）、`backend/app/crypto/aesgcm_layer.py`（AES-256-GCM：nonce 12B、tag 16B、`InvalidTag` 归类）、`backend/app/crypto/provider.py`（`AlgoProvider` 协议 + `KeyMaterial`/`SymmetricPayload`/`AlgoIntegrityError` + `SMProvider`（默认，复用 S4-2/S4-3）+ `RSAProvider` + `get_provider`）、`backend/tests/test_crypto/test_provider_rsa_gcm.py`（31 条参数化）、`scripts/crypto_bench_compare.py`、`docs/{spec,plan}/s4-9-provider-rsa-gcm.md` | ① `pytest tests/test_crypto -q -k "rsa or gcm"` → **31 passed**；② 同一组用例两套实现都过：签名往返/载荷与签名 1 bit 篡改/错钥/**跨 provider 验签失败**；CEK 包裹往返（16B）/篡改或错钥拿不到正确 CEK；对称往返（中文 + 64KB）/nonce·密文·tag 篡改/aad 不符 → `AlgoIntegrityError("mac_mismatch")`；③ 形态断言：SM nonce 16B/tag 32B，GCM nonce 12B/tag 16B；同明文两次 nonce 不同；④ RSA 规格：2048/3072 可生成、1024 拒绝、OAEP 超长 CEK 拒绝；**行为级验证 OAEP/PSS 显式 SHA-256**（用独立 padding 对象验签/解包）；⑤ 工厂：默认 `sm`、`rsa`、未知 `ValueError`；`isinstance(provider, AlgoProvider)`；SM `keygen` 抛 `NotImplementedError`（密钥仍由 OpenSSL 生成）；⑥ 对拍（`--n 10 --symmetric-kb 256`，256KB 对称）：SM2 sign **5.28ms**/verify **9.70ms**、RSA-2048 sign 29.4ms/verify 0.027ms、RSA-3072 sign 95.1ms；SM4+HMAC wrap **3.57ms** vs AES-GCM **0.049ms**（口径差异见遗留 #103）；⑦ `pytest tests/test_crypto` **287 passed**（256+31），全量单测 **734 passed**、集成 **259 passed**、`alembic check` 零差异 | ✅ 通过（D-083；provider 尚未接入 S5/信封，S5-2 按配置选择） |
 | S4-8 | `backend/tests/test_crypto/test_vectors.py`（集中向量：SM3 GB/T 32905、SM4 GB/T 32907、SM2 GB/T 32918.5 A.1、HMAC-SM3 OpenSSL 交叉向量、canonical 字节向量）、`backend/tests/test_crypto/test_pipeline.py`（端到端 + 7 类 1 bit 篡改）、`test_certs.py` / `test_keystore.py`（补错误分支）、`scripts/crypto_cross_check.py`（我们签名 → OpenSSL 验签）、`backend/requirements{,.lock}.txt`（`pytest-cov==7.1.0` + `coverage==7.17.4`）、`docs/{spec,plan}/s4-8-crypto-vectors.md` | ① 向量全部注明出处（GB/T 32905-2016 附录 A、GB/T 32907-2016 附录 A.1、GB/T 32918.5-2017 附录 A.1；HMAC 明确标"OpenSSL 交叉向量，非国标"）；② 端到端 `canonical → SM3 → SM2 签名 → SM4 信封 → 解封 → 验签 → 摘要比对` 通过；③ 篡改矩阵：载荷 → `digest_mismatch`、签名 1 bit/错公钥 → `bad_signature`、密文/IV/MAC/wrapped_key(C2/C3)/错收方 → `mac_mismatch`、`payload_sha256` → `digest_mismatch`；④ **OpenSSL 3.5 交叉验签**：`scripts/crypto_cross_check.py` → `{"openssl_verified": true, "openssl_output": "Signature Verified Successfully"}`（显式 `distid:1234567812345678`）；⑤ **覆盖率**：`pytest tests/test_crypto --cov=app/crypto` → **TOTAL 94%**（760 行缺 43；certs 98%、keystore 99%、signature 98%、canonical 96%、envelope 93%、sm3 91%、sm2 90%、sm4 88%），≥85% 达标；⑥ `pytest tests/test_crypto` **256 passed**、全量单测 **703 passed**、集成 **259 passed**、`alembic check` 零差异 | ✅ 通过（新增测试期依赖 D-082；向量出处可直引论文） |
 | S4-7 | `backend/app/services/audit.py`（新：`GENESIS_HASH` / `ADVISORY_LOCK_KEY=8071701` / `ChainVerification` / `payload_sha256` / `chain_hash` / `append_audit`（事务内 `pg_advisory_xact_lock` 后取链尾）/ `verify_chain`（按 id 流式复算，返回首个断点）/ `list_audit_logs`）、`backend/app/schemas/audit.py`（`AuditLogOut` / `AuditListQuery` / `AuditVerifyData`）、`backend/app/api/v1/admin.py` + `main.py`（`GET /admin/audit`、`GET /admin/audit/verify-chain`，admin 专用）、`core/config.py` + `.env.example`（新增必填 `AUDIT_HMAC_KEY` ≥32，prod 拒绝示例值）、`tasks/ocr_task.py`（`anchor_audit_task` 从占位改为每日真实复算）、`scripts/verify_chain.py`（断开退出码 1）、`backend/tests/{test_audit.py,test_audit_chain.py}`（18 单测 + 11 集成）、`docs/{spec,plan}/s4-7-audit-chain.md` | ① 3 条链：首行 `prev_hash=0×64`、逐行 prev 指向上一行 `entry_hash`；`verify ok=True, checked_count=3`；② 改中间行 `detail_json` → `ok=False, broken_at=2, broken_id=第二行, reason=entry_hash_mismatch`；③ 改 entry_hash → 断在该行（broken_at=1）；④ 删中间行 → 下一行 prev 对不上（broken_at=2, prev_hash_mismatch）；⑤ **并发 50 条**（10 线程各自事务）→ 全部成功、`verify ok`、`count(distinct prev_hash)=50`（不分叉）；⑥ 回滚不产生审计行；⑦ HTTP：admin 列表/校验 200、reviewer/submitter **403/40301**、`action=not_an_action`/`from>to`/`page=0` → **422**；⑧ `scripts/verify_chain.py` 真库输出 `{"ok": true, "checked_count": 0, ...}` 退出码 0；⑨ 单测 667 passed（646+21）、集成 259 passed（248+11）、`alembic check` 零差异（无迁移） | ✅ 通过（D-081：哈希载荷超集、payload 不落列、业务审计行留 S5） |
@@ -278,10 +279,28 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 101 | **RSA 私钥未做口令保护**（provider keygen 产出未加密 PKCS#8 PEM） | 基准/测试用可接受；生产若启 RSA 需复用 S4-5 的 PBKDF2+AES-GCM | S5 接入 provider 时补；论文写明"本期私钥保护只覆盖国密链路" |
 | 102 | AES-GCM **未做 nonce 复用检测** | nonce 由 `secrets` 每次新生成，但库不防复用（GCM 固有风险） | 生产需 nonce 计数/持久化；论文"安全边界"如实写 |
 | 103 | 对拍口径差异：SM2/SM3 主路径是 **纯 Python（gmssl）**，RSA/AES 是 **OpenSSL C** | 绝对值受实现语言影响，不能直接说"国密慢/快" | 论文对比时写清实现后端；S6-3 可补"同为 OpenSSL 后端"的对照或注明口径 |
+| 104 | S5-1 单号用**全局序列**，不按月重置 | `RPT-202612-0007` 的"0007"不是当月第 7 单，只是全局第 7 号 | 契约只要求唯一；论文写"序号全局递增、不保证连续"。若要按月重置，需计数器表或运行期建序列（SCHEMA 外） |
+| 105 | **"一张票只能进一张有效单据"只在服务层保证** | 绕过 service 直写库仍可造出重复引用 | D-084：票据行 `FOR UPDATE` 串行化 + `status` 分诊；SCHEMA 不允许为它加冗余列；论文"不足"如实写 |
+| 106 | 报销明细**只增不删不改**，无 `PATCH /reports/{id}` | 加错明细只能整单作废 | 契约未定义删除/修改接口；驳回重提的明细编辑随 S5-5 一起定 |
+| 107 | 建单没有速率限制 | 可无限建空单 | S5-7 联调时评估是否需要清理策略；不影响功能正确性 |
 
 ## 变更日志
 
 ### 2026-11-21
+
+- **S5-1 完成**：报销单创建与明细（阶段 5 开始）。
+  · 迁移 **0008**：`report_no_seq` 序列（单号 `RPT-{YYYYMM}-{seq:04d}`，业务月按 `Asia/Shanghai`）+
+    `audit_logs.action` 放开 `report_create`（SCHEMA §9.19b / `AuditAction` / CHECK 三处同步）；
+  · `report_service`：8 值状态机集中 `transition()`（只 flush 不 commit，S5-2 要合事务）；
+    `create_report` 与 `report_create` 审计**同事务**；`add_item` 用**票据行 `FOR UPDATE`** 串行化，
+    票据 `confirmed` 才可加、`in_report` → 40901，成功后票据置 `in_report` 且合计/条数由明细重算；
+  · 四条路由按 API.md §4：`POST /reports`（201）、`POST /reports/{id}/items`（201）、
+    `GET /reports/{id}`（本人 / reviewer 仅 submitted 之后 / admin 404）、`GET /reports/mine`（仅 submitter）；
+  · 与任务卡口述的四处偏差以契约为准（不入参 department/applicant_id/total_amount、不做客户端合计比对、
+    42201 用于金额超票面、department 派生）；
+  · 实测：新增集成 **25 passed**（10 线程并发建单不重号；两线程抢同一票恰好一个 40901；
+    两线程给同一单加不同票合计不丢更新）；全量单测 **734 passed**、集成 **284 passed**、
+    `alembic check` 零差异（D-084）。
 
 - **S4-9 完成**：RSA-OAEP+PSS 与 AES-GCM 对照实现（阶段 4 收口）。
   · `rsa_layer.py`：RSA-2048/3072、OAEP-SHA256 包 16B CEK、PSS-MGF1-SHA256 签名，

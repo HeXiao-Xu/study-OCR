@@ -30,8 +30,13 @@ def apply_sort(
     params: PageParams,
     *,
     default: str | None = None,
+    nulls_last: bool = False,
 ) -> Select[Any]:
-    """按白名单追加 ORDER BY；未知字段抛 42200，不把用户输入拼进 SQL。"""
+    """按白名单追加 ORDER BY；未知字段抛 42200，不把用户输入拼进 SQL。
+
+    `nulls_last`：可空排序列（如 `report_forms.submitted_at`）要显式把 NULL 放最后。
+    PG 的 `DESC` 默认 `NULLS FIRST`，草稿会盖在已提交单据上面——默认 False 保持旧行为不变。
+    """
     key = params.sort_by or default
     if key is None:
         # 接口必须显式声明默认排序：分页层不猜业务
@@ -42,6 +47,8 @@ def apply_sort(
         raise ValidationFailedError(f"sort_by 只能是：{allowed}")
 
     primary = column.desc() if params.order == "desc" else column.asc()
+    if nulls_last:
+        primary = primary.nulls_last()
     # 稳定排序：排序键相同（同秒 created_at、同金额）时按 id 升序，翻页不重复也不漏行
     return stmt.order_by(primary, model.id.asc())
 
@@ -55,6 +62,7 @@ def paginate(
     *,
     default: str | None = None,
     scalar: bool = True,
+    nulls_last: bool = False,
 ) -> PageResult:
     """排序 → 同一 stmt 求 total → offset/limit 取页。
 
@@ -62,7 +70,9 @@ def paginate(
     列表需要带出关联列时用 `select(Invoice).join(...).add_columns(...)` + `scalar=False`，
     items 是 SQLAlchemy Row，一次查询拿全，不做逐行回查。
     """
-    ordered = apply_sort(stmt, model, sort_map, params, default=default)
+    ordered = apply_sort(
+        stmt, model, sort_map, params, default=default, nulls_last=nulls_last
+    )
 
     total = db.scalar(
         select(func.count()).select_from(ordered.order_by(None).subquery())

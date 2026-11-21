@@ -375,6 +375,7 @@
 ## 4. 报销单（S5-1 / S5-2）
 
 > 单号 `RPT-YYYYMM-序号` 由 PostgreSQL 序列生成；金额一律 `NUMERIC(12,2)`；状态 `draft → pending_sign → signed → encrypted → submitted → approved|rejected → archived`。
+> **S5-1 实现口径（D-084）**：序列 `report_no_seq` 是**全局**的（`RPT-{YYYYMM}-{全局序号:04d}`，业务月按 `Asia/Shanghai`）；序号**不按月重置**，只保证唯一、不保证连续（失败/回滚**不退号**，号段被消耗）；"一张票只能进一张有效单据"由**票据行 `FOR UPDATE` + 状态分诊**在服务层保证（SCHEMA 无跨表约束），绕过服务层直写库不在此保证范围内。
 
 ### POST /api/v1/reports
 - 权限：`submitter` ｜ 类型：同步 ｜ 幂等：否 ｜ 实现：S5-1
@@ -387,7 +388,7 @@
 
 - 出参：**201**，`data` = ReportOut（`status=draft`、`total_amount="0.00"`、`items=[]`）
 - 错误：`422/42200` 参数校验失败；`401/40101` 未登录
-- 备注：`total_amount` 不接受客户端传值，由明细汇总；建单写审计 `action=report_create`
+- 备注：`total_amount` 不接受客户端传值，由明细汇总；建单写审计 `action=report_create`（同事务，`detail_json` 只含 `report_no`/`status`）；`department` 为派生字段（申请人 `users.dept`），不入参不落库
 
 ### POST /api/v1/reports/{id}/items
 - 权限：本人 `submitter`（仅 `draft` 或 `rejected`）｜ 类型：同步 ｜ 幂等：否 ｜ 实现：S5-1
@@ -401,7 +402,7 @@
 
 - 出参：**201**，`data` = ReportOut（含 `items` 与重算后的 `total_amount`、`item_count`）
 - 错误：`404/40400` 票据不存在或非本人；`409/40900` 票据非 `confirmed` / 单据状态不允许；`409/40901` 票据已被其他有效单据引用（重复报销）；`422/42201` `amount` 超出票面合计（`data.expected`）
-- 备注：合计由服务端汇总 `items.amount`，**不信客户端**；同一单内重复添加返回 `409/40901`（`UNIQUE(form_id, invoice_id)`）；跨单引用同一票据由业务层拦截，**SCHEMA 尚无跨单唯一约束**，是否补约束 TODO（S2-1 / S5-1）；添加成功后票据 `status` 置 `in_report`（同一事务，SCHEMA 5.2 跨表不变式）
+- 备注：合计由服务端汇总 `items.amount`，**不信客户端**；同一单内重复添加返回 `409/40901`（`UNIQUE(form_id, invoice_id)`）；跨单引用同一票据由业务层拦截（**票据行 `FOR UPDATE` 串行化 + `status='in_report'` 分诊**，D-084；SCHEMA 不加跨表约束），票据已是 `in_report` 时同样 `409/40901`；添加成功后票据 `status` 置 `in_report`（同一事务，SCHEMA 5.2 跨表不变式）；本动作**不单独写审计**，整单审计在 S5-2 的 sign/seal/submit 闭环
 
 ### POST /api/v1/reports/{id}/sign
 - 权限：本人 `submitter` ｜ 类型：同步 ｜ 幂等：否（重复签名为重签：旧签名置 `void`、`signatures.version` +1）｜ 实现：S5-2
@@ -446,14 +447,14 @@
 - 入参：无
 - 出参：**200**，`data` = `{report: ReportOut, signature: SignatureOut | null, envelope: EnvelopeOut | null, verify_status}`
 - 错误：`404/40400` 不存在或无权访问
-- 备注：**不返回 `ciphertext_b64`、`wrapped_key_b64`、`ciphertext_storage_key`**；明文影像只经 `decrypt` 的临时预览
+- 备注：**不返回 `ciphertext_b64`、`wrapped_key_b64`、`ciphertext_storage_key`**；明文影像只经 `decrypt` 的临时预览。S5-1 已按此形状实现：`signature`/`envelope` 在 S5-2 之前恒为 `null`，`verify_status` 无签名时为 `unverified`
 
 ### GET /api/v1/reports/mine
 - 权限：`submitter`（仅本人）；`reviewer`/`admin` → 403 ｜ 类型：同步（分页）｜ 幂等：是 ｜ 实现：S5-1
 - 入参：`status`、`date_from`/`date_to`、`page`、`page_size`、`sort_by`（`created_at`｜`submitted_at`）、`order`
 - 出参：**200**，`data = {items: ReportOut[]（不含 items 明细）, total, page, page_size}`
 - 错误：`403/40301`；`422/42200` 排序/日期非法
-- 备注：列表只给汇总，明细走详情接口，避免 N+1
+- 备注：列表只给汇总，明细走详情接口，避免 N+1；`sort_by=submitted_at` 时**空值（草稿）排最后**（`NULLS LAST`，D-084）
 
 ## 5. 财务审核（S5-3 / S5-4 / S5-5）
 

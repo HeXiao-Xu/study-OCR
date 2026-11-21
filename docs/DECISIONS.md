@@ -1829,3 +1829,33 @@
   对拍（`--n 10 --symmetric-kb 256`）：SM2 sign **5.28ms** / verify **9.70ms**、RSA-2048 sign 29.4ms /
   verify 0.027ms、RSA-3072 sign 95.1ms；256KB 对称 SM4+HMAC **3.57ms** vs AES-GCM **0.049ms**；
   全量单测 734、集成 259、`app/crypto` 覆盖率仍 94%。
+
+## D-084 报销单：单号用全局 PG 序列、"一票一单"靠行锁兜底、补 `report_create` 审计值
+
+- **日期**：2026-11-21（S5-1，阶段 5 开始）
+- **背景**：`report_forms.report_no` 在 0001 就建了列，但**没有生成机制**；API.md §4 要求建单写
+  `audit_logs.action='report_create'`，而 SCHEMA §9.19b 与 `enums.AuditAction` 都没有该值；
+  "同一票据不能被两张有效单据引用"只有 `UNIQUE(form_id, invoice_id)`，**没有跨单约束**。
+  这三件事都是"契约要求、库里没有"，必须在 S5-1 一次收口。
+- **决策**：
+  1. **单号 = 全局 PG 序列 `report_no_seq` + 业务月**：`RPT-{YYYYMM}-{seq:04d}`（YYYYMM 取 `Asia/Shanghai`）。
+     不用 `count()+1`（并发必重号）；不做"按月重置"（需要运行期 DDL 或第 17 张计数器表，契约没给）；
+     序列非事务性 → 回滚退号不回滚，单号只求唯一、不求连续；超过 9999 自然变 5 位，不截断。
+  2. **"一票一单"= 单据行 + 票据行两级 `FOR UPDATE` + 状态分诊 + 跨单查询**（不新增 SCHEMA 列/约束）：
+     先锁单据（同一单的并发加明细串行化，合计重算不丢更新）、再锁票据（固定顺序防死锁）；
+     同一票据的并发添加在票据行上串行；后到者看到 `status='in_report'` → `409/40901`；
+     `confirmed` 才可加；跨单 join 查询只作"绕过服务层写库"的兜底。
+     `rejected` 单据不计入"有效引用"（驳回单要保留明细供重提）；其票据仍 `in_report`，
+     回到 `confirmed` 属 S5-5 的职责。**代价**：绕过 service 直写库仍可造出重复引用，论文写进"不足"。
+  3. **`audit_logs.action` 增加 `report_create`**（`enums.AuditAction` + SCHEMA §9.19b + 迁移 0008 的 CHECK 三处同步）；
+     建单时在**同一事务**里 `append_audit`，`detail_json` 只放 `{report_no,status}`（不记标题/事由/金额）。
+  4. **加明细不写审计**：8 值 `action` 里没有"加明细"，不为它发明新枚举；整单的可审计闭环在 S5-2 的
+     `sign → seal → submit` 一次性覆盖。加明细会 `report_forms.version += 1`（内容变了，乐观锁要跟）。
+  5. **与任务卡口述的四处偏差以契约为准**：不入参 `department/applicant_id/total_amount`、
+     不做"客户端合计 vs 服务端合计"的 422（合计只由服务端算）、`422/42201` 用于 `amount > 票面合计`、
+     `department` 作为派生字段取 `users.dept`。
+- **代价/限制**：单号全局递增不按月重置（示例语义与实现口径有差）；跨单唯一不是数据库硬约束；
+  明细只增不删不改（契约未定义接口）；建单没有速率限制。
+- **验证**：`pytest tests/test_reports.py -m integration` **25 passed**（含 10 线程并发建单不重号、
+  两线程抢同一票据恰好一个 40901、两线程给同一单加不同票合计不丢更新）；全量单测 **734 passed**、
+  集成 **284 passed**；`alembic check` 零差异（0008 的序列不在 autogenerate 视野内，属预期）。

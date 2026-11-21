@@ -210,6 +210,9 @@ class AuditAction(StrEnum):
     FORBIDDEN = "forbidden"
     # S3-3 补：局部二次识别（迁移 0005 只放开 CHECK；审计行仍留 S4-7，D-061）
     FIELD_REREAD = "field_reread"
+    # S5-1 补：建报销单（API.md §4 备注明确要求；迁移 0008 放开 CHECK，D-084）。
+    # 追加在末尾：枚举顺序就是迁移里 CHECK 文本顺序，插在中间会与 0001/0002/0005 的历史顺序对不上
+    REPORT_CREATE = "report_create"
 
 
 class AuditTargetType(StrEnum):
