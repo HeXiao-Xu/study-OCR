@@ -15,6 +15,7 @@ from app.crypto.sm.sm2 import (
     SM2_N,
     decrypt_bytes,
     encrypt_bytes,
+    public_key_from_private,
     sign_bytes,
     verify_bytes,
 )
@@ -315,3 +316,16 @@ def test_sm2_decrypt_interops_with_gmssl_encrypt() -> None:
     ciphertext = gmssl_cipher.encrypt(plaintext)
 
     assert decrypt_bytes(ciphertext, private_key_hex=VECTOR_PRIVATE) == plaintext
+
+
+# ---------------------------------------------------------------- 公钥推导（S4-5）
+
+
+def test_public_key_from_private_matches_gb_t_vector() -> None:
+    assert public_key_from_private(VECTOR_PRIVATE) == VECTOR_PUBLIC.lower()
+
+
+def test_public_key_from_private_rejects_invalid_private_key() -> None:
+    for bad in ("00" * 32, f"{SM2_N:064x}", "zz" * 32):
+        with pytest.raises(ValueError):
+            public_key_from_private(bad)

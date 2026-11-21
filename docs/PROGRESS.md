@@ -6,17 +6,18 @@
 
 ## 当前状态
 
-- 阶段：**阶段 4 进行中**（S4-1 ~ S4-4 已完成，信封链路打通）；下一张卡 **S4-5 密钥生成与私钥口令保护**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-4**（共 38 张卡，全部 ✅ 通过）
-- 最近完成：**S4-4 数字信封**（2MB seal+open **0.095s**，<1s 达标；全量 607 条单元全绿）
+- 阶段：**阶段 4 进行中**（S4-1 ~ S4-5 已完成，密钥/签名/信封/AES-GCM 口令保护闭环）；下一张卡 **S4-6 X.509 自建 CA 与角色证书**
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、**S4-1 ~ S4-5**（共 39 张卡，全部 ✅ 通过）
+- 最近完成：**S4-5 密钥生成与私钥口令保护**（OpenSSL 生成 + PBKDF2/AES-GCM；OpenSSL 独立验签通过；全量 631 条单元全绿）
 - 附加改动（2026-11-20）：D-069 真实横版票抽取修复、D-070 确认流程简化（去重识别/逐字段操作）、D-071 删除改硬删（仅 draft，可重传）；业务状态统一显示为 待确认/待复核/已复核（前端派生）
-- 下一步：**S4-5 密钥生成与私钥口令保护 ★关键**
-- 已知阻塞：无（**环境缺口**：本机没有 `openssl` 命令行，S4-5 的密钥生成需要替代方案，见 HANDOFF §7）
+- 下一步：**S4-6 X.509 自建 CA 与角色证书**
+- 已知阻塞：无
 - 环境提醒：
   - 后端必须用 **Python 3.11**（`.venv/Scripts/python.exe`），本机默认 `python` 是 3.13，`paddlepaddle` 无对应 wheel
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
   - `gmssl==3.2.2` + `cryptography==50.0.2`（+ `pycryptodomex==3.24.2`）已装并锁版本；numpy 1.26.4 / paddle 2.6.2 未变
-  - 本地领先 origin **73 个 commit**，`git push` 由用户执行
+  - **本机没有 openssl CLI**：统一用 `scripts/openssl.sh`（Docker 内 OpenSSL 3.5.9，D-078）
+  - 本地领先 origin **75 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -68,7 +69,7 @@
 [x] S4-2 SM2 签名与验签（防双重哈希） ★关键
 [x] S4-3 SM4-CBC + HMAC-SM3 的 Encrypt-then-MAC 对称层 ★关键
 [x] S4-4 数字信封（SM2 包裹会话密钥） ★关键
-[ ] S4-5 密钥生成与私钥口令保护 ★关键
+[x] S4-5 密钥生成与私钥口令保护 ★关键
 [ ] S4-6 X.509 自建 CA 与角色证书
 [ ] S4-7 审计日志哈希链 ★关键
 [ ] S4-8 密码模块单测与国标测试向量验证 ★关键
@@ -102,6 +103,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S4-5 | `backend/app/crypto/keystore.py`（新：`EncryptedPrivateKey`（frozen/extra=forbid、iterations≥200000）、`KeyPair`、`KeystoreError`、`derive_kek`、`key_fingerprint`、`private_key_hex_from_pkcs8`（DER 原语解析）、`wrap_private_key`/`unwrap_private_key`/`load_keypair`；PBKDF2-HMAC-SHA256+AES-256-GCM，AAD 绑定元数据；解锁失败统一"口令错误"）、`backend/app/crypto/sm/sm2.py`（追加 `public_key_from_private`）、`scripts/keygen.py`（OpenSSL 生成 → 加锁 → 解锁 → 签名自检；临时 PEM 即删；口令只走 env/getpass）、`backend/tests/test_crypto/test_keystore.py`（22 条）+ `test_sm2.py`（+2）、`docs/{spec,plan}/s4-5-keystore.md` | ① 真 OpenSSL 3.5 生成：`genpkey -algorithm SM2` → PKCS#8，`pkey -pubout` 与 `dG` 推导**逐字节一致**；② `keygen.py` 全链路：产物只有 `sign.p8.enc`（498B JSON 密文）与 `sign.pub.pem`，**无临时 PEM 残留**；自检"解锁+签名+验签"通过；③ **OpenSSL 独立验签**：`pkeyutl -verify -rawin -digest sm3 -pkeyopt distid:1234567812345678` → `Signature Verified Successfully`（不传 distid 失败，见遗留 #88）；④ 错误口令 → `KeystoreError("口令错误")`；篡改密文/盐/nonce/iterations（AAD）→ 同一错误；空/7 字符口令 → `ValueError`；⑤ PKCS#8 解析拒绝非法 DER/31B 标量/越界标量；⑥ 模型 frozen/extra=forbid/iterations 下限/key_fp 格式；⑦ `key_fp = SHA-256(0x04‖X‖Y)`，128/130 hex 同指纹；⑧ `pytest tests/test_crypto` **205 passed**（181+24），全量 **631 passed**（607+24），`alembic check` 零差异（无迁移）；⑨ `backend/` 无任何真实私钥材料（`BEGIN PRIVATE KEY` 仅出现在文档说明；`secrets/` 未入库） | ✅ 通过（D-079：密钥生成/口令保护口径；`key_records` 落库属 S5） |
 | S4-4 | `backend/app/crypto/sm/sm2.py`（追加 `encrypt_bytes/decrypt_bytes`：C1C3C2、C1 无 04 前缀、只收 1–32B、K 用 `secrets`、SM3 计数器 KDF）、`backend/app/crypto/envelope.py`（新：`Envelope` / `EnvelopeError` / `seal` / `open_sealed`；CEK 每封信封新生成；MAC 覆盖 `header‖wrapped_key‖IV‖密文‖证书指纹`；顺序 解 CEK→验 MAC 解密→sha256）、`backend/app/crypto/sm/sm3.py`（改：OpenSSL `hashlib` 快路径 + gmssl 回退，`hmac_sm3` 两条路径）、`backend/app/crypto/sm/sm4.py`（改：`cryptography`/OpenSSL 后端 + `trailer` 参数）、`backend/requirements.txt`（`cryptography==50.0.2`）、`backend/tests/test_crypto/{test_sm3,test_sm4,test_sm2,test_envelope}.py`（+35 条）、`docs/{spec,plan}/s4-4-envelope.md` | ① **2MB seal+open 实测 0.095s**（seal 0.054s / open 0.041s，任务卡要求 <1s；254KB 真实票据尺寸 22.4ms）；② 信封往返：空/1B/1KB/2MB、中文 JSON；`wrapped_key` 112B（C1 64+C3 32+C2 16）；③ 同明文两次：iv/密文/MAC/wrapped_key 全不同（新 CEK）；④ 篡改 ciphertext/iv/mac → `mac_mismatch`；篡改 wrapped_key 的 **C2 段与 C3 段** → `mac_mismatch`（C3 段靠"wrapped_key 进 MAC"发现）；篡改 cert_fp → `mac_mismatch`；篡改 payload_sha256 → `digest_mismatch`；错私钥 → `mac_mismatch/bad_envelope`；坏 base64/长度 → `bad_envelope`；⑤ SM2 加解密：1/16/32B 往返、>32B `ValueError`、同明文两次密文不同、C1 不在曲线 `ValueError`、**与 gmssl `encrypt/decrypt` 双向互操作**；⑥ SM3 双后端：monkeypatch 回退到 gmssl 后国标向量与 HMAC 向量仍一致；SM4 与 gmssl 参考实现逐字节一致；⑦ `pytest tests/test_crypto` **181 passed**（146 + 35），全量 **607 passed**（572 + 35），`alembic check` 零差异 | ✅ 通过（D-077：OpenSSL 后端、cryptography 直接依赖、SM2 加密自组合、C3/MAC 覆盖取舍） |
 | S4-3 | `backend/app/crypto/sm/sm3.py`（追加 `hmac_sm3`：RFC 2104、块长 64、长 key 先哈希；返回 32B）、`backend/app/crypto/sm/sm4.py`（新：`IntegrityError(reason)` / `Sm4Ciphertext` / `derive_mac_key` / `encrypt` / `decrypt` + 内部 CBC/PKCS7/分组；IV 用 `secrets`；MAC 覆盖 `aad‖IV‖密文`；解密前先验 MAC + `compare_digest`）、`backend/tests/test_crypto/{test_sm3,test_sm4}.py`（+41 条）、`docs/{spec,plan}/s4-3-sm4-envelope-crypto.md` | ① **GB/T 32907-2016 A.1 国标向量**：key=PT=`0123456789abcdeffedcba9876543210` → `681edf34d206965e86b3e94f536e4246`；② **OpenSSL 交叉**：固定 IV 的 CBC 向量与 Node `createCipheriv('sm4-cbc')` 逐字节相同（`61e48c1e…af5c`）；HMAC-SM3 4 组向量与 Node `createHmac('sm3')` 相同（`bd4a3407…ebd398` 等）；③ 往返 0/1/15/16/17/31/32/100/1000 B 与中文载荷；空明文可往返；④ 同明文两次 IV/密文/MAC 全不同；⑤ 篡改密文 1 bit / 改 IV / 改 MAC / 错误 key / 截断分组 → `IntegrityError("mac_mismatch")`；⑥ **坏填充**（MAC 合法、末字节 0x00/0x05/0x11）→ `IntegrityError("bad_padding")`；坏填充+坏 MAC → 先报 `mac_mismatch`（证明"先验 MAC 再解密"）；⑦ aad 绑定：同 aad 通过、换 aad 失败；⑧ key≠16B / iv≠16B / mac≠32B → `ValueError`；异常信息不含明文；⑨ `pytest tests/test_crypto` **146 passed**（S4-1/2 105 + 本卡 41），全量 **572 passed**（531 + 41），`alembic check` 零差异（无迁移） | ✅ 通过（D-076：EtM 口径、自写 CBC/PKCS7 的理由、HMAC 交叉向量出处） |
 | S4-2 | `backend/app/crypto/sm/sm2.py`（新：`sign_bytes` / `verify_bytes` / `DEFAULT_USER_ID` / `SM2_N`；只走 `sign_with_sm3`，K 用 `secrets` + 拒绝采样；DER 签名；公钥归一化 + 曲线校验 + 覆盖 gmssl `lstrip("04")` 缺陷；验签 r,s 范围校验 + 畸形返回 False）、`backend/app/crypto/signature.py`（新：`SignatureRecord`（frozen/extra=forbid）、`VerifyResult`、`sign_canonical` / `verify_record` / `verify_canonical`）、`backend/tests/test_crypto/{test_sm2,test_signature,_keys}.py`（51 条）、`docs/{spec,plan}/s4-2-sm2-signature.md` | ① **GB/T 32918.5 附录 A.1 公开向量**逐位对上：`M="message digest"`、`k=59276E27…` → `r=F5A03B06…20B3`、`s=B1B6AA29…C1AA`，验签 True；② ZA/摘要与标准一致（`ZA=B2E14C5C…`、`e=F0B43E94…`，实测）；③ 1 bit 改消息 / 改签名 / 错误公钥 → False；④ 同明文两次签名不同（`secrets`），固定 K 两次相同；⑤ **双重哈希陷阱**：把 `sm3_digest(payload)` 当消息再签 → 对摘要 True、对原 payload False；⑥ **gmssl 缺陷回归**：x 以 `04` 开头的公钥（`d=7F3A…6146`）签名/验签正确（未修 bug 时 gmssl 把 128 hex 剥成 126 并抛 `TypeError`，已实测）；⑦ **可塑性**：`s+n` 的 DER 变体 → False（gmssl 本身会验过）；⑧ 畸形签名 6 种 → False 不抛；非法私钥/公钥/K/非曲线点 → `ValueError`；⑨ 记录三类失败：载荷改 `digest_mismatch`、载荷+digest 同改 `bad_signature`、签名改/错公钥 `bad_signature`；模型 frozen/extra=forbid/naive 时间拒绝；⑩ `pytest tests/test_crypto` **105 passed**（S4-1 54 + 本卡 51），全量 **531 passed**（480 + 51），`alembic check` 零差异（本卡无迁移）；⑪ 独立实现对照：Node `createHash('sm3')` 与 `sm3_hex(canonical_json(...))` 同值 `d646a76e…` | ✅ 通过（D-075：签名策略裁决 + gmssl 七条缺陷处理；`hmac_sm3` 仍留 S4-3） |
@@ -254,8 +256,27 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 85 | 2MB <1s 的性能断言在极慢机器/CI 上可能抖动 | 实测 0.095s，约 10 倍余量 | 若 CI 抖动，改为基准脚本 + 宽松阈值，但论文数字用手测实测值 |
 | 86 | ✅ **已解决（2026-11-21，D-078）**：本机没有 `openssl` 命令行 | S4-5 密钥生成、S4-6 证书都要求 OpenSSL CLI | 统一用 `scripts/openssl.sh`（Docker 内 OpenSSL 3.5.9），已实测 SM2 密钥/CA/证书/签名验签；任务卡流程不改成 `_kg` 或自写 PKCS#8 |
 | 87 | 信封只到"字节 → Envelope 记录"，大影像的 MinIO 对象名（`ciphertext_storage_key`）未做 | 属业务层（S5）与存储层 | S5 封装接口时决定：小载荷进 `ciphertext_b64`、影像密文存 MinIO 并登记对象名 |
+| 88 | **OpenSSL 的 `pkeyutl` 默认 SM2 ID 为空**：直接 `-verify -rawin -digest sm3` 验不过我们的签名 | 互操作联调容易误判为"签名错" | 交叉验签必须显式 `-pkeyopt distid:1234567812345678`（已实测）；写进 S4-6/S5 验收与论文"互操作"一节 |
+| 89 | `key_records` 未落库（本卡只产出加密文件与公开元数据） | S5 的密钥初始化流程才能登记；SCHEMA 该表无 `key_fp` 列 | S5 封装/签名接口按 SCHEMA 写 `storage_path`；`key_fp` 留在加密文件里 |
+| 90 | 无私钥轮换、无 HSM、无密钥吊销流程 | 单机口令保护，防的是"库/备份泄露"而非"主机被控" | 论文"不足"如实写；轮换/吊销属 S5/S7 |
 
 ## 变更日志
+
+### 2026-11-21
+
+- **S4-5 完成**：SM2 密钥生成与私钥口令保护。
+  · 密钥**由 OpenSSL 3.5 生成**（`scripts/openssl.sh`，Docker 内，D-078）：
+    `genpkey -algorithm SM2` → PKCS#8；`pkey -pubout` 与 `dG` 推导交叉核对；
+  · `keystore.py`：PBKDF2-HMAC-SHA256（≥200000、16B 盐）→ 32B KEK → AES-256-GCM 包裹 PKCS#8 DER；
+    AAD 绑定 `{algo, curve, kdf, iterations, key_fp}`（调低迭代/换算法即解密失败）；
+    解锁失败统一 `KeystoreError("口令错误")`（不区分错口令与密文篡改）；
+  · PKCS#8 解析用 pycryptodomex 的 DER 解码原语（不手写 ASN.1）；`key_fp = SHA-256(0x04‖X‖Y)`；
+  · `scripts/keygen.py`：生成 → 加锁 → 解锁 → **签名自检**；临时 PEM `finally` 删除；
+    口令只从环境变量/`getpass` 读（不进 shell 历史），输出绝不含口令与私钥；
+  · 实测：产物只有 `sign.p8.enc`（498B JSON 密文）与 `sign.pub.pem`；
+    **OpenSSL 独立验签通过**（`pkeyutl -verify -rawin -digest sm3 -pkeyopt distid:1234567812345678`
+    → Signature Verified Successfully；不传 distid 会失败——OpenSSL 默认 ID 为空，已记遗留）；
+  · 无接口/无迁移/无表变更（`key_records` 落库属 S5）；全量 631 passed（D-079）。
 
 ### 2026-11-20
 

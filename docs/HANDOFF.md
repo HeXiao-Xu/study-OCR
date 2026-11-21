@@ -1,13 +1,14 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-21 14:35（阶段 4：S4-1 ~ S4-4 完成；开新会话用）
+> 最后更新：2026-11-21 14:52（阶段 4：S4-1 ~ S4-5 完成；开新会话用）
 
 ## 1. 一句话现状
 
 **阶段 3 已完成**（S3-1 ~ S3-8 + 补充卡 S3-9）；**阶段 4 进行中**：S4-1（canonical + SM3）、
-S4-2（SM2 签名）、S4-3（SM4-CBC EtM）、S4-4（数字信封）已完成；密码链路已能"签名 → 信封 → 拆封"。
-**下一步：S4-5 密钥生成与私钥口令保护 ★关键**。
+S4-2（SM2 签名）、S4-3（SM4 EtM）、S4-4（数字信封）、S4-5（密钥与口令保护）已完成；
+密码链路已能"生成密钥 → 签名 → 加密信封 → 拆封 → 验签"。
+**下一步：S4-6 X.509 自建 CA 与角色证书**。
 
 当前浏览器可走通（`http://127.0.0.1:5173`）：
 
@@ -65,6 +66,9 @@ backend/app/crypto/sm/sm2.py     ← S4-2/S4-4：sign_bytes/verify_bytes（只�
                                     + encrypt_bytes/decrypt_bytes（C1C3C2、1–32B、SM3 计数器 KDF）
 backend/app/crypto/signature.py  ← S4-2：SignatureRecord + VerifyResult(ok/digest_mismatch/bad_signature) + sign/verify_canonical
 backend/app/crypto/envelope.py   ← S4-4：Envelope + EnvelopeError + seal/open_sealed（CEK 每封新生成；MAC 绑 header‖wrapped_key‖IV‖密文‖指纹）
+backend/app/crypto/keystore.py   ← S4-5：口令保护私钥（PBKDF2 200k + AES-256-GCM；PKCS#8 解析；key_fp；统一"口令错误"）
+scripts/keygen.py                ← S4-5：OpenSSL 生成 → 加锁 → 解锁 → 签名自检（口令只走 env/getpass）
+scripts/openssl.sh               ← D-078：宿主机没有 openssl，用 Docker 内 OpenSSL 3.5.9
 backend/app/services/repository.py  ← S2-3：行级隔离（策略表 + filter_visible + get_visible_or_404，deny-by-default）
 backend/app/services/pagination.py  ← S2-4：分页/排序协议（PageParams/PageResult、白名单排序、同一 stmt 求 total）
 backend/app/services/invoice_service.py  ← S2-5/S3-9：建草稿/状态机/列表/详情/**硬删**/字段修改/复核
@@ -146,6 +150,7 @@ docs/{SCHEMA,API,PROGRESS,DECISIONS,EVAL}.md  ← 契约与决策，改动前必
 | S4-2 SM2 签名 | **GB/T 32918.5 A.1 公开向量**逐位一致：`k=59276E27…` → `r=F5A03B06…20B3`、`s=B1B6AA29…C1AA`；双重哈希陷阱（摘要当消息 → 原消息验不过）；`s+n` 可塑变体被拒（gmssl 会验过）；`04` 开头公钥回归（gmssl 未修时 128→126 并抛 `TypeError`）；同明文两次签名不同、固定 K 相同 | `pytest tests/test_crypto`（105 passed，S4-1 54 + S4-2 51） |
 | S4-3 SM4 对称层 | **GB/T 32907 A.1 向量** `681edf34…4246`；固定 IV 的 CBC 与 Node/OpenSSL `sm4-cbc` 逐字节相同（`61e48c1e…af5c`）；HMAC-SM3 4 组向量与 Node 相同（`bd4a3407…`）；篡改/截断/错 key → `mac_mismatch`，MAC 合法的坏填充 → `bad_padding`，坏填充+坏 MAC 先报 `mac_mismatch` | `pytest tests/test_crypto`（146 passed，累计） |
 | S4-4 数字信封 | **2MB seal+open 0.095s**（seal 0.054 / open 0.041；254KB 真实票尺寸 22.4ms）；`wrapped_key` 112B=C1 64+C3 32+C2 16；C2 段与 C3 段篡改都 `mac_mismatch`；`payload_sha256` 篡改 `digest_mismatch`；SM2 与 gmssl 双向互操作；SM3 双后端同向量、SM4 与 gmssl 参考实现逐字节一致 | `pytest tests/test_crypto`（181 passed，累计）+ `pytest` 607 passed |
+| S4-5 密钥库 | OpenSSL 生成 PKCS#8 → `dG` 与 `pkey -pubout` 逐字节一致；产物只有 `.p8.enc`（498B 密文 JSON）+ `.pub.pem`；自检解锁+签名+验签通过；**OpenSSL 独立验签成功**（`-pkeyopt distid:1234567812345678`）；错误口令/篡改密文/盐/迭代全失败；`key_fp=SHA-256(0x04‖X‖Y)` | `pytest tests/test_crypto`（205 passed，累计）+ `pytest` 631 passed |
 
 **最弱环节**：`taxi_ticket` 整单只有 0.200（纸面约 300px 高、字太小）、`total_amount` 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（见 D-033）。
@@ -158,8 +163,13 @@ cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)                 # 模型↔库零差异
 (cd backend && ../.venv/Scripts/python.exe -m pytest)                        # 365 passed（默认跳过集成）
 (cd backend && ../.venv/Scripts/python.exe -m pytest -m integration)         # 169 passed（需 Docker）
-# S4-1 ~ S4-4 密码封装（离线、不连库）：181 passed（含 SM3/SM2/SM4 国标向量、2MB 信封 <1s）
+# S4-1 ~ S4-5 密码封装（离线、不连库）：205 passed（含 SM3/SM2/SM4 国标向量、2MB 信封 <1s、密钥库）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto -q)
+# 生成密钥（OpenSSL 在 Docker 里跑；口令只走环境变量/交互，不进命令行历史）
+STUDYOCR_KEY_PASSPHRASE='demo-pass-1234' .venv/Scripts/python.exe scripts/keygen.py --name alice --role submitter
+# 用 OpenSSL 独立验证我们签的名（注意必须显式 distid，否则默认 ID 为空会验不过）
+bash scripts/openssl.sh pkeyutl -verify -pubin -inkey secrets/keys/alice/sign.pub.pem \
+  -rawin -digest sm3 -pkeyopt distid:1234567812345678 -in msg.bin -sigfile sig.der
 # OpenSSL 3.x 命令行（宿主机没装，用 Docker 里的）：见 D-078
 bash scripts/openssl.sh version                              # OpenSSL 3.5.9
 bash scripts/openssl.sh genpkey -algorithm SM2 -out secrets/keys/alice-sign.pem
@@ -291,42 +301,41 @@ SCHEDULER_ENABLED=true ANCHOR_CRON_HOUR='*' ANCHOR_CRON_MINUTE='*' ANCHOR_CRON_S
 | D-075 | SM2 裁决：**只走国标 SM2-SM3**（`e=SM3(ZA‖M)`，ID=`1234567812345678`），`sign_bytes(data)` 传入参是 canonical 字节而非摘要；签名 DER 存 base64；K 只用 `secrets`；逐条封堵 gmssl 七个坑（`mode` 默认 0、`lstrip("04")`、不重试、不查 r/s 范围、畸形抛异常、默认 ID、`func.random_hex`） |
 | D-076 | 对称层 EtM：`mac=HMAC-SM3(mac_key, aad‖IV‖密文)`、`mac_key=SM3(key‖"mac")`、`compare_digest`；**CBC/PKCS7 自实现**（gmssl 的 `pkcs7_unpadding` 不校验）；失败归类 `mac_mismatch/bad_padding/bad_ciphertext`；HMAC-SM3 用 OpenSSL 交叉向量（无国标 HMAC 向量） |
 | D-077 | 性能改造：SM3/HMAC 走 `hashlib`（OpenSSL，2MB 0.008s，gmssl 回退）、SM4 走 `cryptography`（OpenSSL，2MB 0.03s）；`cryptography` 升为直接依赖；SM2 加密自组合（gmssl `encrypt` 的 K 不可注入）；信封 MAC 多绑 `wrapped_key`（不依赖 C3） |
+| D-078 | 宿主机没有 openssl CLI：用 Docker 内 OpenSSL 3.5.9（`scripts/openssl.sh`，固定镜像）生成密钥/证书；不装系统软件、不用 `_kg` 造假密钥 |
+| D-079 | 私钥口令保护：OpenSSL 生成 PKCS#8 → PBKDF2-HMAC-SHA256(200k,16B 盐)→AES-256-GCM，AAD 绑元数据；`key_fp=SHA-256(0x04‖X‖Y)`；解锁失败统一"口令错误"；`key_records` 落库属 S5（SCHEMA 无 key_fp/status 列） |
 
-## 7. 下一步：S4-5 密钥生成与私钥口令保护（★关键）
+## 7. 下一步：S4-6 X.509 自建 CA 与角色证书
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章 S4-5；
-- 流程（AGENTS §11）：spec（`docs/spec/s4-5-*.md`）→ plan → 写码（用户已授权"不逐步确认"）；
-- **阶段 4 规则**：只写 `backend/app/crypto/` 与 `backend/tests/test_crypto/`，**不碰业务接口**；
-- **已交付的地基**：`sm2.py` 的密钥校验/`_kg`、`sm3.py` 双后端、`sm4.py` EtM、`envelope.py`（`key_fp` 可复用其指纹口径）；
-- **S4-5 范围**（任务卡原文）：
-  1. `crypto/keystore.py`：生成 SM2 密钥对；私钥用 **口令 + PBKDF2-HMAC-SHA256（iters ≥ 200000、
-     16B 盐）→ 32B KEK → AES-256-GCM 包裹 PKCS#8**；输出文件字段
-     `{kdf, iterations, salt, nonce, ciphertext, key_fp}`；解锁失败统一提示"口令错误"；
-  2. 单测：生成→加锁→解锁→用解锁私钥签名 的脚本跑通；错误口令、被篡改密文、空口令；
-     `grep -rn "PRIVATE KEY" backend/ docs/` 除测试向量外无命中；日志里搜不到口令；
-  3. `scripts/keygen.py`（生成 + 落 `secrets/keys/` + 打印公开信息，绝不打印私钥）；
-- **环境缺口已在 2026-11-21 解决（D-078）**：本机确实没有 `openssl` 命令行，但 Docker 里有
-  OpenSSL 3.5.9——统一用 `scripts/openssl.sh`（容器内 OpenSSL，仓库根挂到 `/work`，
-  镜像固定 `alpine/openssl:3.5.9`）。已实测可用：`genpkey -algorithm SM2`、
-  `req -x509 -newkey sm2 -sm3`、`x509 -req -sm3`、`pkeyutl -sign/-verify -rawin -digest sm3`、`dgst -sm3`。
-  **S4-5/S4-6 仍按任务卡用真 OpenSSL**，不引入 `_kg` 密钥生成、不手写 PKCS#8：
-  1. `scripts/keygen.py` 调 `scripts/openssl.sh genpkey -algorithm SM2` 生成 PKCS#8 PEM；
-  2. Python 侧只做"口令保护"：PEM→DER 后 PBKDF2-HMAC-SHA256（200k、16B 盐）→ KEK →
-     AES-256-GCM 包裹，写 `secrets/keys/{user}/sign.p8.enc`
-     （字段 `{kdf, iterations, salt, nonce, ciphertext, key_fp}`）；
-  3. 解锁后解出 `d`：用 pycryptodomex 的 DER **解码原语**（PKCS#8 → ECPrivateKey → `privateKey`
-     OCTET STRING），不手写 ASN.1 编解码；`cryptography` 不支持 SM2 键，但它提供 DER 原语与 AES-GCM。
-- **必须注意的坑**（任务卡原文）：私钥**不入库、不进日志、不进异常堆栈、不进接口响应**；
-  `key_records` 只登记 `storage_path`（SCHEMA 2.3：`CHECK (storage_path NOT LIKE '%PRIVATE KEY%')`）；
-  PBKDF2 迭代太低等于没保护；不要把 `_kg` 当生产密钥生成实现。
-- **验收**：`pytest backend/tests/test_crypto/test_keystore.py`；
-  `scripts/keygen.py` 生成→加锁→解锁→签名 全链路跑通；全仓 grep 私钥字样无命中。
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 7 章 S4-6；
+- 流程（AGENTS §11）：spec（`docs/spec/s4-6-*.md`）→ plan → 写码（用户已授权"不逐步确认"）；
+- **阶段 4 规则**：只写 `backend/app/crypto/`、`backend/tests/test_crypto/` 与 `scripts/`；不碰业务接口；
+- **环境已就绪**：本机没有 openssl CLI，但 `scripts/openssl.sh`（Docker 内 OpenSSL 3.5.9，D-078）已实测能：
+  `req -x509 -newkey sm2 -sm3`、`x509 -req -sm3 -CA`、`x509 -in ... -text -noout`、`pkeyutl -verify`；
+- **S4-6 范围**（任务卡原文）：
+  1. `scripts/ca_init.sh`：用 OpenSSL 命令行建 CA（`req -x509 -newkey sm2 -sm3`）与用户证书
+     （`x509 -req -sm3 -CA ... -extfile`）；扩展显式写
+     `KeyUsage=digitalSignature,keyEncipherment,nonRepudiation`、`extendedKeyUsage=clientAuth`、
+     `subject=CN=用户名/O=学校/OU=角色`；文件落 `secrets/`（不入库）；
+  2. `backend/app/crypto/certs.py`：只做三件事——① `fingerprint_sha256`；② 有效期校验；
+     ③ "证书公钥 == 登记的 SM2 公钥 hex"（防证书与私钥配错）；**不做完整链验签**（刻意简化，D-080 记录边界）；
+     另给吊销判断（`revoked_at` 非空 → `cert_revoked`）；
+  3. 单测：证书能解析出 KeyUsage/EKU/SM2 公钥；配错私钥 → 一致性校验失败；过期 → `cert_expired`；
+     吊销 → `cert_revoked`；指纹与 `openssl x509 -fingerprint -sha256` 一致；
+- **实现提示**：
+  - `cryptography` 解析 X.509 没问题（`load_pem_x509_certificate`、`not_valid_before/after`、指纹），
+    但**取 SM2 公钥**可能抛 `UnsupportedAlgorithm`——用 S4-5 已用过的做法：从证书 DER 的 SPKI
+    BIT STRING 解出 `04‖X‖Y`（pycryptodomex 原语），或 issuance 时把 `public_key_hex` 一并登记后比对；
+  - 证书序列号/有效期由 OpenSSL 产出，Python 只读；`certificates` 表的落库属 S5（本卡只产出记录结构）；
+- **必须注意的坑**（任务卡原文）：别引 `gmssl-python` 的证书 API；`-sm3` 与钥匙类型必须显式给；
+  证书与私钥的配对校验不能省（配错会拖到 S5 验签才炸）。
+- **验收**：`scripts/ca_init.sh` 能生成 CA + 用户证书；`openssl x509 -text` 能看到 KeyUsage/EKU/SM2 公钥；
+  配错私钥/过期/吊销三条失败路径都有用例。
 
 ## 8. 未闭合 / 需要用户参与的点
 
 1. **push**：本地领先 origin **73 个 commit**（S3-1 ~ S3-9 + D-069~D-077 + S4-1~S4-4），AI 不推，由用户 `git push`；
 2. ✅ 已闭合（S4-1）：`gmssl==3.2.2` 已装并锁进 `requirements.txt` / `requirements.lock.txt`（D-073）；
-   装完 numpy/paddle/paddleocr 未变、全量单测 607 passed；`cryptography==50.0.2` 已在环境与 lock，S4-4 起升为直接依赖（D-077）；
+   装完 numpy/paddle/paddleocr 未变、全量单测 631 passed；`cryptography==50.0.2` 已在环境与 lock，S4-4 起升为直接依赖（D-077）；
 3. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`、
    `s37-dup.png`、`ui-111-new.png` 等；真实 PDF 的框选对齐需要人眼确认；
 4. `taxi_ticket` 整单 0.200：S3-3 已试过低置信二次识别（整体 97.3% 提升，但出租车票字太少，提升有限）；

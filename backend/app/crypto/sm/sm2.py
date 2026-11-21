@@ -46,6 +46,7 @@ __all__ = [
     "SM2_N",
     "decrypt_bytes",
     "encrypt_bytes",
+    "public_key_from_private",
     "sign_bytes",
     "verify_bytes",
 ]
@@ -122,6 +123,20 @@ def verify_bytes(
     except (ValueError, TypeError, binascii.Error, AttributeError):
         # DER 虽可解析、但内部点运算仍可能因越界/畸形输入抛错；一律视为验签失败。
         return False
+
+
+def public_key_from_private(private_key_hex: str) -> str:
+    """由私钥标量推导公钥 `dG`（128 hex，`x‖y`，**不带 `0x04` 前缀**）。
+
+    S4-5 用它与 OpenSSL `pkey -pubout` 的结果交叉核对；只做曲线点乘，不生成随机数。
+    """
+    private_key = _validate_private_key(private_key_hex)
+    cipher = _build(private_key, "")
+    point = cipher._kg(int(private_key, 16), cipher.ecc_table["g"])
+    if point is None:
+        raise ValueError("私钥无效：无法推导公钥")
+    _normalize_public_key(point)  # 落点必须在曲线上
+    return point
 
 
 # ---------------------------------------------------------------- 内部实现

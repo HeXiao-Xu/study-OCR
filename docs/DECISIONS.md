@@ -1656,3 +1656,35 @@
   `req -x509 -newkey sm2 -sm3` + `x509 -req -sm3` 签出 `CN=alice/O=Test/OU=submitter`
   证书（SHA-256 指纹可读）；`pkeyutl -sign/-verify -rawin -digest sm3` →
   `Signature Verified Successfully`；容器写回仓库文件属主为当前用户（HEXIAO）。
+
+---
+
+## D-079 私钥口令保护：OpenSSL 生成 + PBKDF2(200k) + AES-256-GCM；key_fp 与 SCHEMA 的差异
+
+- **日期**：2026-11-21（S4-5）
+- **背景**：任务卡要求"口令 + PBKDF2-HMAC-SHA256（iters ≥ 200000，16B 盐）→ AES-256-GCM 包裹
+  PKCS#8 私钥"，并"只落 key_records（user_id, key_fp, algo, created_at, status）"。但 SCHEMA
+  §2.3 的 `key_records` 只有 `user_id/key_type/cert_id/storage_path/algo/created_at/revoked_at`，
+  **没有 `key_fp`、没有 `status`**；且本机无 openssl CLI（D-078）。
+- **决策**：
+  1. **密钥由 OpenSSL 生成**（`scripts/openssl.sh genpkey -algorithm SM2`），Python **只做加锁**：
+     PKCS#8 DER → PBKDF2-HMAC-SHA256（默认 200000，**下限 200000**）→ 32B KEK →
+     AES-256-GCM（12B nonce）→ `.p8.enc` JSON `{algo, curve, kdf, iterations, salt_b64,
+     nonce_b64, ciphertext_b64, key_fp}`；
+  2. **AAD 绑定元数据**：`canonical_json({algo, curve, kdf, iterations, key_fp})`——
+     把 `iterations` 改成 1 或换算法/指纹都会让 GCM 认证失败（测试覆盖）；
+  3. **`key_fp = SHA-256(0x04‖X‖Y)`**（64 位小写 hex），与证书指纹区分；由私钥可复算，用于核对记录；
+  4. **解锁失败统一 `KeystoreError("口令错误")`**：错口令、密文被改、盐/nonce/元数据被改表现一致
+     （防 oracle）；空/短于 8 字符的口令直接 `ValueError`；
+  5. **不写数据库**：SCHEMA 优先（AGENTS §9）。`key_fp` 存加密文件，`key_records` 只登记
+     `storage_path`（S5 落库）；任务卡字段清单里的 `status` 在 SCHEMA 里是 `revoked_at`，按 SCHEMA；
+  6. **PKCS#8 解析**用 pycryptodomex 的 `DerSequence`/`DerOctetString` 解码原语逐层取 `d`
+     （不手写 ASN.1 编解码）；`cryptography` 不支持 SM2 键，只负责 PBKDF2/AES-GCM；
+  7. **互操作注意**：OpenSSL 的 `pkeyutl` 默认 SM2 ID 为空，交叉验签必须
+     `-pkeyopt distid:1234567812345678`（实测；遗留 #88）。
+- **代价**：口令是唯一保护因子（无 HSM、无轮换，论文如实写）；keygen 需要 Docker 在跑；
+  口令入口只有环境变量/交互输入（拒绝命令行参数，防 shell 历史泄露）。
+- **验证**：真 OpenSSL 3.5 生成 → `dG` 与 `pkey -pubout` 逐字节一致；`keygen.py` 产物只有
+  `.p8.enc` + `.pub.pem`、无临时 PEM；自检解锁+签名+验签通过；**OpenSSL 独立验签成功**
+  （显式 distid）；错误口令/篡改密文/篡改盐/篡改 iterations 全部失败；
+  `pytest tests/test_crypto` 205 passed、全量 631 passed、`alembic check` 零差异。
