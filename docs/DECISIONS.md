@@ -1796,3 +1796,36 @@
   （certs 98 / keystore 99 / signature 98 / canonical 96 / envelope 93 / sm3 91 / sm2 90 / sm4 88）；
   `scripts/crypto_cross_check.py` → `{"openssl_verified": true, "openssl_output": "Signature Verified Successfully"}`；
   `pytest tests/test_crypto` 256 passed、全量单测 703、集成 259；`alembic check` 零差异。
+
+---
+
+## D-083 算法可替换层：同接口 provider（KeyMaterial / SymmetricPayload / AlgoIntegrityError）
+
+- **日期**：2026-11-21（S4-9，阶段 4 收口）
+- **背景**：S6 要做"国密 vs RSA/AES"的性能与安全性对比。**必须是同一接口换实现**——
+  接口一换、参数一漂，数字就不可比。国密层（S4-2/S4-3）与 `envelope.py` 已定型，本卡只加对照实现。
+- **决策**：
+  1. **`KeyMaterial{algo, public_key: bytes, private_key: bytes, key_fp}`**：密钥对调用方不透明
+     （SM 为 hex ASCII、RSA 为 PEM 字节），两套实现才能同名同参；
+  2. **非对称操作接收 `KeyMaterial`**（不是只收私钥）：SM2-SM3 的 ZA 需要公钥，只收私钥就无法与 RSA 同签名；
+  3. **对称层统一 `SymmetricPayload{nonce, ciphertext, tag}`**：
+     SM4 → nonce=IV(16B)、tag=HMAC-SM3(32B)；AES-GCM → nonce 12B、tag 16B；
+     `wrap_symmetric/unwrap_symmetric` 只接 `aad`（信封的 trailer 仍由 `sm4.encrypt` 内部处理，
+     S5 接入时把头部与 trailer 合并成 aad 传入）；
+  4. **完整性失败统一 `AlgoIntegrityError(reason)`**：SM4 的 `IntegrityError.reason` 透传，
+     GCM 的 `InvalidTag` 映射为 `mac_mismatch`——参数化测试才能断言同一行为；
+  5. **SMProvider.keygen 抛 `NotImplementedError`**：SM2 密钥仍由 `scripts/keygen.py`（OpenSSL，D-078）生成，
+     不在 crypto 层再造 `_kg`；
+  6. **RSA 参数显式**：OAEP 与 PSS 的 hash / MGF1 hash 全部写死 SHA-256（不要库默认值）；
+     只允许 2048/3072；CEK 1–32B；RSA 私钥本卡是**未加密 PKCS#8 PEM**（基准/测试用，生产接入时复用 S4-5）；
+  7. **默认国密**：`get_provider("sm")`；`"rsa"` 切对照；未知名字 `ValueError`（不静默回退）；
+  8. **`envelope.py` 与国密层不改**：provider 接入 S5-2；本卡只交付可替换层与对拍脚本。
+- **代价/限制**：
+  - provider 尚未被 S5 使用（#100）；RSA 私钥未口令保护（#101）；AES-GCM 不做 nonce 复用检测（#102）；
+  - 对拍口径：SM 主路径是纯 Python `gmssl`，RSA/AES 是 OpenSSL C——绝对值受实现后端影响，
+    **论文不能直接说"国密更慢/更快"**（#103）；同安全强度应比 SM2-256 ↔ RSA-3072。
+- **验证**：`pytest -k "rsa or gcm"` 31 条全过（往返/篡改/错钥/跨 provider/形态/工厂/协议）；
+  OAEP/PSS 用"独立 padding 对象"行为级验证显式 SHA-256；
+  对拍（`--n 10 --symmetric-kb 256`）：SM2 sign **5.28ms** / verify **9.70ms**、RSA-2048 sign 29.4ms /
+  verify 0.027ms、RSA-3072 sign 95.1ms；256KB 对称 SM4+HMAC **3.57ms** vs AES-GCM **0.049ms**；
+  全量单测 734、集成 259、`app/crypto` 覆盖率仍 94%。
