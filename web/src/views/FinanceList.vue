@@ -180,7 +180,7 @@ watch(() => route.query, () => void load(), { immediate: true })
         </template>
       </el-table-column>
     </el-table>
-    <el-empty v-if="!loading && !rows.length" description="没有待审核单据" />
+    <el-empty v-if="!loading && !rows.length" description="没有待审核单据（单张票据需先建报销单并签名提交）" />
 
     <el-pagination
       class="pager"
