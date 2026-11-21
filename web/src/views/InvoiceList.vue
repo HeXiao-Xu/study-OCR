@@ -50,7 +50,7 @@ const total = ref(0)
 const loading = ref(false)
 const error = ref('')
 
-const INVOICE_STATUSES: InvoiceStatus[] = ['draft', 'confirmed', 'in_report', 'archived', 'void']
+const INVOICE_STATUSES: InvoiceStatus[] = ['draft', 'confirmed', 'in_report', 'archived']
 const EXTRACT_STATUSES: ExtractStatus[] = ['raw', 'need_confirm', 'confirmed']
 const INVOICE_TYPES: InvoiceType[] = [
   'vat_general',

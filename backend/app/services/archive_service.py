@@ -11,7 +11,7 @@ import json
 import logging
 import zipfile
 from datetime import datetime, timezone
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import (
@@ -93,6 +93,17 @@ def archive_report(
         form.archive_at = archive_at
         transition(db, form, "archived", user, bump_version=False)
         form.version += 1
+        # 归档是整单封存：把该单引用的票据一并置 archived，票据列表不再永远停在 in_report
+        db.execute(
+            update(Invoice)
+            .where(
+                Invoice.status == "in_report",
+                Invoice.id.in_(
+                    select(ReportItem.invoice_id).where(ReportItem.form_id == form.id)
+                ),
+            )
+            .values(status="archived")
+        )
 
         append_audit(
             db,

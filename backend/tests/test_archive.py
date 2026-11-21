@@ -21,6 +21,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.crypto.archive_crypto import open_archive
+from app.models.invoices import Invoice
 from app.models.report_forms import ReportForm
 from app.models.users import User
 from app.services import archive_service
@@ -189,6 +190,13 @@ def test_archive_success_generates_number_and_audit(
         assert form.status == "archived"
         assert form.archive_no == data["archive_no"]
         assert form.archive_at is not None
+        # 整单归档时票据也置 archived（列表显示“已归档”，不再停在“已入报销单”）
+        invoice_ids = db.execute(
+            sa_text("select invoice_id from report_items where form_id = :id"),
+            {"id": report_id},
+        ).scalars().all()
+        for invoice_id in invoice_ids:
+            assert db.get(Invoice, invoice_id).status == "archived"
         assert verify_chain(db).ok is True
         archive_audits = db.execute(
             sa_text("select detail_json->>'archive_no' from audit_logs where action = 'archive'")

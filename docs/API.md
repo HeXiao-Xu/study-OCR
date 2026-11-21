@@ -628,7 +628,7 @@
 
 - 出参：**200**，`data = {report_id, report_no, status: "archived", archive_no, archive_at}`
 - 错误：`422/42202` 缺 `confirm=true`；`409/40900` 非 `approved` / 已归档 / 并发归档；`403/40301` 非 admin；`404/40400` 单据不存在
-- 备注：生成归档号 `AR-YYYY-NNNN`（PG 序列 `archive_no_seq` + 业务年）与 `archive_at`；单据行 `FOR UPDATE`，并发只有一个成功；写审计 `action=archive`（同一事务，进哈希链）；归档后**任何修改/决策接口 409**（状态机）；admin 的归档是**系统运维动作**，响应不含业务内容（admin 读取业务表仍 404）
+- 备注：生成归档号 `AR-YYYY-NNNN`（PG 序列 `archive_no_seq` + 业务年）与 `archive_at`；单据行 `FOR UPDATE`，并发只有一个成功；写审计 `action=archive`（同一事务，进哈希链）；**该单引用的票据同步置 `archived`**（票据列表不再停在“已入报销单”）；归档后**任何修改/决策接口 409**（状态机）；admin 的归档是**系统运维动作**，响应不含业务内容（admin 读取业务表仍 404）
 
 > 哈希链：`entry_hash = HMAC_SM3(key, prev_hash ‖ ts ‖ actor_id ‖ action ‖ target_id ‖ payload_sha256)`，创世 `prev_hash=0×32`，写入串行加锁。哈希链防"改了不被发现"，不防"数据被读"。
 
