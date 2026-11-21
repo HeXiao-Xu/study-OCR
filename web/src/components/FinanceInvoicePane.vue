@@ -162,7 +162,7 @@ onBeforeUnmount(revoke)
     <el-alert v-if="imageError" type="warning" :closable="false" show-icon :title="imageError" />
 
     <el-row :gutter="12" class="pane-body">
-      <el-col :span="12">
+      <el-col :span="8">
         <ImageCanvas
           v-if="imageUrl"
           ref="canvasRef"
@@ -180,7 +180,7 @@ onBeforeUnmount(revoke)
         <el-empty v-else :description="imageError || '影像加载中…'" :image-size="70" />
       </el-col>
 
-      <el-col :span="12">
+      <el-col :span="16">
         <div ref="tableWrap">
           <el-table
             :data="fields"

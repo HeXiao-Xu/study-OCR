@@ -229,7 +229,7 @@ watch(() => route.params.id, () => void load(), { immediate: true })
           <el-descriptions-item label="事由" :span="2">{{ previewReport.reason ?? '—' }}</el-descriptions-item>
         </el-descriptions>
 
-        <h4 class="panel-title">逐票核对（左图右表：hover 高亮、点击行自动定位）</h4>
+        <h4 class="panel-title">逐票核对</h4>
         <FinanceInvoicePane
           v-for="item in previewReport.items ?? []"
           :key="item.invoice_id"
