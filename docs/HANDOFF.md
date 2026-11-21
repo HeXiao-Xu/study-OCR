@@ -119,13 +119,14 @@ S5-1 交付了什么（报销单入口）：
 | `invoice_fields` / `ocr_lines` / `ocr_jobs` / `invoice_files` | 47 / 174 / 7 / 5 | 阶段 3 的识别数据 |
 | `ticket_templates` / `field_rules` | 5 / 37 | seed 模板与校验规则 |
 | `audit_logs` | **70** | 六次冒烟/演示累计（含 `verify`/`decrypt`/`review`/`archive`）；`verify_chain ok`（`checked_count=70`）；审计只增不删 |
-| `certificates` / `key_records` | **2 / 2** | `alice`(user, SM2) + `finance`(server, SM2)；由 `scripts/register_identity.py` 登记，**私钥仍在 secrets/** |
+| `certificates` / `key_records` | **3 / 3** | `alice`(user) + `finance`(server) + **`test_sub`(user，2026-11-21 为 UI 联调补登记，演示口令 `demo-pass-1234`)**；私钥仍在 `secrets/` |
 | `report_forms` / `report_items` / `signatures` / `envelopes` / `review_logs` | **0 / 0 / 0 / 0 / 0** | 冒烟临时单据/信封/审核记录都已清理，库里没有半成品 |
 | `archive_no_seq` | 序列存在 | 迁移 0009 建；已被冒烟/演示消耗到 3（`AR-2026-0003`） |
 | `report_no_seq` | 序列存在 | 迁移 0008 建；已被冒烟消耗到 13（只增不回退） |
 
 - 本地 `secrets/`（整目录 gitignore，**不入库**）：
   - `secrets/keys/alice/sign.p8.enc` + `sign.pub.pem`（S4-5 生成，演示口令 `demo-pass-1234`，**仅演示**）；
+  - `secrets/keys/test_sub/sign.p8.enc` + `sign.pub.pem`（2026-11-21 为 UI 联调生成，演示口令 `demo-pass-1234`）；
   - `secrets/keys/finance/sign.p8.enc` + `sign.pub.pem`（S5-2 生成，财务服务器信封密钥，**演示口令同上**）；
   - `secrets/ca/{ca.key.pem,ca.crt.pem}`（S4-6 的 CA，**CA 私钥未加密**，遗留 #93）；
   - `secrets/certs/alice.crt.pem`（CN=alice/OU=submitter）、`secrets/certs/finance.crt.pem`（CN=finance/OU=server）。
