@@ -1656,6 +1656,17 @@
   `req -x509 -newkey sm2 -sm3` + `x509 -req -sm3` 签出 `CN=alice/O=Test/OU=submitter`
   证书（SHA-256 指纹可读）；`pkeyutl -sign/-verify -rawin -digest sm3` →
   `Signature Verified Successfully`；容器写回仓库文件属主为当前用户（HEXIAO）。
+- **可移植性（别人拉代码怎么跑）**：
+  - 镜像 `alpine/openssl:3.5.9` 来自 Docker Hub（公开，约 5 MB），第一次运行自动拉取；
+    本机已实测拉取成功；离线/内网可先 `docker pull` 再 `docker save`/`docker load`，
+    或用 `OPENSSL_IMAGE` 指向内网镜像（`scripts/openssl.sh`、`.ps1`、`scripts/keygen.py` 都认这个变量）；
+  - 两个入口：`scripts/openssl.sh`（Git Bash/MSYS2；脚本按自身位置算仓库根，任何目录调用都行）、
+    `scripts/openssl.ps1`（Windows PowerShell 5.1 实测；文件带 UTF-8 BOM，且**不声明 param()**，
+    避免 `-out` 被 PowerShell 当通用参数解析）；
+  - 要求只有"Docker 能跑"，宿主机**不需要**装 OpenSSL；Windows 下别在 PowerShell 里直接 `bash ...`
+    （可能落到 WSL 的 bash，没有 docker），用 `.ps1` 或 Git Bash；
+  - 已知限制：镜像平台为 linux/amd64（本机实测）；Apple Silicon 等 arm64 机器依赖镜像是否提供
+    arm64 manifest（未验证，必要时换多架构镜像或用 `--platform`）。
 
 ---
 

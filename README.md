@@ -37,11 +37,18 @@ PaddleOCR 封装、票种识别与版面划分、字段抽取与校验、端到�
 |---|---|---|
 | Python | **3.11**（不要用 3.13 / 3.14） | `paddlepaddle` 没有 3.13+ 的 wheel（S1 会用）；本机已有 `py -3.11` |
 | Node.js | ≥ 20（实测 25.2） | 前端构建 |
-| Docker Desktop | 最新稳定版 | 跑 PostgreSQL / Redis / MinIO |
-| OpenSSL | ≥ 3.0 | S4 生成 SM2 密钥与证书时才用到 |
+| Docker Desktop | 最新稳定版 | 跑 PostgreSQL / Redis / MinIO；**也提供 OpenSSL 3.5** |
+| OpenSSL | **宿主机不需要安装** | S4 生成 SM2 密钥/证书时，用 Docker 镜像 `alpine/openssl:3.5.9` 执行（`scripts/openssl.sh` / `scripts/openssl.ps1`，D-078） |
 | 操作系统 | Windows 10/11（开发）、Linux（部署） | 本文命令以 Windows + Git Bash 为主，Linux 替换路径分隔符即可 |
 
 > 磁盘：Docker 镜像约 1.5 GB，`node_modules` 约 300 MB，虚拟环境约 200 MB。第一次装会慢，之后再装别的不会重复下载。
+>
+> **OpenSSL 怎么来**：宿主机没有 `openssl` 也**不需要**装。`scripts/openssl.sh`（Git Bash/MSYS2）和
+> `scripts/openssl.ps1`（Windows PowerShell）都会把仓库目录挂进 `alpine/openssl:3.5.9` 容器执行命令，
+> 首次运行会自动拉镜像（公开镜像，约 5 MB）。离线/内网机器：
+> `docker pull alpine/openssl:3.5.9` 后 `docker save` 拷过去 `docker load`，或用环境变量
+> `OPENSSL_IMAGE=内网镜像地址` 覆盖。**注意**：PowerShell 里直接敲 `bash scripts/openssl.sh` 可能落到
+> WSL 的 bash（没有 docker），Windows 下优先用 `.ps1`，或用 Git Bash。
 
 ## 2. 快速开始（首次，约 10 分钟）
 

@@ -47,7 +47,7 @@ from app.crypto.sm.sm2 import public_key_from_private, sign_bytes, verify_bytes 
 
 PASSPHRASE_ENV = "STUDYOCR_KEY_PASSPHRASE"
 SELF_TEST_MESSAGE = b"study-ocr keystore self-test"
-OPENSSL_IMAGE = "alpine/openssl:3.5.9"  # 与 scripts/openssl.sh 保持同一镜像
+OPENSSL_IMAGE = os.environ.get("OPENSSL_IMAGE", "alpine/openssl:3.5.9")  # 与 scripts/openssl.sh 同镜像
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 

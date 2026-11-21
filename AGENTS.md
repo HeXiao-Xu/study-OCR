@@ -40,7 +40,8 @@ SM3 摘要 + SM2 签名 + SM4 数字信封 → 财务端验签解密 → 审核�
   `gmssl-python`（官方 ctypes 封装，需先编译 libgmssl）只作可选升级路线，不进主线。
 - `requirements.txt` 必须写死版本号；改任何版本前先跑全量测试，并在 `docs/DECISIONS.md` 记一条。
 - Python 必须是 3.11：`paddlepaddle` 无 3.13/3.14 wheel。Windows 用 `py -3.11 -m venv .venv`。
-- **本机没有 `openssl` 命令行**：一律用 `scripts/openssl.sh`（Docker 内 OpenSSL 3.5.9，D-078）。
+- **本机没有 `openssl` 命令行**：一律用 `scripts/openssl.sh`（Git Bash/MSYS2）或 `scripts/openssl.ps1`
+  （Windows PowerShell），它们把仓库挂进 Docker 的 `alpine/openssl:3.5.9`（D-078）；`OPENSSL_IMAGE` 可换镜像源。
   不要私装系统软件，也不要用 gmssl `_kg` 冒充生产密钥生成；PKCS#8 由 OpenSSL 产出，Python 只做口令保护。
 
 ## 3. 目录约定

@@ -33,7 +33,7 @@ S4-2（SM2 签名）、S4-3（SM4 EtM）、S4-4（数字信封）、S4-5（密�
 | 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**（含 contrib 同版本）、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**、python-multipart **0.0.34**、ARQ **0.28.0**、redis-py **5.3.1**（ARQ 要求 `redis<6`，D-045）、APScheduler **3.11.1** + tzlocal **5.4.5**（S2-12） |
 | pip 源 | 已配阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
 | OCR 模型 | 已缓存在 `~/.paddleocr/whl/{det,rec,cls}`（约 18MB），离线可用 |
-| Docker | `study-ocr-{postgres,redis,minio}` 三个容器（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0007`（16 业务表 + alembic_version）** |
+| Docker | `study-ocr-{postgres,redis,minio}` 三个容器（5433 / 6380 / 9002，控制台 9003）；**库已迁到 `0007`（16 业务表 + alembic_version）**；S4 起还提供 OpenSSL 3.5 容器（`scripts/openssl.sh` / `.ps1`，D-078） |
 | 依赖锁 | `backend/requirements.txt`（手写锁）+ `requirements.lock.txt`（pip freeze） |
 
 > ✅ `gmssl==3.2.2`（+ 传递依赖 `pycryptodomex==3.24.2`）已在 S4-1 装好并写进 requirements/lock；
@@ -171,7 +171,9 @@ STUDYOCR_KEY_PASSPHRASE='demo-pass-1234' .venv/Scripts/python.exe scripts/keygen
 bash scripts/openssl.sh pkeyutl -verify -pubin -inkey secrets/keys/alice/sign.pub.pem \
   -rawin -digest sm3 -pkeyopt distid:1234567812345678 -in msg.bin -sigfile sig.der
 # OpenSSL 3.x 命令行（宿主机没装，用 Docker 里的）：见 D-078
-bash scripts/openssl.sh version                              # OpenSSL 3.5.9
+bash scripts/openssl.sh version                              # OpenSSL 3.5.9（Git Bash/MSYS2）
+powershell -NoProfile -File scripts/openssl.ps1 version      # 同一个镜像（Windows PowerShell 用这个）
+# 镜像可换源/离线：OPENSSL_IMAGE=registry.example.com/alpine/openssl:3.5.9
 bash scripts/openssl.sh genpkey -algorithm SM2 -out secrets/keys/alice-sign.pem
 bash scripts/openssl.sh dgst -sm3 -binary somefile           # 独立复算摘要
 # 跨语言一致性：Python 与 Node 各算一遍，三字段（canonical_b64/sm3/sha256）必须逐字相等
