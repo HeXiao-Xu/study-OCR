@@ -1,13 +1,19 @@
 <script setup lang="ts">
 /**
  * 财务报销审核详情（S5-4/S5-5）：整页审核。
- * 验签（七步）→ 解密预览（左影像 / 右字段表）→ 通过 / 驳回。
+ * 验签（七步）→ 解密预览（左侧全部票面影像，右侧全部字段表）→ 通过 / 驳回。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
-import { decryptReport, getFinanceDetail, getPreviewFileBlob, verifyReport } from '../api/finance'
+import {
+  decryptReport,
+  getFinanceDetail,
+  getPreviewFileBlob,
+  reviewReport,
+  verifyReport,
+} from '../api/finance'
 import { ApiError } from '../api/http'
 import type { DecryptPreview, FinanceDetail, VerifyResult } from '../types/finance'
 import { fieldLabel, formatDateTime, formatMoney, formatSize } from '../utils/format'
@@ -46,9 +52,10 @@ const verifyResult = ref<VerifyResult | null>(null)
 const decrypting = ref(false)
 const preview = ref<DecryptPreview | null>(null)
 const previewReport = computed<PreviewReport>(() => (preview.value?.fields_preview ?? {}) as PreviewReport)
-const activeInvoice = ref<number | null>(null)
+
 const imageUrls = ref<Record<number, string>>({})
-const imageLoading = ref(false)
+const imageErrors = ref<Record<number, string>>({})
+const imagesLoading = ref(false)
 
 const reviewing = ref(false)
 const rejectOpen = ref(false)
@@ -65,20 +72,13 @@ const STEP_LABEL: Record<string, string> = {
   digest_recheck: '重算摘要',
 }
 
-const currentItem = computed<PreviewItem | null>(() => {
-  const items = previewReport.value.items ?? []
-  return items.find((row) => row.invoice_id === activeInvoice.value) ?? items[0] ?? null
-})
-
-const currentFileId = computed(() => {
-  const item = currentItem.value
-  if (!item) return null
-  const attachment = detail.value?.attachments.find((row) => row.invoice_id === item.invoice_id)
-  return attachment?.file_id ?? null
-})
-
 function reportId(): number {
   return Number(route.params.id)
+}
+
+function fileIdFor(item: PreviewItem): number | null {
+  const attachment = detail.value?.attachments.find((row) => row.invoice_id === item.invoice_id)
+  return attachment?.file_id ?? null
 }
 
 async function load(): Promise<void> {
@@ -99,7 +99,7 @@ async function load(): Promise<void> {
 function clearImages(): void {
   for (const url of Object.values(imageUrls.value)) URL.revokeObjectURL(url)
   imageUrls.value = {}
-  activeInvoice.value = null
+  imageErrors.value = {}
 }
 
 async function runVerify(): Promise<void> {
@@ -115,6 +115,34 @@ async function runVerify(): Promise<void> {
   }
 }
 
+async function loadImages(items: PreviewItem[]): Promise<void> {
+  if (!preview.value) return
+  imagesLoading.value = true
+  const urls: Record<number, string> = {}
+  const errors: Record<number, string> = {}
+  try {
+    await Promise.all(
+      items.map(async (item) => {
+        const fileId = fileIdFor(item)
+        if (!fileId) {
+          errors[item.invoice_id] = '找不到附件'
+          return
+        }
+        try {
+          const blob = await getPreviewFileBlob(preview.value!.preview_token, fileId)
+          urls[item.invoice_id] = URL.createObjectURL(blob)
+        } catch (cause) {
+          errors[item.invoice_id] = cause instanceof ApiError ? cause.message : '影像加载失败'
+        }
+      }),
+    )
+    imageUrls.value = urls
+    imageErrors.value = errors
+  } finally {
+    imagesLoading.value = false
+  }
+}
+
 async function runDecrypt(): Promise<void> {
   if (!verifyResult.value) {
     ElMessage.warning('请先验签')
@@ -122,30 +150,14 @@ async function runDecrypt(): Promise<void> {
   }
   decrypting.value = true
   error.value = ''
+  clearImages()
   try {
     preview.value = await decryptReport(reportId(), verifyResult.value.verify_token)
-    const items = previewReport.value.items ?? []
-    activeInvoice.value = items[0]?.invoice_id ?? null
-    if (items[0]) await selectInvoice(items[0].invoice_id)
+    await loadImages(previewReport.value.items ?? [])
   } catch (cause) {
     error.value = cause instanceof ApiError ? cause.message : '解密失败'
   } finally {
     decrypting.value = false
-  }
-}
-
-async function selectInvoice(name: string | number): Promise<void> {
-  const invoiceId = Number(name)
-  activeInvoice.value = invoiceId
-  if (!preview.value || !currentFileId.value || imageUrls.value[invoiceId]) return
-  imageLoading.value = true
-  try {
-    const blob = await getPreviewFileBlob(preview.value.preview_token, currentFileId.value)
-    imageUrls.value = { ...imageUrls.value, [invoiceId]: URL.createObjectURL(blob) }
-  } catch (cause) {
-    ElMessage.error(cause instanceof ApiError ? cause.message : '影像加载失败')
-  } finally {
-    imageLoading.value = false
   }
 }
 
@@ -154,7 +166,6 @@ async function approve(): Promise<void> {
   reviewing.value = true
   error.value = ''
   try {
-    const { reviewReport } = await import('../api/finance')
     await reviewReport(detail.value.report.id, {
       decision: 'approve',
       version: detail.value.report_version,
@@ -179,7 +190,6 @@ async function submitReject(): Promise<void> {
   reviewing.value = true
   rejectError.value = ''
   try {
-    const { reviewReport } = await import('../api/finance')
     await reviewReport(detail.value.report.id, {
       decision: 'reject',
       comment,
@@ -195,6 +205,7 @@ async function submitReject(): Promise<void> {
 }
 
 watch(() => route.params.id, () => void load(), { immediate: true })
+onBeforeUnmount(clearImages)
 </script>
 
 <template>
@@ -236,7 +247,7 @@ watch(() => route.params.id, () => void load(), { immediate: true })
         <strong>验签在做什么：</strong>
         服务端用财务私钥拆信封 → 校验完整性 MAC → 用申请人证书验证签名 →
         用库内原始数据重算摘要并逐字节比对（防“改业务行保留旧签名”）。
-        七步全过才算通过，结果如下；验签凭据一次性用于“通过”。
+        七步全过才算通过；凭据一次性用于“通过”。
       </div>
 
       <div v-if="verifyResult" class="steps">
@@ -252,24 +263,29 @@ watch(() => route.params.id, () => void load(), { immediate: true })
         type="info"
         :closable="false"
         show-icon
-        title="验签通过后点“解密预览”：左侧看票面影像，右侧看解密后的字段表。"
+        title="验签通过后点“解密预览”：左侧自动加载全部票面影像，右侧是解密后的字段表。"
       />
 
       <template v-else>
         <el-row :gutter="14" class="preview-body">
           <el-col :span="10">
-            <div class="panel-title">票面影像</div>
-            <el-tabs :model-value="activeInvoice !== null ? String(activeInvoice) : undefined" @tab-change="selectInvoice">
-              <el-tab-pane
-                v-for="item in previewReport.items ?? []"
-                :key="item.invoice_id"
-                :label="item.invoice_no ?? `票据 ${item.invoice_id}`"
-                :name="String(item.invoice_id)"
-              />
-            </el-tabs>
-            <div v-loading="imageLoading" class="image-box">
-              <img v-if="activeInvoice && imageUrls[activeInvoice]" :src="imageUrls[activeInvoice]" alt="票面影像" />
-              <el-empty v-else description="点上方票号加载影像" :image-size="60" />
+            <div class="panel-title">票面影像（{{ (previewReport.items ?? []).length }} 张）</div>
+            <div v-loading="imagesLoading" class="image-list">
+              <div v-for="item in previewReport.items ?? []" :key="item.invoice_id" class="image-card">
+                <div class="image-caption">
+                  票号 {{ item.invoice_no ?? '—' }} ｜ 合计 {{ formatMoney(item.total_amount) }}
+                </div>
+                <img
+                  v-if="imageUrls[item.invoice_id]"
+                  :src="imageUrls[item.invoice_id]"
+                  :alt="`票面影像 ${item.invoice_no ?? item.invoice_id}`"
+                />
+                <el-empty
+                  v-else
+                  :description="imageErrors[item.invoice_id] ?? '影像加载中…'"
+                  :image-size="60"
+                />
+              </div>
             </div>
           </el-col>
 
@@ -283,14 +299,14 @@ watch(() => route.params.id, () => void load(), { immediate: true })
               <el-descriptions-item label="事由" :span="2">{{ previewReport.reason ?? '—' }}</el-descriptions-item>
             </el-descriptions>
 
-            <template v-if="currentItem">
+            <div v-for="item in previewReport.items ?? []" :key="item.invoice_id" class="field-block">
               <div class="invoice-meta">
-                票号 <code>{{ currentItem.invoice_no ?? '—' }}</code>
-                ｜ 日期 {{ currentItem.invoice_date ?? '—' }}
-                ｜ 销方 {{ currentItem.seller_name ?? '—' }}
-                ｜ 合计 {{ formatMoney(currentItem.total_amount) }}
+                票号 <code>{{ item.invoice_no ?? '—' }}</code>
+                ｜ 日期 {{ item.invoice_date ?? '—' }}
+                ｜ 销方 {{ item.seller_name ?? '—' }}
+                ｜ 合计 {{ formatMoney(item.total_amount) }}
               </div>
-              <el-table :data="Object.entries(currentItem.fields ?? {})" size="small" border class="field-table">
+              <el-table :data="Object.entries(item.fields ?? {})" size="small" border class="field-table">
                 <el-table-column label="字段" width="150">
                   <template #default="{ row }">{{ fieldLabel(row[0]) }}</template>
                 </el-table-column>
@@ -298,7 +314,7 @@ watch(() => route.params.id, () => void load(), { immediate: true })
                   <template #default="{ row }">{{ row[1] || '—' }}</template>
                 </el-table-column>
               </el-table>
-            </template>
+            </div>
           </el-col>
         </el-row>
 
@@ -325,7 +341,7 @@ watch(() => route.params.id, () => void load(), { immediate: true })
 </template>
 
 <style scoped>
-.page-card { border-radius: 12px; }
+.page-card { border-radius: 12px; width: 100%; }
 .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .head h3 { margin: 0; }
 .sub { margin: 4px 0 0; font-size: 12px; color: #64748b; }
@@ -335,9 +351,12 @@ watch(() => route.params.id, () => void load(), { immediate: true })
 .hint { margin-bottom: 12px; }
 .preview-body { margin-top: 8px; }
 .panel-title { font-weight: 600; margin: 6px 0 8px; color: #0f172a; }
-.image-box { min-height: 320px; display: flex; align-items: center; justify-content: center; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 8px; }
-.image-box img { max-width: 100%; max-height: 520px; object-fit: contain; }
+.image-list { display: flex; flex-direction: column; gap: 12px; max-height: 640px; overflow: auto; }
+.image-card { border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; padding: 8px; }
+.image-card img { width: 100%; max-height: 420px; object-fit: contain; display: block; }
+.image-caption { font-size: 12px; color: #475569; margin-bottom: 6px; }
 .invoice-meta { margin: 10px 0 8px; font-size: 13px; color: #334155; }
+.field-block { margin-bottom: 14px; }
 .field-table { max-height: 420px; overflow: auto; }
 .attach-meta { margin-top: 14px; font-size: 12px; color: #475569; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .attach-hint { color: #94a3b8; }
