@@ -98,8 +98,13 @@ def transition(
     actor: User,
     *,
     expected_version: int | None = None,
+    bump_version: bool = True,
 ) -> ReportForm:
-    """把单据推进到 `target`；只 flush 不 commit，调用方决定事务边界（S5-2 要合事务）。"""
+    """把单据推进到 `target`；只 flush 不 commit，调用方决定事务边界（S5-2 要合事务）。
+
+    `bump_version=False` 用于"一次请求内多次迁移、版本只 +1"的场景（S5-2 的 sign/submit），
+    S5-1 的默认行为（每次迁移 +1）保持不变。
+    """
     if target not in {member.value for member in ReportStatus}:
         raise ValidationFailedError(f"非法状态：{target}")
     if expected_version is not None and form.version != expected_version:
@@ -114,7 +119,8 @@ def transition(
         raise ConflictError(f"状态不允许：{form.status} → {target}")
 
     form.status = target
-    form.version += 1
+    if bump_version:
+        form.version += 1
     db.flush()
     logger.info(
         "report 状态迁移",
@@ -350,19 +356,21 @@ def list_my_reports(
 # --------------------------------------------------------------------------- #
 # 内部助手
 # --------------------------------------------------------------------------- #
-def _require_creator(user: User) -> None:
-    """建单：admin 404（职责分离）、reviewer 403（角色级）。"""
+def require_submitter(user: User, *, action: str = "执行该操作") -> None:
+    """报销单写操作的统一角色闸门：admin 404（职责分离）、reviewer 403（角色级）。"""
     if user.role == UserRole.ADMIN.value:
         raise NotFoundError()
     if user.role != UserRole.SUBMITTER.value:
-        raise RoleForbiddenError("只有提交人可以创建报销单")
+        raise RoleForbiddenError(f"只有提交人可以{action}")
+
+
+def _require_creator(user: User) -> None:
+    """建单：admin 404（职责分离）、reviewer 403（角色级）。"""
+    require_submitter(user, action="创建报销单")
 
 
 def _require_owner_writer(user: User) -> None:
-    if user.role == UserRole.ADMIN.value:
-        raise NotFoundError()
-    if user.role != UserRole.SUBMITTER.value:
-        raise RoleForbiddenError("只有提交人可以维护报销明细")
+    require_submitter(user, action="维护报销明细")
 
 
 def _next_report_no(db: Session) -> str:

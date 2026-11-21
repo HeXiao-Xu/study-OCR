@@ -431,6 +431,12 @@ erDiagram
 **存什么**：数字信封——包裹后的会话密钥、IV、MAC、小载荷密文（`ciphertext_b64`）或大体积密文的对象名（`ciphertext_storage_key`）、载荷摘要、收方证书。**谁写**：封装接口（`seal`）与拆封接口（只更新统计，不改密文）；凭证型字段一次写入后不可变。**关键不变式**：`wrapped_key_b64` **非空**（方案 5.3 明确禁止"只加密了数据、没封会话密钥"的半成品记录）；`ciphertext_b64` 与 `ciphertext_storage_key` **至少有一个非空**（小载荷进库、影像留 MinIO）；`recipient_cert_id` 参与 MAC 覆盖范围，防"信封被换收方"（方案 6.5.3）。
 
 > SM2 加密模式固定 `mode=1`（C1C3C2，国标排列），**不是库默认的 C1C2C3**（方案 6.5.2）。该约定属于实现层，但必须写在文档里，否则拆封端会"能解但解出乱码"。
+>
+> **S5-2 业务信封（D-085）**：业务链路走 `AlgoProvider`，信封的 MAC/tag 关联数据（AAD）绑定
+> `key_algo ‖ cipher_algo ‖ recipient_cert_fp ‖ wrapped_key ‖ payload_sha256`（canonical JSON），
+> 比本表文字公式**多绑 `wrapped_key` 与摘要**：单独改包裹密钥或换摘要都会先被完整性校验拦下。
+> 一张报销单落两类信封：单据级（`form_id` 非空、`ciphertext_b64` 装 `report-v1` JSON）与
+> 文件级（`form_id` 为空、`file_id` 非空、`ciphertext_storage_key` 装影像密文对象）。
 
 ### 5.5 review_logs
 

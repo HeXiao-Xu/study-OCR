@@ -151,3 +151,45 @@ class ReportListQuery(PageParams):
     date_from: date | None = Field(default=None, description="按创建时间（Asia/Shanghai 业务日）")
     date_to: date | None = None
     sort_by: Literal["created_at", "submitted_at"] | None = None
+
+
+# --------------------------------------------------------------------------- #
+# 签名 / 提交（S5-2）
+# --------------------------------------------------------------------------- #
+class SignRequest(BaseModel):
+    """签名单据入参（API.md §4）：口令只在内存停留，不落日志、不回显。"""
+
+    private_key_passphrase: str = Field(min_length=1, max_length=256)
+
+
+class SignData(BaseModel):
+    """签名单据出参：只有签名元数据，绝不含私钥/口令/CEK。"""
+
+    signature_id: int
+    digest_algo: str
+    digest_hex: str
+    algo: str
+    signature_b64: str
+    cert_id: int
+    # 跨语言快速比对/排障用，不是验签依据（API.md §4）
+    canonical_sha256: str
+    status: str
+
+
+class SubmitRequest(BaseModel):
+    """提交入参（API.md §4）：幂等键必填，8–64 字符。"""
+
+    idempotency_key: str = Field(min_length=8, max_length=64)
+    version: int | None = Field(default=None, ge=0)
+
+
+class SubmitData(BaseModel):
+    """提交出参：只有 id 与时间，**不含任何密文与密钥**。"""
+
+    report_id: int
+    report_no: str
+    status: str
+    signature_id: int
+    envelope_id: int
+    submitted_at: datetime
+    duplicated: bool

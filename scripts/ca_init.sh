@@ -3,7 +3,7 @@
 #
 # 用法（在任意目录都能跑，脚本自己切到仓库根；路径都用仓库相对路径）：
 #   bash scripts/ca_init.sh init [--force]          # 建/重建 CA（secrets/ca/）
-#   bash scripts/ca_init.sh issue <name> <role>     # 给已生成的用户密钥签发证书
+#   bash scripts/ca_init.sh issue <name> <role>     # 给已生成的用户密钥签发证书（role 含 server）
 #   bash scripts/ca_init.sh show <cert.pem>         # 打印证书全文
 #   bash scripts/ca_init.sh verify <cert.pem>       # 用 CA 做一次链校验（部署期动作）
 #
@@ -61,8 +61,9 @@ cmd_issue() {
     exit 1
   fi
   case "$role" in
-    submitter|reviewer|admin) ;;
-    *) echo "错误：role 只能是 submitter / reviewer / admin" >&2; exit 1 ;;
+    # server 用于财务服务器（信封收方）证书：OU=server，登记时 owner_type='server'
+    submitter|reviewer|admin|server) ;;
+    *) echo "错误：role 只能是 submitter / reviewer / admin / server" >&2; exit 1 ;;
   esac
 
   local public_key="secrets/keys/$name/sign.pub.pem"

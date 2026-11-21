@@ -114,6 +114,12 @@ class Settings(BaseSettings):
     # 单张票据重识别的总增量预算（API.md §2：≤1.5s，超出记 skipped）
     reread_budget_seconds: float = 1.5
 
+    # ---------- 报销单与算法（S5-2）----------
+    # D-083：业务链路通过 AlgoProvider 选算法，默认国密；rsa 只作对照（S6）
+    algo_provider: Literal["sm", "rsa"] = "sm"
+    # 私钥登记路径（key_records.storage_path）的解析根：空 = 仓库根；相对路径按它解析
+    key_storage_root: str = ""
+
     # ---------- 定时任务（S2-12）----------
     # 每个 API 进程都会起调度器；真正执行前抢 Redis 锁，保证多副本同一次只跑一遍。
     scheduler_enabled: bool = True

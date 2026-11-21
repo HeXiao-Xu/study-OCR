@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.core.exceptions import ok
 from app.models.users import User
@@ -21,8 +22,13 @@ from app.schemas.report import (
     ReportItemCreateRequest,
     ReportListQuery,
     ReportOut,
+    SignData,
+    SignRequest,
+    SubmitData,
+    SubmitRequest,
 )
-from app.services import report_service
+from app.services import report_service, submit_service
+from app.services.storage import StorageService, get_storage
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -80,3 +86,40 @@ def add_report_item(
     db: Session = Depends(get_db),
 ) -> dict:
     return ok(report_service.add_item(db, user, report_id, payload))
+
+
+@router.post(
+    "/{report_id}/sign",
+    response_model=Envelope[SignData],
+    summary="签名单据（SM2-SM3 / RSA-PSS；口令只在内存）",
+)
+def sign_report(
+    report_id: int,
+    payload: SignRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    return ok(
+        submit_service.sign_report(db, user, report_id, payload, settings=settings)
+    )
+
+
+@router.post(
+    "/{report_id}/submit",
+    response_model=Envelope[SubmitData],
+    summary="提交：签名校验 → 数字信封（影像转密文）→ submitted（同事务、幂等）",
+)
+def submit_report(
+    report_id: int,
+    payload: SubmitRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    storage: StorageService = Depends(get_storage),
+) -> dict:
+    return ok(
+        submit_service.submit_report(
+            db, user, report_id, payload, settings=settings, storage=storage
+        )
+    )

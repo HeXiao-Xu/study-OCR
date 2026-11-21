@@ -1859,3 +1859,45 @@
 - **验证**：`pytest tests/test_reports.py -m integration` **25 passed**（含 10 线程并发建单不重号、
   两线程抢同一票据恰好一个 40901、两线程给同一单加不同票合计不丢更新）；全量单测 **734 passed**、
   集成 **284 passed**；`alembic check` 零差异（0008 的序列不在 autogenerate 视野内，属预期）。
+
+## D-085 签名与提交：业务链路统一走 `AlgoProvider`、`EnvelopeV1` 绑 wrapped_key、影像密文化
+
+- **日期**：2026-11-21（S5-2，阶段 5 第二张）
+- **背景**：S4 的密码层是"SM 参考实现"（`crypto/envelope.py`），S4-9 又给了同接口的 `AlgoProvider`
+  并要求 S5 按配置选择（#100）。本卡要把"签名 → 封包 → 提交"接进业务，必须决定：
+  用哪套封装、信封绑什么、影像怎么从明文转密文、提交幂等与状态怎么落。
+- **决策**：
+  1. **签名/验签、包 CEK、对称加解密全部经 `AlgoProvider`**（`ALGO_PROVIDER=sm` 默认，`rsa` 对照），
+     业务不再直接调 `sm2/sm4/envelope` 的具体函数；`signatures.algo`、`envelopes.key_algo/cipher_algo`
+     按 provider 落实际值。`digest_algo` 恒 `SM3`、`digest_hex=SM3(canonical_bytes)`（契约明确它只作展示/比对）。
+  2. **业务信封格式 `EnvelopeV1`**（`services/report_crypto.py`）：
+     `aad = canonical_json({version,key_algo,cipher_algo,recipient_cert_fp,wrapped_key_b64,payload_sha256})`，
+     `provider.wrap_symmetric(cek, plaintext, aad=aad)`。把 `wrapped_key` 与摘要都绑进完整性校验，
+     与 S4-4"MAC 覆盖 wrapped_key"的强度对齐（D-077 的教训）。
+     `crypto/envelope.py`（S4-4）保留为**国密协议参考实现**与其国标测试，业务路径不再调用（S5-4 解 `EnvelopeV1`）。
+  3. **两类信封**：单据级（`form_id`，`ciphertext_b64` = `report-v1` JSON：单据 + 明细 + 字段值 + 签名元数据）；
+     文件级（`form_id=NULL, file_id`，`ciphertext_storage_key` = 影像密文对象），一票一封、各用独立 CEK。
+  4. **影像密文化**：读明文 → `seal` → 写新对象 `reports/{yyyy}/{mm}/{hex}.bin.cipher` →
+     `invoice_files.storage_key/is_cipher` 指向密文（SCHEMA §3.1 本就要求 storage_key 指密文）→
+     **提交成功后**再删旧明文对象（失败只告警，不回滚已提交事务；与 D-071 的删除口径一致）。
+     于是 `GET /invoices/{id}/image` 在提交后回到 409，S5-4 再改成"内存解密 → 渲染 → 释放"。
+  5. **密钥材料**：SM 用 S4-5 的 `.p8.enc`；RSA 用**口令加密的 PKCS#8 PEM**（`crypto/key_loader.py` 统一加载）。
+     `key_records.storage_path` 仍只登记路径：`KEY_STORAGE_ROOT`（空 = 仓库根）为解析根，相对路径不许越界。
+     证书/密钥由 `scripts/register_identity.py` 幂等登记（本卡之前库里 0 行，属 S5 的落库任务）。
+  6. **事务与版本**：签名行、单据字段、信封、状态、审计同一事务；一次 HTTP 操作 `report_forms.version`
+     只 +1（`transition(bump_version=False)` + 末尾统一 +1，S5-1 默认行为不变）。
+  7. **幂等**：同单同键 → 200 `duplicated=true` + 既有 id；键被别的单据占用 → 409 `idempotency_key_reused`；
+     单据行 `FOR UPDATE` 串行化并发提交，信封只落一套。
+  8. **签名方不自证**：`sign` 只做"签 + 自检"，`signatures.verified=false`；独立验签归 S5-4（审核端），
+     避免出现"服务端自己说验过"的假证据。
+- **代价/限制**：`EnvelopeV1` 与 S4-4 参考实现是两种字节布局（论文写"协议参考 vs 业务可替换实现"）；
+  驳回重提（S5-5）需要复用作废旧信封，本卡因 `uq_envelopes_form/file` 不支持二次提交；
+  RSA 业务私钥是加密 PEM（无轮换，沿用 #99/#101 的边界）；提交同步执行，耗时随明细张数线性增长；
+  明文对象删除是"尽力而为"（删失败只告警）。
+- **验证**：`pytest tests/test_submit.py -m integration` **19 passed**（签名/重签/口令错误/证书吊销/无证书/
+  篡改 canonical 回滚/幂等/键复用/version 冲突/并发提交/RSA 对照/详情无密文）；`test_report_crypto.py`
+  **17 passed**（签名域确定性、SM/RSA 的 EnvelopeV1 往返与篡改、密钥/证书加载）；全量单测 **751**、
+  集成 **303**、`alembic check` 零差异。
+  真机冒烟（开发库 + 真 MinIO）：sign → submit 200；单据信封 `ciphertext_b64`、文件信封密文对象；
+  明文对象已删、密文可用财务私钥解回原文（`decrypt_roundtrip_ok=true`）；审计 4 行且 `verify_chain ok`；
+  重复提交 `duplicated=true`；`GET /invoices/{id}/image` 409；业务行已清理。

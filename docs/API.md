@@ -421,7 +421,7 @@
 ```
 
 - 错误：`404/40400`；`409/40900` 状态不允许（须 `draft`、`pending_sign` 或 `rejected`；明细齐全时服务端自动置 `pending_sign`）、票据未全部确认、无有效证书；`422/42200` 口令错误（**统一文案**，不区分"口令错"与"私钥不可用"）；`500/50020` 签名运算失败
-- 备注：签名范围 = 报销单业务字段 + 每张票据 `(invoice_code, invoice_no, amount, file_sha256)` + `nonce` + `created_at`，**不签影像本体**；`canonical_json` 原样落 `report_forms.canonical_json`，验签时直接取用重算、**不重新拼装**；`digest_hex = SM3(canonical_bytes)`，`canonical_sha256` 仅作跨语言快速比对/排障，二者都不是"签名内部 e"；**绝不把私钥或 CEK 写进响应/日志**；重新签名须把旧签名置 `void`
+- 备注：签名范围 = 报销单业务字段 + 每张票据 `(invoice_code, invoice_no, amount, file_sha256)` + `nonce` + `created_at`，**不签影像本体**；`canonical_json` 原样落 `report_forms.canonical_json`，验签时直接取用重算、**不重新拼装**；`digest_hex = SM3(canonical_bytes)`，`canonical_sha256` 仅作跨语言快速比对/排障，二者都不是"签名内部 e"；**绝不把私钥或 CEK 写进响应/日志**；重新签名须把旧签名置 `void`。S5-2 实现（D-085）：签名域 v1 的字段与排序见 `services/report_crypto.build_signing_payload`；签名/验签走 `AlgoProvider`（`ALGO_PROVIDER=sm` 默认，`rsa` 对照）；`digest_algo` 恒 `SM3`；签名方**不**自证验签（`verified=false`，S5-4 独立验签后才置 `ok`）；一次签名 `report_forms.version` 只 +1
 
 ### POST /api/v1/reports/{id}/submit
 - 权限：本人 `submitter` ｜ 类型：同步（事务内完成）｜ 幂等：**是**（`idempotency_key` 唯一）｜ 实现：S5-2
@@ -440,7 +440,7 @@
 ```
 
 - 错误：`409/40900` 单据未签名/状态不允许、同一幂等键但载荷不同（`data.reason="idempotency_key_reused"`）；`422/42200` 缺少幂等键
-- 备注：**幂等键必填**；已提交过的同一键 → `200` + `duplicated: true` + **既有单号**（不重复签名、不重复封装）；提交在同一事务内完成 `规范化 → 摘要 → 签名校验 → 信封封装 → 状态推进 → 审计`，失败全回滚；响应不含任何密文与密钥；耗时主要在信封（2MB 影像约数百毫秒），**首版同步**，不返回 202
+- 备注：**幂等键必填**；已提交过的同一键 → `200` + `duplicated: true` + **既有单号**（不重复签名、不重复封装）；提交在同一事务内完成 `规范化 → 摘要 → 签名校验 → 信封封装 → 状态推进 → 审计`，失败全回滚；响应不含任何密文与密钥；耗时主要在信封（2MB 影像约数百毫秒），**首版同步**，不返回 202。S5-2 实现（D-085）：封包格式 `EnvelopeV1`（AAD 绑定 `key_algo/cipher_algo/收方证书指纹/wrapped_key/payload_sha256`）；单据级信封装 `report-v1` JSON（`ciphertext_b64`），**每个明细票据一个文件级信封**装影像密文（`ciphertext_storage_key`）；提交后 `invoice_files.storage_key` 指向密文对象、`is_cipher=true`，明文对象在提交成功后删除；信封/签名算法随 `ALGO_PROVIDER`（SM2+SM4 / RSA-OAEP+AES-GCM）
 
 ### GET /api/v1/reports/{id}
 - 权限：本人，或 `reviewer`（仅 `submitted` 之后）；`admin` → 404 ｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S5-1 / S5-3
