@@ -511,8 +511,8 @@
  "verified_at": "2026-11-18T08:31:00Z", "verify_token": "vt_5f1c...", "verify_token_expires_in": 1800}
 ```
 
-- 错误：**409**，`code` 按失败类别取 C1 业务码（`50030` MAC / `50031` 解密 / `50021` 验签），`data.reason_code ∈ {mac_mismatch, bad_padding, digest_mismatch, bad_signature, cert_invalid}`，`data.failed_step` 指出失败环节；`404/40400`；`422/42200` 口令错误
-- 备注：顺序**固定**为 `查信封 → 验 MAC → 解 CEK → 解密 → 校验证书（指纹/有效期/吊销/公钥一致性）→ 验签 → 重算摘要比对`；**先验 MAC 再解密**，MAC 不过不得进入解密；摘要必须从库内原始数据**重算**，不得拿提交时存的摘要直接比；失败不返回明文字段、不返回细节到可利用粒度；`mac_mismatch`/`bad_padding` 只进审计与响应，**不写入 `signatures.verify_result`**（SCHEMA §9 约定）；写审计 `action=verify`
+- 错误：**409**，`code` 按失败类别取 C1 业务码（`50030` MAC / `50031` 解密 / `50021` 验签），`data.reason_code ∈ {mac_mismatch, bad_padding, digest_mismatch, bad_signature, cert_invalid}`（S5-4 另会返回 `bad_envelope`/`bad_key`：信封缺失/结构坏、财务私钥解不开包裹密钥），`data.failed_step` 指出失败环节；`404/40400`；`422/42200` 口令错误
+- 备注：顺序**固定**为 `查信封 → 验 MAC → 解 CEK → 解密 → 校验证书（指纹/有效期/吊销/公钥一致性）→ 验签 → 重算摘要比对`；**先验 MAC 再解密**，MAC 不过不得进入解密；摘要必须从库内原始数据**重算**，不得拿提交时存的摘要直接比；失败不返回明文字段、不返回细节到可利用粒度；`mac_mismatch`/`bad_padding` 只进审计与响应，**不写入 `signatures.verify_result`**（SCHEMA §9 约定）；写审计 `action=verify`。**S5-4 实现口径（D-087）**：`digest_recheck` 用 `canonical_json` 里的 nonce + 当前库内单据/明细**重建签名域并逐字节比对**（改业务行会被检出），影像解密后与 `invoice_files.sha256` 比对；失败时 `digest_mismatch`/`bad_signature`/`cert_invalid` 会把 active 签名改成失败（列表随即变红）；财务私钥口令未配置/错误一律 `422/42200` 统一文案
 
 ### POST /api/v1/finance/reports/{id}/decrypt
 - 权限：`reviewer` ｜ 类型：同步（返回临时预览凭据）｜ 幂等：否（每次签发新预览凭据）｜ 实现：S5-4
@@ -524,7 +524,21 @@
 
 - 出参：**200**，`data` = `{preview_token, expires_at, ttl_seconds: 1800, content_type, size, fields_preview}`
 - 错误：`409/40900` 未验签、验签失败、信封损坏、凭据过期；`404/40400`
-- 备注：明文**只在内存/带 TTL 的临时对象**中存在，**数据库不落明文**，30min 后自动清理；凭据换取方式定为 `GET /api/v1/finance/preview/{preview_token}`——token 有效期内**可重复读取**（财务常需对照多遍，一次性会干扰工作流），过期即 410；响应不得包含 MinIO 路径
+- 备注：明文**只在内存/带 TTL 的临时对象**中存在，**数据库不落明文**，30min 后自动清理；凭据换取方式定为 `GET /api/v1/finance/preview/{preview_token}`——token 有效期内**可重复读取**（财务常需对照多遍，一次性会干扰工作流），过期即 410；响应不得包含 MinIO 路径。**S5-4 实现口径（D-087）**：临时对象落 `previews/{preview_token}/report.json` 与 `previews/{preview_token}/files/{file_id}.bin`；APScheduler 每 10min 按对象 `LastModified` 清理过期对象（`PREVIEW_CLEANUP_INTERVAL_SECONDS`）；`fields_preview` 是解密后的 `report-v1` JSON
+
+### GET /api/v1/finance/preview/{preview_token}
+- 权限：`reviewer` ｜ 类型：同步 ｜ 幂等：是（有效期内可重复读）｜ 实现：S5-4
+- 入参：无（token 即凭据）
+- 出参：**200**，`Content-Type: application/json`，正文是解密后的 `report-v1` JSON（单据/明细/字段值/签名元数据）
+- 错误：`410/41001` 预览凭据已过期；`403/40301` 非 reviewer
+- 备注：响应头 `Cache-Control: private, no-store`、`X-Content-Type-Options: nosniff`；不返回任何密文或对象路径
+
+### GET /api/v1/finance/preview/{preview_token}/files/{file_id}
+- 权限：`reviewer` ｜ 类型：同步 ｜ 幂等：是 ｜ 实现：S5-4
+- 入参：路径参数 `preview_token`、`file_id`（必须是该单据的附件）
+- 出参：**200**，`Content-Type` 取 `invoice_files.mime`，正文是该票据影像的**解密后明文**
+- 错误：`410/41001` 凭据过期；`404/40400` 文件不在该预览里；`403/40301` 非 reviewer
+- 备注：用于"多张票逐个预览"（一个 report 可能有多张影像，单一 token 端点无法寻址）；同样 `no-store`/`nosniff`
 
 ### POST /api/v1/finance/reports/{id}/review
 - 权限：`reviewer` ｜ 类型：同步 ｜ 幂等：否（同一单只能决策一次）｜ 实现：S5-5

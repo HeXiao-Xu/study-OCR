@@ -6,11 +6,11 @@
 
 ## 当前状态
 
-- 阶段：**阶段 5 进行中**（S5-1、S5-2、S5-3 完成）；下一张卡 **S5-4 验签与解密**
-- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、S4-1 ~ S4-9、**S5-1、S5-2、S5-3**（共 46 张卡，全部 ✅ 通过）
-- 最近完成：**S5-3 财务端待审列表**（列表/详情/CSV + 前端页；`verify_status` 由签名行派生，提交时系统验签落库）
+- 阶段：**阶段 5 进行中**（S5-1 ~ S5-4 完成）；下一张卡 **S5-5 审核决策与驳回**
+- 已完成：S0-1 ~ S0-7、S1-1 ~ S1-6、S2-1 ~ S2-12、S3-1 ~ S3-9、S4-1 ~ S4-9、**S5-1 ~ S5-4**（共 47 张卡，全部 ✅ 通过）
+- 最近完成：**S5-4 验签与解密**（七步校验 + 库内重算签名域 + 30min 临时预览 + TTL 清理任务）
 - 附加改动（2026-11-20）：D-069 真实横版票抽取修复、D-070 确认流程简化（去重识别/逐字段操作）、D-071 删除改硬删（仅 draft，可重传）；业务状态统一显示为 待确认/待复核/已复核（前端派生）
-- 下一步：**S5-4 验签与解密**（`POST /finance/reports/{id}/verify`、`/decrypt`、预览凭据 TTL）
+- 下一步：**S5-5 审核决策与驳回**（approve 消费 verify_token；reject 回 rejected；`review_logs`）
 - 测试期新增依赖：`pytest-cov==7.1.0` + `coverage==7.17.4`（仅测试，已锁）
 - 已知阻塞：无
 - 环境提醒：
@@ -18,9 +18,9 @@
   - `study-ocr-{postgres,redis,minio}` 三个容器已跑在 5433 / 6380 / 9002
   - `gmssl==3.2.2` + `cryptography==50.0.2`（+ `pycryptodomex==3.24.2`）已装并锁版本；numpy 1.26.4 / paddle 2.6.2 未变
   - **本机没有 openssl CLI**：统一用 `scripts/openssl.sh` / `scripts/openssl.ps1`（Docker 内 OpenSSL 3.5.9，D-078）
-  - **新增必填配置 `AUDIT_HMAC_KEY`**（≥32 字符，D-081）；`backend/.env` 已本地生成，`.env.example` 已加占位符
+  - **必填配置 `AUDIT_HMAC_KEY`**（≥32 字符，D-081）；**`FINANCE_KEY_PASSPHRASE`（S5-4，本地 .env 为演示口令，不入库）**
   - **S5-2 起 `ALGO_PROVIDER=sm`（默认）/ `KEY_STORAGE_ROOT=`（空 = 仓库根）**；本地库已登记 2 张证书 + 2 条密钥记录
-  - 本地领先 origin **84 个 commit**，`git push` 由用户执行
+  - 本地领先 origin **85 个 commit**，`git push` 由用户执行
 
 ## 任务清单
 
@@ -82,7 +82,7 @@
 [x] S5-1 报销单创建与明细
 [x] S5-2 签名 → 加密提交链路 ★关键
 [x] S5-3 财务端待审列表
-[ ] S5-4 验签与解密 ★关键
+[x] S5-4 验签与解密 ★关键
 [ ] S5-5 审核决策与驳回
 [ ] S5-6 归档与检索
 [ ] S5-7 端到端联调与异常场景
@@ -106,6 +106,7 @@
 
 | 任务 | 产出文件 | 验收方式 | 结论 |
 |---|---|---|---|
+| S5-4 | `backend/app/services/verify_service.py`（七步验签、失败归类、签名结论落库、`verify_token` 签发、审计）、`services/preview_service.py`（解密到 `previews/{token}/...`、预览凭据、读取、TTL 清理）、`services/credential_store.py`（Redis 凭据 + 内存实现）、`services/report_crypto.py`（`open_sealed_steps` 分步解封、`rebuild_signing_canonical`）、`services/storage.py`（`list_objects`）、`services/key_service.py`（`load_finance_private_key`）、`crypto/key_loader.py`（`certificate_fingerprint`）、`schemas/finance.py`（`VerifyStep/VerifyData/DecryptRequest/DecryptData`）、`api/v1/finance.py`（verify/decrypt/preview/preview-files 四条）、`core/config.py` + `.env.example`（`FINANCE_KEY_PASSPHRASE`、预览 TTL/清理/前缀/锁）、`tasks/scheduler.py`（预览清理 IntervalTrigger + 抢锁）、`backend/tests/test_verify.py`（13 条集成）、`web/src/{types,api}/finance.ts` + `views/FinanceList.vue`（验签/解密预览/看图）、`docs/{spec,plan}/s5-4-verify-decrypt.md` | ① `pytest tests/test_verify.py -m integration` → **13 passed**；② verify 成功：7 步全 ok、`cert_fp`、`payload_sha256_match=true`、`verify_token` 落 Redis、审计 `verify:ok`、`verify_chain ok`；③ 改业务行（不动签名域）→ **409 `digest_mismatch` / `digest_recheck`**，签名行变 failed，列表 `verify_status=failed`（证明是"从库内重算"而不是比存下的摘要）；④ 改 canonical / 篡改密文 → 分别 `bad_signature`（50021）与 `mac_mismatch`（50030，且**不改写** `signatures.verify_result`）；⑤ 错误财务口令 → **422/42200** 统一文案；吊销证书 → `cert_invalid`；缺信封 → `bad_envelope/envelope_lookup`；submitter/admin → 403、未知单 404；⑥ decrypt：`verify_token` → `preview_token`（TTL 1800），`fields_preview.report_no` 正确，MinIO 有 `previews/{token}/report.json` + `files/{id}.bin`，**DB 无明文**；⑦ 预览 JSON 可重复读、影像字节 SHA-256 与 `invoice_files.sha256` 一致；无凭据 409、过期 **410/41001**；⑧ 清理任务只删 `LastModified` 早于 TTL 的对象（旧删/新留）；⑨ RSA provider 下 verify/decrypt 全流程通过；⑩ 前端抽屉可"验签 → 解密预览 → 查看影像"，`typecheck`/`build` 通过；⑪ 全量单测 **751 passed**、集成 **328 passed**、`alembic check` 零差异；⑫ 真机冒烟（开发库 + 真 MinIO/Redis）：verify 7 步全 ok、decrypt/preview JSON/影像 200、影像哈希匹配、preview 对象 2 个、submitter 403、审计 36 行链 OK；业务行/对象/预览已清理 | ✅ 通过（D-087：口令走环境变量、七步顺序、库内重算、预览 TTL + 清理任务；票据影像接口保持密文 409） |
 | S5-3 | `backend/app/schemas/finance.py`（`FinancePendingQuery/Item`、`FinanceAttachmentOut`、`FinanceDetailData`）、`backend/app/services/finance_service.py`（`list_pending` 三态/日期/q 筛选 + 排序白名单 + 整页 2 条 SQL；`get_detail` 复用 `report_service` + 一次查完附件信封；`export_pending_csv` 与列表同筛选、BOM+CRLF、上限 10000）、`backend/app/api/v1/finance.py`（`GET /finance/pending`、`/pending/export`、`/{id}`，全部 reviewer）、`backend/app/utils/time.py`（`business_day_bounds` 唯一入口，`report_service` 同步改调）、`backend/app/services/report_service.py`（`verify_status_of/verify_status_from_result`、`envelope_out` 公开）、`backend/app/services/submit_service.py`（提交时系统验签落库：`verified=true/result='ok'/verified_at`）、`backend/tests/test_finance.py`（12 条集成）、`web/src/{types/finance.ts,api/finance.ts,views/FinanceList.vue}`、`web/src/{router/index.ts,utils/format.ts}`、`docs/{spec,plan}/s5-3-finance-list.md` | ① `pytest tests/test_finance.py -m integration` → **12 passed**；`test_submit.py` 仍 **19 passed**（新增"提交后 `verified=true/ok`"断言）；② 提交 5 单 → 列表 `total=5`，字段 `report_no/applicant_name/total_amount/item_count/submitted_at/verify_status` 齐全且默认 `verify_status=ok`；③ 三态筛选：把签名改成 `NULL`/`bad_signature` 后分别命中 1 单；④ `q` 按单号命中 1、按申请人命中 5；业务日过滤今天 5 / 明天 0，`from>to` → **422**；⑤ 排序 `total_amount asc/desc` 顺序正确，非法 `sort_by` → 422；⑥ 权限：submitter/admin 列表/详情/CSV 全 **403/40301**，未登录 401；⑦ 详情 200：单据 + `applicant_name` + 签名 + 单据信封 + 1 条附件（文件名/大小/SHA-256/页数 + 文件级信封元数据），响应**无** `ciphertext_b64`/`wrapped_key_b64`/`ciphertext_storage_key`；草稿单 reviewer → 404；⑧ CSV：`text/csv`、**BOM `EF BB BF`**、CRLF、表头 `单号,申请人,金额,票据数,提交时间,验签状态`、5 行数据；筛选后行数一致；超过上限（monkeypatch=2）→ 422；⑨ **整页只 2 条 SELECT**（count + 分页，无 N+1/实时验签）；⑩ `npm run typecheck && npm run build` 通过；⑪ 真机冒烟（开发库 + 真 MinIO，5 单）：列表 5 条/详情 200 附件 1 条/CSV 359B（BOM+CRLF+中文表头+5 行，样例 `RPT-202611-0002,Alice,100.00,1,2026-11-21 19:07:32,通过`）、submitter 403；⑫ 全量单测 **751 passed**、集成 **315 passed**、`alembic check` 零差异 | ✅ 通过（D-086：`verify_status` 由签名行派生、不加列；补两条契约；CSV BOM 口径） |
 | S5-2 | `backend/app/services/submit_service.py`（`sign_report`/`submit_report`：同一事务内 规范化→签名→验签→封包→状态→审计；单据行 `FOR UPDATE` + 幂等；明文对象提交后删除）、`services/report_crypto.py`（签名域 v1、`report-v1` 封包明文、`EnvelopeV1` 封装/拆封，AAD 绑 `wrapped_key`+`payload_sha256`）、`services/key_service.py`（证书/密钥选取、`KEY_STORAGE_ROOT` 路径解析、口令解锁、证书校验）、`crypto/key_loader.py`（SM `.p8.enc` 与 RSA 加密 PKCS#8 PEM 统一加载、证书↔公钥校验）、`schemas/report.py`（`Sign/Submit` 出入参）、`api/v1/reports.py` + `main.py`（两条路由）、`core/config.py` + `.env.example`（`ALGO_PROVIDER`/`KEY_STORAGE_ROOT`）、`core/exceptions.py`（`SignatureFailedError` 50020）、`services/report_service.py`（`transition(bump_version=False)`）、`scripts/register_identity.py`（证书/密钥幂等登记）、`scripts/ca_init.sh`（`issue … server`）、`backend/tests/{test_report_crypto,test_submit}.py`、`docs/{spec,plan}/s5-2-sign-submit.md` | ① `pytest tests/test_submit.py -m integration` → **19 passed**；`tests/test_report_crypto.py` → **17 passed**；② 签名：200、`status=signed`、`canonical_json` 落库且 `digest_hex=SM3(canonical)`、签名行 `active v1`、audit `sign`、`verify_chain ok`，并用证书公钥**独立验签通过**；③ 重签：旧行 `void`、新行 `active v2`、`form.version` 只 +1；④ 失败路径：无明细/未确认票据/已提交 → 409，口令错误 → **422/42200 统一文案**且无签名行，证书吊销 → 409（`cert_revoked`），无证书 → 409；⑤ 提交：200、`submitted_at`、幂等键落库；单据信封（`ciphertext_b64`）+ 文件信封（`ciphertext_storage_key`）各 1；`invoice_files.is_cipher=true` 且 `storage_key` 指向密文；**明文对象已删**、密文非明文、**财务私钥可解回原文**；响应无密文/密钥；⑥ 幂等：同键重复 → 200 `duplicated=true` 且 id 不变、信封不增；键被别的单据占用 → 409 `idempotency_key_reused`；⑦ 篡改 `canonical_json` → 409 `digest_mismatch` 且**整体回滚**（无信封、票据仍明文）；⑧ 并发两线程提交 → 恰好 1 成功 1 冲突，信封只有一套；⑨ RSA 对照：`ALGO_PROVIDER=rsa` 下签名 `RSA-PSS`、信封 `RSA-OAEP`/`AES-256-GCM`（nonce 12B/tag 16B），财务 RSA 私钥可解回；⑩ 详情返回 signature/envelope 元数据、仍无 `ciphertext_b64`/`wrapped_key_b64`/`storage_key`；⑪ 真机冒烟（开发库 + 真 MinIO）：sign→submit 200、明文对象删除、密文解回原文、审计 4 行链 OK、重复提交 duplicated、影像接口 409、业务行已清理；⑫ 全量单测 **751 passed**、集成 **303 passed**、`alembic check` 零差异 | ✅ 通过（D-085；业务信封为 `EnvelopeV1`，S4-4 参考实现保留；驳回重提的二次提交留 S5-5） |
 | S5-1 | `backend/app/schemas/report.py`（`ReportCreateRequest`/`ReportItemCreateRequest`/`ReportOut`/`ReportItemOut`/`ReportDetailData`/`ReportListQuery`/`SignatureOut`/`EnvelopeOut`；金额两位小数字符串；信封只给元数据 + 派生 `recipient_cert_fp`/`wrapped_key_len`）、`backend/app/services/report_service.py`（`ALLOWED_TRANSITIONS` 8 值状态机 + `transition()`；`create_report`：`report_no_seq` 单号 + 同事务 `report_create` 审计；`add_item`：票据行 `FOR UPDATE` + 状态分诊 + 金额/重复校验 + 票据 `in_report` + 合计重算；`get_report_detail`；`list_my_reports`）、`backend/app/api/v1/reports.py` + `main.py`（4 条路由，`/mine` 先于 `/{id}`）、`backend/alembic/versions/0008_report_number_and_audit_action.py`（`report_no_seq` + `ck_audit_logs_action` 放开 `report_create`）、`backend/app/models/enums.py`（`AuditAction.REPORT_CREATE`）、`backend/app/services/pagination.py`（可选 `nulls_last`，默认行为不变）、`backend/tests/test_reports.py`（25 条集成）、`docs/{spec,plan}/s5-1-reports.md` | ① `pytest tests/test_reports.py -m integration` → **25 passed**；② 建单 **201**：`report_no` 形如 `RPT-202611-0001`、`status=draft`、`total_amount="0.00"`、`items=[]`、`department` 派生自 `users.dept`；③ 建单审计：1 行 `report_create`（`target_type=form`、`target_id=单 id`、`detail_json={report_no,status}`），`verify_chain` 仍 **ok**；④ 加 3 条明细（100.00/150.00/80.50）→ 合计 **"330.50"**、`item_count=3`，3 张票 `status=in_report` 且 `version=1`；⑤ 金额超票面 → **422/42201**（`data.expected="100.00"`）、负数/三位小数/非数字 → **422/42200**、0 元允许；⑥ 非本人票 **404/40400**、未确认票 **409/40900**、同单重复 **409/40901**、跨单重复 **409/40901**；失败后票据仍 `confirmed`、单据合计仍 0、无明细行（回滚验证）；⑦ **并发**：10 线程各自建单 → 10 个不同单号、库内 10 行；两线程抢同一票据 → **恰好一个成功、另一个 40901**，明细只有 1 行；两线程给**同一单加不同票** → 都成功且 `item_count=2`、合计等于两条之和（单据行锁防丢更新）；⑧ 权限：建单 reviewer **403** / admin **404**、`/mine` reviewer/admin **403/40301**、详情他人 404 / reviewer 草稿 404 / `submitted` 200 / admin 404；⑨ `/mine` 只含本人、`status` 与业务日筛选生效、`sort_by=submitted_at` **空值排最后**、非法 `sort_by` → 422；⑩ 状态机：8 值合法链逐个通过、同状态幂等不加版本、`draft→submitted` 409、`rejected→pending_sign` 允许；⑪ `alembic upgrade head`（head=**0008**）、`downgrade → upgrade` 往返、`alembic check` **零差异**；⑫ 全量单测 **734 passed**、集成 **284 passed**（259+25） | ✅ 通过（D-084；S5-2 的签名/信封/提交未实现；明细只增不删不改） |
@@ -294,11 +295,30 @@ S1-1 新增的遗留（不阻塞 S1-2）：
 | 113 | `verify_status` 由 active 签名派生，**没有独立列/历史** | 只能看到"当前一次"验签结论，没有多次复验轨迹 | 论文写"以签名行为准"；若要多轮验签历史需加表（S5-4 之后评估） |
 | 114 | CSV 导出是"筛选结果先取内存再逐块 yield"，**不是数据库游标流式** | 上限 10000 行；超大结果返回 422 | 财务规模下足够；S6 若要大数据量导出再换 server-side cursor |
 | 115 | 待审列表固定 `status='submitted'`，已审批/驳回/归档不在其中 | 审核完成后单据从"待审核"消失，需去 S5-5/S5-6 的视图看 | S5-5 审核决策后补"已审/驳回"视图；S5-6 归档检索 |
+| 116 | 财务私钥口令是**进程级环境变量**，不是按人/按密钥托管 | 换口令需重启；多人共用同一服务端身份，不可否认性只到"服务端代签"层 | 论文"安全边界"写（D-016 的代价）；生产可接 KMS/HSM |
+| 117 | **预览 token 是能力凭据**：30min 内任何持有者都能读，不绑定查看者 | token 泄露即可读明文（有 TTL 兜底） | 财务多人对照的实际需求下刻意不做一次性；S5-5 只对 verify_token 做一次性消费 |
+| 118 | 预览对象 TTL 清理是**每 10min 扫描**（按 `LastModified`） | 明文最多多留一个周期（≤10min） | 可把周期调小；S7-3 的"明文零残留扫描"会复查 previews/ 前缀 |
+| 119 | verify 会解密**全部影像**（为了校验每张的 sha256） | 单多、影像大时 verify 耗时随张数线性增长 | 换来"影像也被完整校验"；S6-3 压测量化 |
+| 120 | 证书仍无链验签/CRL/OCSP（沿用 D-080） | 验签信任"本地登记表 + 指纹/有效期/吊销" | 论文"安全边界"如实写（#93/#94） |
 
 ## 变更日志
 
 ### 2026-11-21
 
+- **S5-4 完成**：验签与解密（阶段 5 ★关键卡）。
+  · `POST /finance/reports/{id}/verify`：七步固定顺序（查信封→MAC→解 CEK→解密→校验证书→验签→重算摘要），
+    财务私钥口令只从环境变量 `FINANCE_KEY_PASSPHRASE`（D-016）；失败 409 + `reason_code`/`failed_step`，
+    **不返回明文**；签名层失败改写 `signatures.verify_result`，MAC/填充失败只进审计；
+  · **从库内重算**：用 canonical 里的 nonce + 当前业务行重建签名域并逐字节比对（改业务行必被检出），
+    影像解密后与 `invoice_files.sha256` 比对；
+  · `POST /finance/reports/{id}/decrypt`：`verify_token` 换 `preview_token`（30min、可重复读），
+    明细/字段 JSON 与影像明文写 `previews/{token}/...` 临时对象，**DB 不落明文**；
+    `GET /finance/preview/{token}`（JSON）与 `/files/{id}`（影像）供审核对照；
+  · **TTL 清理任务**：APScheduler 每 10min + Redis 锁，按对象 `LastModified` 删过期预览；
+  · 前端财务抽屉接"验签 → 解密预览 → 查看影像"；新增配置 `FINANCE_KEY_PASSPHRASE` / 预览 TTL 等；
+  · 实测：`test_verify` **13 passed**、全量单测 **751**、集成 **328**、`alembic check` 零差异；
+    `typecheck`/`build` 通过；真机冒烟 verify 七步全 ok、预览 JSON/影像 200 且哈希一致、
+    submitter 403、审计 36 行链 OK（D-087）。
 - **S5-3 完成**：财务端待审列表（阶段 5 第三张）。
   · 后端 `GET /finance/pending`（reviewer 专用；固定 `submitted`；验签三态/提交日/单号-申请人筛选；
     排序白名单 `submitted_at|total_amount`；**整页 2 条 SQL**、不返回密文）；

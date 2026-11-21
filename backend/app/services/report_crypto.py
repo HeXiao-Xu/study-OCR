@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import secrets
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -31,12 +32,17 @@ from app.models.signatures import Signature
 __all__ = [
     "AlgoNames",
     "EnvelopeOpenError",
+    "SealedOpen",
     "SealedPayload",
     "SubmitItem",
     "algo_names",
     "build_sealed_report",
     "build_signing_payload",
+    "canonical_signing_bytes",
+    "envelope_aad",
     "open_sealed",
+    "open_sealed_steps",
+    "rebuild_signing_canonical",
     "seal_payload",
 ]
 
@@ -46,11 +52,15 @@ ENVELOPE_VERSION = "envelope-v1"
 
 
 class EnvelopeOpenError(Exception):
-    """拆封失败；`reason` 与 S4 的口径对齐（`mac_mismatch` / `digest_mismatch` / …）。"""
+    """拆封失败；`reason` 与 S4 的口径对齐（`mac_mismatch` / `digest_mismatch` / …）。
 
-    def __init__(self, reason: str) -> None:
+    `steps` 记录失败前已通过的分步（S5-4 的 7 步口径），供接口原样展示。
+    """
+
+    def __init__(self, reason: str, steps: dict[str, bool] | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.steps = dict(steps or {})
 
 
 @dataclass(frozen=True)
@@ -217,7 +227,15 @@ def seal_payload(
     )
 
 
-def open_sealed(
+@dataclass(frozen=True)
+class SealedOpen:
+    """分步解封结果：`steps` 里只有实际走到的步骤为 True。"""
+
+    plaintext: bytes
+    steps: dict[str, bool]
+
+
+def open_sealed_steps(
     *,
     provider: AlgoProvider,
     private_key: KeyMaterial,
@@ -229,18 +247,24 @@ def open_sealed(
     mac_b64: str,
     ciphertext: bytes,
     payload_sha256: str,
-) -> bytes:
-    """S5-4 的解封原语（本卡测试也用）：解 CEK → 验 MAC/解 → 摘要比对。"""
+) -> SealedOpen:
+    """解 CEK → 验 MAC/解 → 摘要比对，并把 `unwrap_cek/mac/decrypt` 的步进结果带出来。
+
+    SM4 的 MAC 与解密在 `provider.unwrap_symmetric` 内部完成（先验 MAC 再解密，D-076），
+    所以失败原因区分 `mac_mismatch`（MAC 步）与 `bad_padding`（解密步）。
+    """
+    steps = {"unwrap_cek": False, "mac": False, "decrypt": False}
     wrapped_key = _unb64(wrapped_key_b64)
     iv = _unb64(iv_b64)
     mac = _unb64(mac_b64)
     if wrapped_key is None or iv is None or mac is None:
-        raise EnvelopeOpenError("bad_envelope")
+        raise EnvelopeOpenError("bad_envelope", steps)
 
     try:
         cek = provider.decrypt_key(wrapped_key, private_key)
     except Exception as exc:  # noqa: BLE001 - 归一到拆封错误，不泄露细节
-        raise EnvelopeOpenError("bad_key") from exc
+        raise EnvelopeOpenError("bad_key", steps) from exc
+    steps["unwrap_cek"] = True
 
     associated = envelope_aad(
         key_algo=key_algo,
@@ -256,11 +280,65 @@ def open_sealed(
             aad=associated,
         )
     except AlgoIntegrityError as exc:
-        raise EnvelopeOpenError(exc.reason) from exc
+        if exc.reason != "mac_mismatch":
+            # MAC 通过、解密/去填充失败
+            steps["mac"] = True
+        raise EnvelopeOpenError(exc.reason, steps) from exc
+    steps["mac"] = True
+    steps["decrypt"] = True
 
     if hashlib.sha256(plaintext).hexdigest() != payload_sha256:
-        raise EnvelopeOpenError("digest_mismatch")
-    return plaintext
+        raise EnvelopeOpenError("digest_mismatch", steps)
+    return SealedOpen(plaintext=plaintext, steps=steps)
+
+
+def open_sealed(
+    *,
+    provider: AlgoProvider,
+    private_key: KeyMaterial,
+    key_algo: str,
+    cipher_algo: str,
+    recipient_cert_fp: str,
+    wrapped_key_b64: str,
+    iv_b64: str,
+    mac_b64: str,
+    ciphertext: bytes,
+    payload_sha256: str,
+) -> bytes:
+    """S5-4 的解封原语：解 CEK → 验 MAC/解 → 摘要比对（不带分步）。"""
+    return open_sealed_steps(
+        provider=provider,
+        private_key=private_key,
+        key_algo=key_algo,
+        cipher_algo=cipher_algo,
+        recipient_cert_fp=recipient_cert_fp,
+        wrapped_key_b64=wrapped_key_b64,
+        iv_b64=iv_b64,
+        mac_b64=mac_b64,
+        ciphertext=ciphertext,
+        payload_sha256=payload_sha256,
+    ).plaintext
+
+
+def rebuild_signing_canonical(
+    form: ReportForm, items: list[SubmitItem], stored_canonical: str
+) -> bytes:
+    """**从库内当前数据**重建签名域字节：nonce 取自已存的 canonical（防重放/防重拼）。
+
+    用途（S5-4 的 digest_recheck）：如果业务行被改过而签名域没改，重建结果会与库里那份不一致，
+    从而检出"改了报价单但保留旧签名"的攻击；只比对 `signatures.digest_hex`（提交时存下的值）
+    等于没验签，所以必须重建后再比对字节。
+    """
+    try:
+        parsed = json.loads(stored_canonical)
+    except ValueError as exc:
+        raise ValueError("已存的 canonical 不是合法 JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("已存的 canonical 不是 JSON 对象")
+    nonce = parsed.get("nonce")
+    if not isinstance(nonce, str) or not nonce:
+        raise ValueError("已存的 canonical 缺少 nonce")
+    return canonical_json(build_signing_payload(form, items, nonce=nonce))
 
 
 def envelope_aad(

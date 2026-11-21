@@ -34,6 +34,7 @@ from app.crypto.provider import KeyMaterial, SMProvider
 
 __all__ = [
     "KeyLoadError",
+    "certificate_fingerprint",
     "certificate_problem",
     "load_key_material",
     "recipient_key_material",
@@ -66,6 +67,12 @@ def load_key_material(
         # 文件不存在 / JSON 结构坏 / 口令错 / PEM 类型不对，对外表现必须一致
         raise KeyLoadError() from exc
     raise KeyLoadError("不支持的密钥算法（只支持 SM2 / RSA）")
+
+
+def certificate_fingerprint(cert_pem: str | bytes) -> str:
+    """证书 SHA-256 指纹（64 位小写 hex）；SM2/RSA 都能算（certs.parse 只认 SM2）。"""
+    cert = _load_certificate(cert_pem)
+    return hashlib.sha256(cert.public_bytes(Encoding.DER)).hexdigest()
 
 
 def recipient_key_material(*, key_algo: str, cert_pem: str | bytes) -> KeyMaterial:

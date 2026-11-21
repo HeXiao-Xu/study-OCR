@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_serializer
 
@@ -64,3 +64,43 @@ class FinanceDetailData(BaseModel):
     envelope: EnvelopeOut | None = None
     verify_status: VerifyStatus = "unverified"
     attachments: list[FinanceAttachmentOut] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# 验签 / 解密预览（S5-4）
+# --------------------------------------------------------------------------- #
+class VerifyStep(BaseModel):
+    """七步校验的一步（顺序见 API.md §5）。"""
+
+    step: str
+    ok: bool
+
+
+class VerifyData(BaseModel):
+    """`POST /finance/reports/{id}/verify` 出参（API.md §5）：不返回任何明文。"""
+
+    report_id: int
+    verified: bool
+    steps: list[VerifyStep]
+    cert_fp: str | None = None
+    payload_sha256_match: bool
+    verified_at: datetime
+    verify_token: str
+    verify_token_expires_in: int
+
+
+class DecryptRequest(BaseModel):
+    """解密预览入参：必须是 verify 通过后签发的凭据。"""
+
+    verify_token: str = Field(min_length=8, max_length=128)
+
+
+class DecryptData(BaseModel):
+    """解密预览出参：临时凭据 + 字段预览；明文影像走 `GET /finance/preview/{token}/files/{id}`。"""
+
+    preview_token: str
+    expires_at: datetime
+    ttl_seconds: int
+    content_type: str
+    size: int
+    fields_preview: dict[str, Any]

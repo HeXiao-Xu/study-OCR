@@ -100,7 +100,7 @@ def sign_report(
 
     if form.status not in SIGNABLE_STATUSES:
         raise ConflictError(f"单据当前状态为 {form.status}，不允许签名")
-    items = _load_items(db, form.id)
+    items = load_items(db, form.id)
     if not items:
         raise ConflictError("单据没有明细，不能签名")
     _ensure_invoices_confirmed(items)
@@ -284,7 +284,7 @@ def submit_report(
 
         finance_cert, finance_material = get_finance_recipient(db, provider, now=now)
 
-        items = _load_items(db, form.id)
+        items = load_items(db, form.id)
         if not items:
             raise ConflictError("单据没有明细，不能提交")
         if _form_envelope(db, form.id) is not None:
@@ -524,7 +524,7 @@ def _verify_signature(
         return False
 
 
-def _load_items(db: Session, form_id: int) -> list[SubmitItem]:
+def load_items(db: Session, form_id: int) -> list[SubmitItem]:
     rows = db.execute(
         select(ReportItem, Invoice, InvoiceFile)
         .join(Invoice, ReportItem.invoice_id == Invoice.id)

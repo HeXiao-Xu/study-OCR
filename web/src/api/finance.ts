@@ -1,9 +1,11 @@
 /** 财务端接口（S5-3）：只读列表 / 详情元数据 / CSV 导出。组件不直接 import axios。 */
-import { get, getBlob, unwrap } from './http'
+import { get, getBlob, post, unwrap } from './http'
 import type {
+  DecryptPreview,
   FinanceDetail,
   FinancePendingPage,
   FinancePendingParams,
+  VerifyResult,
 } from '../types/finance'
 
 function toQuery(params: FinancePendingParams): Record<string, string | number> {
@@ -34,4 +36,35 @@ export async function getFinanceDetail(reportId: number): Promise<FinanceDetail>
 /** CSV 导出：走鉴权后拿 Blob，由调用方触发本地下载（不解析 JSON 壳）。 */
 export async function downloadPendingCsv(params: FinancePendingParams = {}): Promise<Blob> {
   return getBlob('/finance/pending/export', { params: toQuery(params), silent: true })
+}
+
+/** 验签（S5-4）：七步校验；财务私钥口令在服务端环境变量里，前端不接触。 */
+export async function verifyReport(reportId: number): Promise<VerifyResult> {
+  const envelope = await post<VerifyResult>(
+    `/finance/reports/${reportId}/verify`,
+    {},
+    { silent: true },
+  )
+  return unwrap(envelope)
+}
+
+/** 解密到临时预览（30min）：verify_token 换 preview_token。 */
+export async function decryptReport(
+  reportId: number,
+  verifyToken: string,
+): Promise<DecryptPreview> {
+  const envelope = await post<DecryptPreview>(
+    `/finance/reports/${reportId}/decrypt`,
+    { verify_token: verifyToken },
+    { silent: true },
+  )
+  return unwrap(envelope)
+}
+
+/** 预览影像（明文，30min 内可重复读）。 */
+export async function getPreviewFileBlob(
+  previewToken: string,
+  fileId: number,
+): Promise<Blob> {
+  return getBlob(`/finance/preview/${previewToken}/files/${fileId}`, { silent: true })
 }

@@ -110,3 +110,29 @@ export interface FinanceDetail {
   verify_status: VerifyStatus
   attachments: FinanceAttachment[]
 }
+
+/** S5-4：七步验签结果（顺序由后端固定，前端只展示）。 */
+export interface VerifyStep {
+  step: string
+  ok: boolean
+}
+
+export interface VerifyResult {
+  report_id: number
+  verified: boolean
+  steps: VerifyStep[]
+  cert_fp: string | null
+  payload_sha256_match: boolean
+  verified_at: string
+  verify_token: string
+  verify_token_expires_in: number
+}
+
+export interface DecryptPreview {
+  preview_token: string
+  expires_at: string
+  ttl_seconds: number
+  content_type: string
+  size: number
+  fields_preview: Record<string, unknown>
+}

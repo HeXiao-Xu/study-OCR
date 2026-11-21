@@ -8,12 +8,14 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter, type LocationQueryValue } from 'vue-router'
 
-import { downloadPendingCsv, getFinanceDetail, listPending } from '../api/finance'
+import { downloadPendingCsv, decryptReport, getFinanceDetail, getPreviewFileBlob, listPending, verifyReport } from '../api/finance'
 import { ApiError } from '../api/http'
 import type {
+  DecryptPreview,
   FinanceDetail,
   FinancePendingItem,
   FinancePendingParams,
+  VerifyResult,
   VerifyStatus,
 } from '../types/finance'
 import {
@@ -47,6 +49,25 @@ const drawerOpen = ref(false)
 const detailLoading = ref(false)
 const detail = ref<FinanceDetail | null>(null)
 const detailError = ref('')
+
+// S5-4：验签与临时预览
+const verifyResult = ref<VerifyResult | null>(null)
+const preview = ref<DecryptPreview | null>(null)
+const verifying = ref(false)
+const decrypting = ref(false)
+const actionError = ref('')
+const previewUrls = ref<Record<number, string>>({})
+const previewLoadingId = ref<number | null>(null)
+
+const STEP_LABEL: Record<string, string> = {
+  envelope_lookup: '查信封',
+  mac: '验 MAC',
+  unwrap_cek: '解 CEK',
+  decrypt: '解密',
+  cert_check: '校验证书',
+  signature: '验签',
+  digest_recheck: '重算摘要',
+}
 
 const VERIFY_OPTIONS: VerifyStatus[] = ['unverified', 'ok', 'failed']
 
@@ -174,6 +195,7 @@ async function openDetail(row: FinancePendingItem): Promise<void> {
   drawerOpen.value = true
   detail.value = null
   detailError.value = ''
+  resetCryptoState()
   detailLoading.value = true
   try {
     detail.value = await getFinanceDetail(row.report_id)
@@ -181,6 +203,67 @@ async function openDetail(row: FinancePendingItem): Promise<void> {
     detailError.value = cause instanceof ApiError ? cause.message : '详情加载失败'
   } finally {
     detailLoading.value = false
+  }
+}
+
+function resetCryptoState(): void {
+  for (const url of Object.values(previewUrls.value)) URL.revokeObjectURL(url)
+  previewUrls.value = {}
+  verifyResult.value = null
+  preview.value = null
+  actionError.value = ''
+}
+
+function onDrawerClosed(): void {
+  resetCryptoState()
+}
+
+async function runVerify(): Promise<void> {
+  if (!detail.value || verifying.value) return
+  verifying.value = true
+  actionError.value = ''
+  preview.value = null
+  try {
+    verifyResult.value = await verifyReport(detail.value.report.id)
+  } catch (cause) {
+    actionError.value =
+      cause instanceof ApiError
+        ? `${cause.message}${cause.payload?.data ? `（${JSON.stringify(cause.payload.data)}）` : ''}`
+        : '验签失败'
+  } finally {
+    verifying.value = false
+  }
+}
+
+async function runDecrypt(): Promise<void> {
+  if (!detail.value || !verifyResult.value || decrypting.value) return
+  decrypting.value = true
+  actionError.value = ''
+  try {
+    preview.value = await decryptReport(
+      detail.value.report.id,
+      verifyResult.value.verify_token,
+    )
+  } catch (cause) {
+    actionError.value = cause instanceof ApiError ? cause.message : '解密失败'
+  } finally {
+    decrypting.value = false
+  }
+}
+
+async function showPreviewImage(fileId: number): Promise<void> {
+  if (!preview.value || previewUrls.value[fileId] || previewLoadingId.value !== null) return
+  previewLoadingId.value = fileId
+  try {
+    const blob = await getPreviewFileBlob(preview.value.preview_token, fileId)
+    previewUrls.value = {
+      ...previewUrls.value,
+      [fileId]: URL.createObjectURL(blob),
+    }
+  } catch (cause) {
+    actionError.value = cause instanceof ApiError ? cause.message : '影像加载失败'
+  } finally {
+    previewLoadingId.value = null
   }
 }
 
@@ -323,7 +406,13 @@ watch(
       </div>
     </el-card>
 
-    <el-drawer v-model="drawerOpen" title="单据详情" size="46%" destroy-on-close>
+    <el-drawer
+      v-model="drawerOpen"
+      title="单据详情"
+      size="46%"
+      destroy-on-close
+      @closed="onDrawerClosed"
+    >
       <div v-loading="detailLoading" class="drawer-body">
         <el-alert
           v-if="detailError"
@@ -380,7 +469,59 @@ watch(
               <code class="mono">{{ detail.envelope.recipient_cert_fp ?? '—' }}</code>
             </el-descriptions-item>
           </el-descriptions>
-          <el-empty v-else description="没有单据级信封" :image-size="60" />
+          <el-alert v-else description="没有单据级信封" :image-size="60" />
+
+          <h4 class="drawer-title">验签与临时预览（S5-4）</h4>
+          <div class="crypto-actions">
+            <el-button type="primary" :loading="verifying" @click="runVerify">验签</el-button>
+            <el-button
+              type="success"
+              :loading="decrypting"
+              :disabled="!verifyResult"
+              @click="runDecrypt"
+            >
+              解密预览
+            </el-button>
+            <span v-if="verifyResult" class="crypto-hint">
+              验签通过（凭据 {{ verifyResult.verify_token_expires_in }}s 有效）
+            </span>
+          </div>
+
+          <el-alert
+            v-if="actionError"
+            type="error"
+            :closable="false"
+            show-icon
+            :title="actionError"
+            class="list-error"
+          />
+
+          <div v-if="verifyResult" class="step-tags">
+            <el-tag
+              v-for="step in verifyResult.steps"
+              :key="step.step"
+              :type="step.ok ? 'success' : 'danger'"
+              effect="plain"
+            >
+              {{ STEP_LABEL[step.step] ?? step.step }}{{ step.ok ? ' ✓' : ' ✗' }}
+            </el-tag>
+            <el-tag v-if="verifyResult.cert_fp" type="info" effect="plain">
+              证书 {{ verifyResult.cert_fp.slice(0, 12) }}…
+            </el-tag>
+          </div>
+
+          <template v-if="preview">
+            <el-descriptions :column="2" border size="small" class="preview-meta">
+              <el-descriptions-item label="预览凭据有效期">
+                {{ formatDateTime(preview.expires_at) }}
+              </el-descriptions-item>
+              <el-descriptions-item label="载荷大小">
+                {{ formatSize(preview.size) }}
+              </el-descriptions-item>
+            </el-descriptions>
+            <div class="preview-title">解密后的字段（report-v1）</div>
+            <pre class="preview-json">{{ JSON.stringify(preview.fields_preview, null, 2) }}</pre>
+          </template>
 
           <h4 class="drawer-title">明细与附件</h4>
           <el-table :data="detail.attachments" size="small" border row-key="file_id">
@@ -400,13 +541,38 @@ watch(
                 <el-tag v-else type="info" effect="plain">无</el-tag>
               </template>
             </el-table-column>
+            <el-table-column v-if="preview" label="预览" width="100">
+              <template #default="{ row }">
+                <el-button
+                  v-if="!previewUrls[row.file_id]"
+                  text
+                  type="primary"
+                  :loading="previewLoadingId === row.file_id"
+                  @click="showPreviewImage(row.file_id)"
+                >
+                  查看影像
+                </el-button>
+                <span v-else class="preview-ready">已加载</span>
+              </template>
+            </el-table-column>
           </el-table>
+
+          <div v-if="preview" class="preview-images">
+            <el-image
+              v-for="(url, fileId) in previewUrls"
+              :key="fileId"
+              :src="url"
+              fit="contain"
+              class="preview-image"
+            />
+          </div>
+
           <el-alert
             class="drawer-hint"
             type="info"
             :closable="false"
             show-icon
-            title="影像与字段明文需先验签再解密（S5-4 提供临时预览），此处只展示元数据。"
+            title="明文只在 30 分钟的临时预览对象里；过期后需重新验签与解密。"
           />
         </template>
       </div>
@@ -471,6 +637,57 @@ watch(
 }
 .drawer-hint {
   margin-top: 14px;
+}
+.crypto-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.crypto-hint {
+  font-size: 12px;
+  color: #16a34a;
+}
+.step-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.preview-meta {
+  margin: 10px 0;
+}
+.preview-title {
+  font-size: 13px;
+  color: #334155;
+  margin: 8px 0 6px;
+}
+.preview-json {
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.preview-ready {
+  font-size: 12px;
+  color: #16a34a;
+}
+.preview-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+}
+.preview-image {
+  width: 220px;
+  height: 150px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
 }
 .mono {
   font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;

@@ -99,6 +99,24 @@ class StorageService:
             response.release_conn()
 
 
+    def list_objects(self, prefix: str) -> list[tuple[str, datetime]]:
+        """列出前缀下全部对象 `(对象名, 最后修改时间)`（S5-4 的 TTL 清理用）。
+
+        只做一次列举、不聚合：调用方自己判断是否过期。失败分类与读写一致。
+        """
+        try:
+            return [
+                (obj.object_name, obj.last_modified)
+                for obj in self._client.list_objects(
+                    self._bucket, prefix=prefix, recursive=True
+                )
+            ]
+        except S3Error as exc:
+            logger.error(
+                "对象存储列举失败",
+                extra={"event": "storage_list_failed", "error_code": "STORAGE_LIST"},
+            )
+            raise ServiceUnavailableError("对象存储不可用") from exc
 @lru_cache(maxsize=1)
 def get_storage() -> StorageService:
     settings = get_settings()

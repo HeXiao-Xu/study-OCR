@@ -37,6 +37,7 @@ __all__ = [
     "SigningIdentity",
     "get_finance_recipient",
     "get_signing_identity",
+    "load_finance_private_key",
     "load_signing_key",
     "provider_for",
     "resolve_storage_path",
@@ -164,3 +165,38 @@ def get_finance_recipient(
     except KeyLoadError as exc:
         raise ConflictError("财务证书公钥不可用") from exc
     return certificate, material
+
+
+def load_finance_private_key(
+    db: Session, cert_id: int, settings: Settings
+) -> KeyMaterial:
+    """解锁**财务信封私钥**（S5-4 验签/解密用）。
+
+    - 口令只从 `settings.finance_key_passphrase`（环境变量，D-016）读；
+      未配置或错误都返回 `422/42200` 的**统一文案**，不回显原因；
+    - `key_records` 只登记路径；私钥不出内存。
+    """
+    record = db.scalars(
+        select(KeyRecord)
+        .where(
+            KeyRecord.cert_id == cert_id,
+            KeyRecord.key_type == KeyType.ENVELOPE.value,
+            KeyRecord.revoked_at.is_(None),
+        )
+        .order_by(KeyRecord.id.desc())
+        .limit(1)
+    ).first()
+    if record is None:
+        raise ConflictError("财务信封私钥未登记")
+
+    passphrase = (settings.finance_key_passphrase or "").strip()
+    if not passphrase:
+        raise ValidationFailedError("财务私钥口令未配置或不可用")
+
+    path = resolve_storage_path(record.storage_path, settings)
+    try:
+        return load_key_material(
+            key_algo=record.algo, storage_path=path, passphrase=passphrase
+        )
+    except KeyLoadError as exc:
+        raise ValidationFailedError("财务私钥口令未配置或不可用") from exc

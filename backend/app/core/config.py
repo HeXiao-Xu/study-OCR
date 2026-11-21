@@ -120,6 +120,16 @@ class Settings(BaseSettings):
     # 私钥登记路径（key_records.storage_path）的解析根：空 = 仓库根；相对路径按它解析
     key_storage_root: str = ""
 
+    # ---------- 财务验签与解密（S5-4）----------
+    # D-016：财务私钥口令只走环境变量，不经 HTTP；为空时 verify/decrypt 返回 422（不阻塞启动）
+    finance_key_passphrase: str = ""
+    # 契约：预览凭据与临时对象 30min；清理任务每 10min 扫一次 previews/ 前缀
+    preview_token_ttl_seconds: int = 1800
+    preview_cleanup_interval_seconds: int = 600
+    preview_object_prefix: str = "previews"
+    preview_cleanup_lock_key: str = "scheduler:lock:preview_cleanup"
+    preview_cleanup_lock_ttl_seconds: int = 600
+
     # ---------- 定时任务（S2-12）----------
     # 每个 API 进程都会起调度器；真正执行前抢 Redis 锁，保证多副本同一次只跑一遍。
     scheduler_enabled: bool = True

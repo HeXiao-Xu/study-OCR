@@ -1941,3 +1941,42 @@
   CSV 359B、**BOM=`\xef\xbb\xbf`**、CRLF、表头中文、5 行数据（样例
   `RPT-202611-0002,Alice,100.00,1,2026-11-21 19:07:32,通过`）；
   submitter 访问列表/详情均 **403**；业务行与对象已清理，审计累计 24 行且 `verify_chain ok`。
+
+## D-087 验签与解密：七步固定顺序、从库内重算签名域、临时预览 TTL 与清理任务
+
+- **日期**：2026-11-21（S5-4，阶段 5 ★关键卡）
+- **背景**：财务审核前必须能证明"这单没被改过、确实是本人签的"，并把明文**短时**放出来给审核员对照。
+  任务卡与契约有三处口径差异（口令位置、审计 action 名、接口路径），另有"一个 report 多张影像"的寻址问题；
+  本卡按契约优先并把差异写进 API.md/本文件。
+- **决策**：
+  1. **口令只从环境变量** `FINANCE_KEY_PASSPHRASE`（D-016）：入参为空对象，不经 HTTP、不进日志；
+     未配置/错误统一 `422/42200` 文案。任务卡写的"口令来自请求体"不采用（契约明确 D-016）。
+  2. **七步顺序写死**：`envelope_lookup → mac → unwrap_cek → decrypt → cert_check → signature → digest_recheck`。
+     物理上必须先解 CEK 才能验 MAC（MAC key 由 CEK 派生，D-077），所以失败按真实原因归类：
+     `mac_mismatch`（50030）/ `bad_padding`（50031）/ `bad_key`（50031）/ `bad_envelope`（40900）/
+     `cert_invalid`（50021）/ `bad_signature`（50021）/ `digest_mismatch`（50021）。
+  3. **摘要从库内原始数据重算**（任务卡的坑）：`digest_recheck` 从 `canonical_json` 取出非ce、用当前库里的
+     单据/明细重建签名域并**逐字节**比对；影像解密后再与 `invoice_files.sha256` 比对。
+     只比提交时存的 `digest_hex` 等于没验签，专门有"改业务行但不动签名域"的用例。
+  4. **失败分类写库**：`digest_mismatch`/`bad_signature`/`cert_invalid` 把 active 签名改为
+     `verified=false + verify_result=<reason>`（财务列表随即变红）；`mac_mismatch`/`bad_padding`
+     **不写** `signatures.verify_result`（SCHEMA §9 约定）。审计 `action=verify` 记录 result/reason/step。
+  5. **凭据**：`verify` 通过签发 `verify_token`（Redis 30min）；`decrypt` 校验它并签发 `preview_token`
+     （30min、**可重复读取**）；decrypt 时**重新解密**（verify 时的明文不缓存），预览明文只进
+     `previews/{token}/report.json` 与 `.../files/{file_id}.bin`，**DB 不落明文**。
+  6. **TTL 清理任务**：APScheduler `IntervalTrigger`（默认 10min）+ Redis 锁，按对象 `LastModified`
+     删过期预览对象；Redis 凭据靠自身 TTL。
+  7. **票据影像接口不改**：`GET /invoices/{id}/image` 对密文仍 409；明文只经 `GET /finance/preview/...`
+     流出（token 门槛 + `no-store`），避免"绕过审核窗口直接看原图"，也让明文访问可审计。
+  8. **契约补充**：新增 `GET /finance/preview/{token}/files/{file_id}`（一个 token 无法寻址多张影像）；
+     `reason_code` 增补 `bad_envelope`/`bad_key` 两个结构/密钥类失败码。
+- **代价/限制**：预览 token 是"能力凭据"（30min 内持有即可读，不绑定查看者）——财务多人对照的实际需求下
+  刻意不做一次性，S5-5 的 approve 才做 verify_token 的一次性消费；清理是周期扫描，明文最多多留一个周期；
+  verify 会解密全部影像（成本随张数），但换来"影像也被完整校验"；证书仍无链验签/CRL（D-080）。
+- **验证**：`pytest tests/test_verify.py -m integration` **13 passed**（七步/成功、改业务行、
+  改 canonical、篡改密文 MAC 失败且不改 verify_result、错口令 422、吊销证书、缺信封、权限、
+  解密+预览+重复读、无凭据 409、过期 410、清理只删旧对象、RSA provider 全流程）；
+  全量单测 **751**、集成 **328**、`alembic check` 零差异；`typecheck`/`build` 通过。
+  真机冒烟（开发库 + 真 MinIO/Redis）：提交→verify（7 步全 ok、cert_fp、payload_sha256_match）→
+  decrypt（TTL 1800）→ preview JSON 与影像均 200、影像 SHA-256 与 `invoice_files.sha256` 一致、
+  预览对象 2 个、submitter 调用 403、审计 36 行链 OK；业务行/对象/预览已清理。

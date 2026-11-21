@@ -1,34 +1,42 @@
 # 会话交接（HANDOFF）
 
 > 给"下一个会话"的入口文档。**先读它，再读 `AGENTS.md` 与 `docs/PROGRESS.md`**。
-> 最后更新：2026-11-21 19:15（S5-3 完成，阶段 5 进行中；下一步 S5-4）
+> 最后更新：2026-11-21 19:30（S5-4 完成，阶段 5 进行中；下一步 S5-5）
 
 ## 1. 一句话现状
 
-**阶段 0 ~ 阶段 4 + S5-1/S5-2/S5-3 全部完成**（共 46 张卡）：
-识别链路（S1/S3）+ 基础框架（S2）+ 密码模块（S4）+ **报销单建单/明细 + 签名/加密提交 + 财务待审（S5-1~S5-3）**均已收口。
+**阶段 0 ~ 阶段 4 + S5-1 ~ S5-4 全部完成**（共 47 张卡）：
+识别链路（S1/S3）+ 基础框架（S2）+ 密码模块（S4）+ **报销单建单/明细 + 签名/加密提交 + 财务待审 + 验签/解密（S5-1~S5-4）**均已收口。
 
-**下一步：S5-4 验签与解密**（阶段 5 ★关键卡，详见 §7）。
+**下一步：S5-5 审核决策与驳回**（阶段 5 第五张卡，详见 §7）。
 
-S5-3 交付了什么（财务端只读视图，论文"业务闭环"一章的审核入口）：
+S5-4 交付了什么（财务审核前的验签与短时明文预览，论文"业务闭环"的验证段）：
 
-- `GET /finance/pending`：reviewer 专用待审列表（三态验签/提交日/单号-申请人筛选、排序白名单、
-  **整页 2 条 SQL**、不返回密文）；
-- 新增 `GET /finance/pending/export`（UTF-8 **BOM** + CRLF 流式 CSV，与列表同筛选，上限 1 万行）与
-  `GET /finance/{id}`（单据 + 明细 + 附件**元数据**，不含明文/密文）；
-- `verify_status` **不新增列**：由 active 签名的 `verify_result` 派生；同时修正 S5-2——
-  提交时系统验签通过后落 `verified=true/'ok'/verified_at`（SCHEMA §5.3 要求 submitted 后必须已验证，D-086）；
-- 前端 `/finance/pending` 从占位换成 `FinanceList.vue`（筛选/分页走 `route.query`、详情抽屉、CSV 下载）。
+- `POST /finance/reports/{id}/verify`（200）：**七步固定顺序** `查信封 → 验 MAC → 解 CEK → 解密 →
+  校验证书 → 验签 → 重算摘要`；摘要用 canonical 里的 nonce + 当前库内数据**重建签名域逐字节比对**
+  （改业务行会被检出）；失败 409 + `reason_code`/`failed_step`，**不返回明文**；
+- `POST /finance/reports/{id}/decrypt`（200）：`verify_token` 换 `preview_token`（30min、可重复读），
+  明文只进 `previews/{token}/...` 临时对象，**DB 不落明文**；
+- `GET /finance/preview/{token}`（report JSON）与 `/preview/{token}/files/{file_id}`（影像明文）；
+- **TTL 清理任务**：APScheduler 每 10min + Redis 锁，删过期预览对象；
+- 财务私钥口令**只从环境变量 `FINANCE_KEY_PASSPHRASE`**（D-016），未配置/错误 → 422 统一文案；
+- 前端财务抽屉已接"验签 → 解密预览 → 查看影像"；`GET /invoices/{id}/image` **保持密文 409**
+  （明文只经财务预览，D-087）。
+
+S5-3 交付了什么（财务端只读视图）：
+
+- `GET /finance/pending`（reviewer 专用、固定 `submitted`、三态验签/提交日/q 筛选、**整页 2 条 SQL**）；
+- `GET /finance/pending/export`（UTF-8 BOM + CRLF 流式 CSV，上限 1 万行）与 `GET /finance/{id}`
+  （单据 + 明细 + 附件**元数据**，不含明文/密文）；
+- `verify_status` 由 active 签名的 `verify_result` 派生（无新增列）；提交时系统验签落库（D-086）。
 
 S5-2 交付了什么（签名/加密提交）：
 
 - `POST /reports/{id}/sign`（200）：规范化 → SM2/RSA 签名 → 旧签名置 `void` → `signed`；
 - `POST /reports/{id}/submit`（200）：**同一事务**内 验签 → 单据信封 + 每票文件信封 → `submitted` →
   `sign/seal/submit` 审计；影像转密文落 MinIO（明文对象提交后删除）；幂等键重复提交返回既有结果；
-- 业务链路统一走 `AlgoProvider`（`ALGO_PROVIDER=sm` 默认 / `rsa` 对照），信封格式 `EnvelopeV1`
-  （AAD 绑 `wrapped_key` + `payload_sha256`，D-085）；
-- `scripts/register_identity.py` 把证书/密钥**登记**进库（私钥仍只在 `secrets/`）；
-  本地库已登记 `alice`(user) 与 `finance`(server) 两套身份。
+- 业务链路统一走 `AlgoProvider`（`ALGO_PROVIDER=sm` 默认 / `rsa` 对照），信封格式 `EnvelopeV1`（D-085）；
+- `scripts/register_identity.py` 把证书/密钥**登记**进库（私钥仍只在 `secrets/`）。
 
 S5-1 交付了什么（报销单入口）：
 
@@ -45,9 +53,9 @@ S5-1 交付了什么（报销单入口）：
 - `services/audit.py` + `api/v1/admin.py`：审计哈希链 + `verify-chain`；
 - `crypto/{rsa_layer,aesgcm_layer,provider}.py`：RSA-OAEP/PSS 与 AES-GCM 对照实现（S6 用）。
 
-**注意**：提交后的影像在 MinIO 里是密文，`GET /invoices/{id}/image` 会 **409**，
-S5-4 才做"内存解密 → 渲染 → 释放"。财务端目前只能看元数据，**验签/解密/审核还没做**（S5-4/S5-5）。
-浏览器侧 S5-3 已上线财务待审页；票据页仍是阶段 3 的能力：
+**注意**：提交后的影像在 MinIO 里是密文，`GET /invoices/{id}/image` 会 **409**（S5-4 刻意不改，见 D-087）；
+财务要对照影像/字段时走"验签 + 解密预览"（30min）。**审核决策 approve/reject 还没做**（S5-5）。
+浏览器侧已上线财务待审页（含验签/预览）；票据页仍是阶段 3 的能力：
 
 - 登录三角色 → 落地：submitter `/invoices`、reviewer `/review`（= `review_status=pending` **待复核**）、admin `/templates`；
 - 上传：单文件/批量；同图去重（同账号给"查看"链接，跨账号只说"已被其他账号上传"，不泄露 invoice_id）；
@@ -62,19 +70,19 @@ S5-4 才做"内存解密 → 渲染 → 释放"。财务端目前只能看元数
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`；**本地领先 origin 84 个 commit**（以 `git rev-list --count origin/main..HEAD` 为准）；最近代码提交见 `git log -1 --format=%h`；**push 永远由用户做**） |
+| 仓库 | `E:\BiSheXZY\study-OCR`（分支 `main`；**本地领先 origin 85 个 commit**（以 `git rev-list --count origin/main..HEAD` 为准）；最近代码提交见 `git log -1 --format=%h`；**push 永远由用户做**） |
 | Python | 3.11.9（`E:\BiSheXZY\study-OCR\.venv`，**所有命令都用 `.venv/Scripts/python.exe`**） |
 | 关键版本 | numpy **1.26.4**、opencv-python **4.6.0.66**、paddlepaddle **2.6.2**、paddleocr **2.7.3**、Pillow 12.3.0、PyMuPDF 2.1、SQLAlchemy **2.0.58**、Alembic **1.20.1**、PyJWT **2.15.1**、passlib **1.7.4**、ARQ **0.28.0**、redis-py **5.3.1**（ARQ 要求 `redis<6`，D-045）、APScheduler **3.11.1**、**gmssl 3.2.2**（D-073）、**cryptography 50.0.2**（D-077）、pycryptodomex 3.24.2、**pytest-cov 7.1.0 + coverage 7.17.4**（仅测试，D-082） |
 | pip 源 | 阿里云全局镜像（`%APPDATA%\pip\pip.ini`），装依赖不用再加 `-i` |
 | OCR 模型 | 已缓存 `~/.paddleocr/whl/{det,rec,cls}`（约 18MB），离线可用 |
 | Docker | `study-ocr-{postgres,redis,minio}`（5433 / 6380 / 9002，控制台 9003）；**DB head = 0008**（16 业务表 + `report_no_seq` 序列 + alembic_version）；S4 起另有 OpenSSL 3.5 容器（`scripts/openssl.sh` / `.ps1`，D-078） |
 | 依赖锁 | `backend/requirements.txt`（手写锁）+ `requirements.lock.txt`（pip freeze） |
-| 必填配置 | `DATABASE_URL` / `REDIS_URL` / `MINIO_*` / `JWT_SECRET` / **`AUDIT_HMAC_KEY`（≥32 字符，D-081；缺失启动即失败，prod 拒绝示例占位符）**；S5-2 起另有 `ALGO_PROVIDER`（默认 `sm`）与 `KEY_STORAGE_ROOT`（空 = 仓库根） |
+| 必填配置 | `DATABASE_URL` / `REDIS_URL` / `MINIO_*` / `JWT_SECRET` / **`AUDIT_HMAC_KEY`（≥32 字符，D-081；缺失启动即失败，prod 拒绝示例占位符）**；S5-2 起 `ALGO_PROVIDER`（默认 `sm`）与 `KEY_STORAGE_ROOT`（空 = 仓库根）；**S5-4 起 `FINANCE_KEY_PASSPHRASE`（财务私钥口令，D-016；本地 `.env` 已填演示值，未入库；留空则 verify/decrypt 返回 422）** |
 
 > **AUDIT_HMAC_KEY 特别说明**：它是审计链的"防伪印章"，写进 `backend/.env`（已本地生成，未入库）。
 > 一旦库里开始有审计行就**不要换**——换了历史链全部验不过（遗留 #99）；多人共用同一个库时必须用同一个值。
 
-### 2.1 本地开发库现状（2026-11-21 19:12 实测）
+### 2.1 本地开发库现状（2026-11-21 19:28 实测）
 
 | 表 | 行数 | 说明 |
 |---|---|---|
@@ -82,9 +90,9 @@ S5-4 才做"内存解密 → 渲染 → 释放"。财务端目前只能看元数
 | `invoices` | 5 | `111` / `112` / `122` 已确认、**待复核**（`reviewed_at` 空）；`113` / `117` **已复核**；`117` 是真实 PDF（金额 1057.43 / 税额 10.57 / 合计 1068.00） |
 | `invoice_fields` / `ocr_lines` / `ocr_jobs` / `invoice_files` | 47 / 174 / 7 / 5 | 阶段 3 的识别数据 |
 | `ticket_templates` / `field_rules` | 5 / 37 | seed 模板与校验规则 |
-| `audit_logs` | **24** | S5-2 冒烟 4 行 + S5-3 冒烟 5 单 × 4 动作；`verify_chain ok`（`checked_count=24`）；审计只增不删 |
+| `audit_logs` | **36** | S5-2/S5-3/S5-4 三次冒烟累计（含 `verify`/`decrypt`）；`verify_chain ok`（`checked_count=36`）；审计只增不删 |
 | `certificates` / `key_records` | **2 / 2** | `alice`(user, SM2) + `finance`(server, SM2)；由 `scripts/register_identity.py` 登记，**私钥仍在 secrets/** |
-| `report_forms` / `report_items` / `signatures` / `envelopes` | **0 / 0 / 0 / 0** | 两次冒烟的临时单据/信封都已清理，库里没有半成品 |
+| `report_forms` / `report_items` / `signatures` / `envelopes` | **0 / 0 / 0 / 0** | 冒烟临时单据/信封都已清理，库里没有半成品 |
 | `report_no_seq` | 序列存在 | 迁移 0008 建；已被冒烟消耗到 8（只增不回退） |
 
 - 本地 `secrets/`（整目录 gitignore，**不入库**）：
@@ -92,9 +100,9 @@ S5-4 才做"内存解密 → 渲染 → 释放"。财务端目前只能看元数
   - `secrets/keys/finance/sign.p8.enc` + `sign.pub.pem`（S5-2 生成，财务服务器信封密钥，**演示口令同上**）；
   - `secrets/ca/{ca.key.pem,ca.crt.pem}`（S4-6 的 CA，**CA 私钥未加密**，遗留 #93）；
   - `secrets/certs/alice.crt.pem`（CN=alice/OU=submitter）、`secrets/certs/finance.crt.pem`（CN=finance/OU=server）。
-- 冒烟产物：`backend/eval/results/s53-finance-pending.csv`（359B，BOM+CRLF+中文表头，可用 Excel 打开验证中文）。
+- 冒烟产物：`backend/eval/results/s53-finance-pending.csv`（CSV 样例）；S5-4 的 `previews/` 临时明文已清理（桶里只剩 5 个原始票据对象）。
 - 端口：后端 8000、Vite 5173、MinIO 控制台 9003；无头冒烟 Edge 用 9222（临时 profile）。
-- **S4-1 ~ S5-3 会话只跑 pytest / 命令行脚本 / Docker / 前端 typecheck+build**，没有起 API / ARQ worker / Vite；
+- **S4-1 ~ S5-4 会话只跑 pytest / 命令行脚本 / Docker / 前端 typecheck+build**，没有起 API / ARQ worker / Vite；
   下一次浏览器联调按 §5 启动（或先 `netstat -ano | findstr :8000` 看残留进程）。
 
 ## 3. 目录与关键文件（认路用）
@@ -109,6 +117,9 @@ backend/app/services/submit_service.py ← S5-2 签名+提交：签名域 / 验�
 backend/app/services/report_crypto.py  ← 签名域 v1、report-v1 封包明文、EnvelopeV1 封装/拆封
 backend/app/services/key_service.py    ← 证书/密钥选取、路径解析、口令解锁、证书校验
 backend/app/services/finance_service.py ← S5-3 财务待审：列表 / 详情 / CSV（整页 2 条 SQL，无密文）
+backend/app/services/verify_service.py ← S5-4 七步验签 + 失败归类 + verify_token + 审计
+backend/app/services/preview_service.py ← S5-4 临时预览（previews/ + TTL 清理）
+backend/app/services/credential_store.py ← verify/preview 凭据（Redis + 内存实现）
 backend/app/utils/time.py              ← 业务日换算唯一入口（business_day_bounds）
 backend/app/services/pagination.py   ← 分页/排序白名单（PageParams/PageResult）
 backend/app/services/{invoice_service,upload_service,storage,batch_service,duplicate,rule_source,confidence,reocr_service}.py
@@ -120,7 +131,7 @@ backend/app/ocr/               ← 预处理 / 检测识别适配器 / 版面 / 
 backend/app/crypto/            ← 阶段 4 全部产物 + S5-2 的 key_loader.py：
   canonical.py  signature.py  envelope.py  keystore.py  certs.py  key_loader.py
   sm/{sm3,sm2,sm4}.py        rsa_layer.py  aesgcm_layer.py  provider.py
-backend/tests/                 ← 默认 751 条；`test_crypto/` 287 条；集成用例 `-m integration` **315** 条（含 S5-1 25 + S5-2 19 + S5-3 12）
+backend/tests/                 ← 默认 751 条；`test_crypto/` 287 条；集成用例 `-m integration` **328** 条（含 S5-1 25 + S5-2 19 + S5-3 12 + S5-4 13）
 scripts/                       ← 根目录统一放脚本：
   openssl.sh / openssl.ps1 / _openssl_docker.sh     ← Docker 内 OpenSSL 3.5.9（D-078）
   keygen.py / ca_init.sh / unlock_key.py            ← 密钥与证书（S4-5/S4-6；S5-2 起 `issue … server`）
@@ -133,7 +144,7 @@ docs/{SCHEMA.md,API.md,PROGRESS.md,DECISIONS.md,EVAL.md,UI_TEST_FLOW.md} + docs/
 
 ## 4. 指标（实测汇总，论文口径）
 
-**当前基线（2026-11-21）**：默认单测 **751 passed**；集成 **315 passed**（需 Docker）；
+**当前基线（2026-11-21）**：默认单测 **751 passed**；集成 **328 passed**（需 Docker）；
 `tests/test_crypto` **287 passed**；`app/crypto` 行覆盖 **94%**；`alembic check` 零差异（head 0008）。
 
 | 主题 | 关键数字 | 来源 |
@@ -160,6 +171,7 @@ docs/{SCHEMA.md,API.md,PROGRESS.md,DECISIONS.md,EVAL.md,UI_TEST_FLOW.md} + docs/
 | S5-1 报销单 | 建单 201（单号 `RPT-202611-0001` 形态）；3 条明细合计 **"330.50"**；**10 线程并发建单 10 个不同单号**；两线程抢同一票 **恰好 1 成功 / 1 → 40901**；`report_create` 审计后 `verify_chain` ok | `tests/test_reports.py`（25 条集成） |
 | S5-2 签名/提交 | 签名 200 + 证书公钥**独立验签通过**；重签旧行 `void`/新行 `v2`；口令错 **422** 统一文案；篡改 canonical → 409 `digest_mismatch` 且整体回滚；并发提交恰好 1 成功；真机：明文对象已删、密文可被财务私钥解回、审计 4 行链 OK | `tests/test_submit.py`（19）+ `test_report_crypto.py`（17） |
 | S5-3 财务待审 | 5 单列表 `total=5`；整页 **2 条 SELECT**；CSV 359B（**BOM**+CRLF+中文表头+5 行）；submitter/admin 全 403；详情无密文字段 | `tests/test_finance.py`（12 条集成） |
+| S5-4 验签/解密 | 七步全 ok；改业务行 → 409 `digest_mismatch`（库内重算）；篡改密文 → 409 `mac_mismatch`（不改 `verify_result`）；预览 token 30min/重复读、过期 410；清理只删旧对象 | `tests/test_verify.py`（13 条集成） |
 
 **最弱环节**：`taxi_ticket` 整单 0.200（纸面约 300px 高、字太小）、`total_amount` 约 80%；
 `vat_general` 的 amount/tax 靠"合计约束反解"补到 83–86%（D-033）。
@@ -173,11 +185,12 @@ cd /e/BiSheXZY/study-OCR
 (cd backend && ../.venv/Scripts/python.exe -m alembic upgrade head)        # head=0008
 (cd backend && ../.venv/Scripts/python.exe -m alembic check)               # 模型↔库零差异
 (cd backend && ../.venv/Scripts/python.exe -m pytest -q)                   # 751 passed（默认跳过集成）
-(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration -q)    # 315 passed（需 Docker）
+(cd backend && ../.venv/Scripts/python.exe -m pytest -m integration -q)    # 328 passed（需 Docker）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto -q) # 287 passed（密码层）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_reports.py -m integration -q)  # 25 passed（S5-1）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_submit.py -m integration -q)   # 19 passed（S5-2）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_finance.py -m integration -q)  # 12 passed（S5-3）
+(cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_verify.py -m integration -q)   # 13 passed（S5-4）
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_report_crypto.py -q)           # 17 passed（S5-2 纯函数）
 
 # ── 报销单（S5-1/S5-2；需后端在跑 + 一张已确认票据 + 已登记身份）────
@@ -209,6 +222,18 @@ curl -s localhost:8000/api/v1/finance/1 -H "Authorization: Bearer <reviewer-toke
 curl -s -D finance.csv.headers -o backend/eval/results/finance-pending.csv \
   "localhost:8000/api/v1/finance/pending/export" -H "Authorization: Bearer <reviewer-token>"
 # CSV 应用 Excel 打开中文正常（UTF-8 BOM + CRLF）；用记事本另存会丢 BOM
+
+# ── 验签与解密预览（S5-4；口令在 backend/.env 的 FINANCE_KEY_PASSPHRASE）──
+curl -s -X POST localhost:8000/api/v1/finance/reports/1/verify \
+  -H "Authorization: Bearer <reviewer-token>" -H "Content-Type: application/json" -d '{}'
+# → 200 data.steps 七步全 ok、verify_token；失败 → 409 + data.reason_code/failed_step
+curl -s -X POST localhost:8000/api/v1/finance/reports/1/decrypt \
+  -H "Authorization: Bearer <reviewer-token>" -H "Content-Type: application/json" \
+  -d '{"verify_token":"<上一步的 token>"}'
+# → 200 preview_token（30min）；随后：
+curl -s "localhost:8000/api/v1/finance/preview/<preview_token>" -H "Authorization: Bearer <reviewer-token>"
+curl -s -o /tmp/preview.jpg "localhost:8000/api/v1/finance/preview/<preview_token>/files/<file_id>" \
+  -H "Authorization: Bearer <reviewer-token>"
 
 # ── 密码层覆盖率（任务卡验收 ≥85%；实测 94%）────────────────────────
 (cd backend && ../.venv/Scripts/python.exe -m pytest tests/test_crypto \
@@ -266,7 +291,7 @@ node scripts/ui_smoke.mjs "http://127.0.0.1:5173/login" --clear --view 1440x900 
 (cd backend && ../.venv/Scripts/python.exe ../scripts/seed_templates.py)
 ```
 
-## 6. 重要取舍（D-023 ~ D-086，都记在 `docs/DECISIONS.md`，别重复踩）
+## 6. 重要取舍（D-023 ~ D-087，都记在 `docs/DECISIONS.md`，别重复踩）
 
 | 决策 | 要点 |
 |---|---|
@@ -330,59 +355,56 @@ node scripts/ui_smoke.mjs "http://127.0.0.1:5173/login" --clear --view 1440x900 
 | D-084 | 单号 = 全局序列 `report_no_seq`（不按月重置）；"一票一单"靠单据行 + 票据行 `FOR UPDATE`；补 `report_create`；明细不单独审计；建单/明细偏差以契约为准 |
 | D-085 | 签名/信封统一走 `AlgoProvider`（sm 默认）；`EnvelopeV1` AAD 绑 `wrapped_key`+摘要；单据信封 + 每票文件信封；影像转密文、明文提交后删；一次操作 version 只 +1；签名方不自证验签 |
 | D-086 | 财务 `verify_status` 不加列（由签名行派生）；提交时系统验签落库 `verified/ok/verified_at`；补 `GET /finance/{id}` 与 CSV 两条契约；CSV BOM+CRLF、上限 1 万行；待审固定 `submitted` |
+| D-087 | 验签七步写死；摘要用 canonical nonce + 库内数据重建比对；口令只走 `FINANCE_KEY_PASSPHRASE`；预览 30min TTL（MinIO + 清理任务）；`/invoices/{id}/image` 保持密文 409；补 preview 文件端点 |
 
-## 7. 下一步：S5-4 验签与解密（阶段 5 ★关键卡）
+## 7. 下一步：S5-5 审核决策与驳回（阶段 5 第五张卡）
 
-- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 8 章 S5-4；
-- 契约：**`docs/API.md` §5 的 `POST /finance/reports/{id}/verify`、`POST /finance/reports/{id}/decrypt`
-  + `GET /finance/preview/{preview_token}`**；产出 `backend/app/services/verify_service.py`、
-  `api/v1/finance.py` 加路由、`backend/tests/test_verify.py`；前端在 `FinanceList.vue` 抽屉里接"验签/解密预览"；
-- 流程（AGENTS §11）：spec（`docs/spec/s5-4-*.md`）→ plan → 写码（用户已授权"不逐步确认"）；
-- 可直接复用（S5-2/S5-3 已就位）：
-  - `services/report_crypto.open_sealed(...)`（`EnvelopeV1` 解封：解 CEK → 验 MAC/解 → sha256）；
-  - `services/key_service`：财务私钥加载（`secrets/keys/finance/sign.p8.enc`，口令 **`FINANCE_KEY_PASSPHRASE`
-    （环境变量，D-016）**，不进 HTTP/日志）、证书校验；
-  - `report_service.verify_status_of / verify_status_from_result`（写 `signatures.verify_result` 后列表自动变）；
-  - `report_service.canonical_json` 原字节（重算摘要用）+ `envelope_aad`（AAD 由行字段重建）；
-  - `finance_service` 已有的详情/附件结构（预览接口只需换数据源）。
+- 任务卡：`docs/OCR票据识别与加密系统-AI协作开发实施计划.md` 第 8 章 S5-5；
+- 契约：**`docs/API.md` §5 的 `POST /finance/reports/{id}/review`**（任务卡写作 `/finance/{id}/decision`，
+  以契约路径为准）+ `review_logs` + 审计 `action=review`；产出 `backend/app/services/review_service.py`、
+  `api/v1/finance.py` 加路由、`backend/tests/test_decision.py`；前端财务抽屉加 approve/reject。
+- 流程（AGENTS §11）：spec（`docs/spec/s5-5-*.md`）→ plan → 写码（用户已授权"不逐步确认"）；
+- 可直接复用（S5-4 已就位）：
+  - `verify` 成功时写的 Redis `verify_token`（`services/credential_store.py::verify_key`，30min）；
+    S5-5 的 approve **必须消费它**（用后删，防"验一次批十单"）；
+  - `report_service.transition()`（submitted→approved / submitted→rejected）；
+  - `review_logs` 表（0001 已建：form_id/reviewer_id/decision/comment/verify_result/decrypt_ok）；
+  - 审计 `append_audit`（`action=review` 已在枚举里）；`report_service.verify_status_from_result`。
 - 本卡硬要求（契约/任务卡原文）：
-  1. 顺序**固定**：`查信封 → 验 MAC → 解 CEK → 解密 → 校验证书（指纹/有效期/吊销/公钥一致）→ 验签 → 重算摘要比对`；
-  2. **先验 MAC 再解密**，MAC 不过不得进入解密（`EnvelopeV1` 的 CEK 先解出来才能验 MAC——顺序在
-     `open_sealed` 内已固定，别再拆开）；
-  3. 摘要必须从**库内原始数据重算**，不得拿提交时存的 `digest_hex` 直接比；
-  4. 失败一律 `409` + `data.reason_code ∈ {mac_mismatch,bad_padding,digest_mismatch,bad_signature,cert_invalid}`
-     + `data.failed_step`；**不返回任何明文**；`mac_mismatch/bad_padding` **不写 `signatures.verify_result`**；
-  5. `verify` 通过才签发 `verify_token`（Redis，30min；S5-5 的 approve 要用）；
-  6. `decrypt` 要 `verify_token`，返回 `preview_token`（30min、**可重复读取**）+ `expires_at`；
-    预览明文只进带 TTL 的临时对象/内存，**DB 不落明文**，过期 410；
-  7. 写审计 `action=verify`（`decrypt` 也写），同事务；`cert_invalid` 归类沿用 `certs.py`；
-  8. `GET /invoices/{id}/image` 在 S5-4 后应能对**已解密**的临时对象渲染（或财务预览走独立接口，
-     任务卡口径：明文只经 decrypt 的临时预览，票据影像接口保持"密文 409"也可）。
-- 验收（任务卡）：正常单验签通过可预览影像；篡改 payload 后失败且无明文泄露；错误口令返回明确错误码；
-  `pytest tests/test_verify.py` 覆盖篡改 1 bit/错私钥/吊销证书/`payload_sha256` 不匹配。
+  1. 入参 `{decision: approve|reject, comment, version, verify_token}`；`approve` 必须带**未使用过**的有效
+     `verify_token`，`reject` 必填 `comment`（1–500）；
+  2. `approve` 成功后状态 → `approved`；`reject` → `rejected`，**保留原签名记录与明细**供重提（不覆盖）；
+  3. 同一单只能决策一次（部分唯一约束/乐观锁），重复决策 **409**；并发两请求 → 恰好 1 成功；
+  4. 权限：仅 `reviewer`；`admin` 403（不得代审）；
+  5. 写 `review_logs`（含 `verify_result`、`decrypt_ok`）与审计 `action=review`，同事务；
+  6. `version` 不匹配 → 409；单据非 `submitted` → 409。
+- 验收（任务卡）：approve 后状态 approved；未验签直接 approve 409；同一 verify_token 用第二次 409；
+  重复决策 409；并发 approve 1 成功 1 冲突。
 
-### 7.1 S5-3 已交付的契约要点（S5-4 直接依赖）
+### 7.1 S5-4 已交付的契约要点（S5-5 直接依赖）
 
 | 项 | 事实 |
 |---|---|
-| 待审/详情 | `GET /finance/pending`、`GET /finance/{id}` 已上线（reviewer 专用；详情含 attachments 与文件级信封元数据） |
-| 验签状态 | 提交时系统自动验签已落 `verified=true/verify_result='ok'/verified_at`；列表 `verify_status=ok` |
-| 解封输入 | 单据信封：`ciphertext_b64`；文件信封：`ciphertext_storage_key`（MinIO 密文对象）；AAD 由行字段重建 |
-| 财务私钥 | `secrets/keys/finance/sign.p8.enc`（演示口令 `demo-pass-1234`）；`key_records` 已有 `envelope` 登记 |
-| 预览 UI | `FinanceList.vue` 抽屉已占好位置，只需替换"影像预览待 S5-4"的提示与数据源 |
+| verify_token | `POST /finance/reports/{id}/verify` 成功后写 Redis `finance:verify:{report_id}`，TTL 1800；S5-5 用它做 approve 的门槛并**用后删除** |
+| 验签结论 | 成功 → `signatures.verified=true/verify_result='ok'`；签名层失败 → `failed/<reason>`；列表 `verify_status` 自动跟随 |
+| 解密可用性 | `decrypt` 能成功即证明信封可拆、payload 完整；`review_logs.decrypt_ok` 可用"本次是否 decrypt 成功"作为依据 |
+| 审计 | `verify`/`decrypt` 已接入；S5-5 只需补 `review` |
+| 状态机 | `submitted → approved|rejected` 已在 `report_service.ALLOWED_TRANSITIONS` 里；`transition(..., bump_version=False)` + 末尾统一 +1 的约定沿用 |
+| 前端 | `FinanceList.vue` 抽屉已有验签/预览，approve/reject 按钮直接加在同一处 |
 
 ## 8. 未闭合 / 需要用户参与的点
 
-1. **push**：本地领先 origin **84 个 commit**（S3-1 ~ S3-9 + D-069~D-086 + S4-1 ~ S4-9 + S5-1~S5-3），AI 不推，由用户 `git push`；
+1. **push**：本地领先 origin **85 个 commit**（S3-1 ~ S3-9 + D-069~D-087 + S4-1 ~ S4-9 + S5-1~S5-4），AI 不推，由用户 `git push`；
 2. **人工抽查**（AI 看不了图）：`backend/eval/results/preprocess/*_compare.jpg`、`layout/*_layout.jpg`、
    `s37-dup.png`、`ui-111-new.png` 等；真实 PDF 的框选对齐需人眼确认；
 3. `taxi_ticket` 整单 0.200（已知短板，S6 分组报告如实写）；`total_amount` 约 80%；
 4. 真实样本：`E:\BiSheXZY\发票样本集`（1 份 PDF + 1 张 PNG）；论文写"合成集为主 + 真实件定性校验"；
-5. **审计行已接入报销主链路**：`report_create`（S5-1）、`sign/seal/submit`（S5-2）同事务写入；
-   `login_failed/logout/forbidden/confirm_field/field_reread/verify/decrypt/review` 等仍待各自接口接入
-   （#21/#27/#54/#61 已重定向到 S5）；本地现有 24 行（两次冒烟），`AUDIT_HMAC_KEY` 一旦有行就不要换（#99）；
-6. `GET /invoices/{id}/image`：**提交后**文件是密文（`is_cipher=true`）→ 当前返回 409/40900；
-   S5-4 接"内存解密 → 渲染 → 释放"；本地未提交票据仍是明文（`STORAGE_ALLOW_PLAINTEXT=true`）；
+5. **审计行已接入报销主链路**：`report_create`（S5-1）、`sign/seal/submit`（S5-2）、`verify/decrypt`（S5-4）同事务写入；
+   `login_failed/logout/forbidden/confirm_field/field_reread/review` 等仍待各自接口接入
+   （#21/#27/#54/#61 已重定向到 S5）；本地现有 36 行（三次冒烟），`AUDIT_HMAC_KEY` 一旦有行就不要换（#99）；
+6. `GET /invoices/{id}/image`：**提交后**文件是密文（`is_cipher=true`）→ 返回 409/40900；
+   S5-4 **刻意不改**（D-087）：财务明文只经 `verify` + `decrypt` 的临时预览（token 门槛、可审计），
+   避免绕过审核窗口直接看原图；本地未提交票据仍是明文（`STORAGE_ALLOW_PLAINTEXT=true`）；
 7. **D-071 硬删除不可恢复**（仅草稿可删），论文需写明；
 8. `POST /reocr` 接口保留但**前端无入口**（D-070）；`PATCH /fields` 的 `confirm` 参数保留（API 兼容）；
 9. 管理端模板页已补，但**新建票种入口已移除**（D-054）：票种固定 5 类 + unknown；
@@ -393,18 +415,20 @@ node scripts/ui_smoke.mjs "http://127.0.0.1:5173/login" --clear --view 1440x900 
     AES-GCM 无 nonce 复用检测（#102）、对拍口径含实现语言差异（#103）；**provider 已于 S5-2 接入业务**（D-085）；
 12. 本地演示密钥：`secrets/keys/alice` 与 `secrets/keys/finance`（口令均 `demo-pass-1234`，**仅演示**）、
     `secrets/ca`（CA 私钥未加密）；`certificates/key_records` 已在本地库各登记 2 条（S5-2）；
-13. S5-1~S5-3 的已知边界（论文"不足"可写）：单号全局递增**不按月重置**（#104）；"一票一单"只在服务层保证
+13. S5-1~S5-4 的已知边界（论文"不足"可写）：单号全局递增**不按月重置**（#104）；"一票一单"只在服务层保证
     （#105）；明细只增不删不改（#106）；建单无速率限制（#107）；业务信封是 `EnvelopeV1`、S4-4 参考实现不再走业务路径（#108）；
     **驳回重提无法二次提交**（信封唯一约束，#109）；RSA 业务密钥无轮换（#110）；明文对象删除是尽力而为（#111）；
     提交同步执行、耗时随张数线性增长（#112）；`verify_status` 只有当前 active 签名一个结论（#113）；
-    CSV 先取内存再分块、上限 1 万行（#114）；待审列表固定 `submitted`、已审批/驳回需 S5-5 的视图（#115）。
+    CSV 先取内存再分块、上限 1 万行（#114）；待审列表固定 `submitted`（#115）；财务口令是进程级环境变量（#116）；
+    预览 token 是 30min 能力凭据、不绑定查看者（#117）；预览明文清理每 10min 扫一次（#118）；verify 会解密全部影像（#119）；
+    证书无链验签/CRL（#120）。
 
 ## 9. 工作方式约定（用户偏好，新会话请沿用）
 
 - 用户是"放手型"：希望**替他做决定并给理由**，事后复核，不要每步都问；
 - 但**功能级任务卡走 spec → plan → 确认**（AGENTS §11），小修/bugfix 可只在对话里给设计；
 - **2026-11-20 起**审批策略改为"从不询问"：spec/plan 仍落盘，但**不再等用户逐步确认**，
-  拍板理由写进 spec/plan/DECISIONS，做完一次性汇报供事后复核（S4-1 ~ S4-9、S5-1 ~ S5-3 均按此执行）；
+  拍板理由写进 spec/plan/DECISIONS，做完一次性汇报供事后复核（S4-1 ~ S4-9、S5-1 ~ S5-4 均按此执行）；
 - 汇报风格：先给**实测数字与命令输出**，再解释"为什么这样做"，**不要粉饰**（做不到就直说）；
 - 每次收口都要更新 `docs/PROGRESS.md`，新增取舍写 `docs/DECISIONS.md`；
 - 提交信息用 Conventional Commits（含任务号，如 `feat(s4-9): ...`）；**push 永远由用户做**。

@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from typing import Protocol
@@ -15,15 +16,19 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from redis import Redis
 
 from app.core.config import Settings, get_settings
 from app.core.redis import get_redis
+from app.services.preview_service import cleanup_expired_previews
+from app.services.storage import StorageService, get_storage
 from app.tasks.ocr_task import anchor_audit_task
 
 logger = logging.getLogger("app.scheduler")
 
 ANCHOR_JOB_ID = "anchor_audit"
+PREVIEW_CLEANUP_JOB_ID = "preview_cleanup"
 
 # 只有 token 仍属于自己才删除，避免 TTL 过期后误删别人的锁
 _RELEASE_SCRIPT = """
@@ -101,7 +106,56 @@ def build_scheduler(settings: Settings | None = None) -> AsyncIOScheduler:
         misfire_grace_time=300,
         kwargs={"settings": settings},
     )
+    # S5-4：临时预览对象的 TTL 清理（清理周期应小于 TTL，避免明文多留一轮）
+    scheduler.add_job(
+        run_preview_cleanup_once,
+        IntervalTrigger(seconds=settings.preview_cleanup_interval_seconds),
+        id=PREVIEW_CLEANUP_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=120,
+        kwargs={"settings": settings},
+    )
     return scheduler
+
+
+async def run_preview_cleanup_once(
+    *,
+    lock_store: SchedulerLock | None = None,
+    settings: Settings | None = None,
+    storage: StorageService | None = None,
+) -> bool:
+    """抢锁后清理一次过期预览对象；拿不到锁说明别的实例在跑，直接跳过。"""
+    settings = settings or get_settings()
+    lock = lock_store or RedisSchedulerLock()
+    token = secrets.token_hex(16)
+
+    if not lock.acquire(
+        settings.preview_cleanup_lock_key,
+        token,
+        settings.preview_cleanup_lock_ttl_seconds,
+    ):
+        logger.info(
+            "预览清理任务已被其他实例执行，跳过",
+            extra={"event": "preview_cleanup_skipped", "error_code": "PREVIEW_LOCKED"},
+        )
+        return False
+
+    try:
+        storage = storage or get_storage()
+        deleted = await asyncio.to_thread(
+            cleanup_expired_previews, storage, settings
+        )
+        logger.info(
+            "预览清理任务执行完成",
+            extra={"event": "preview_cleanup_executed", "deleted": deleted},
+        )
+        # 成功后不释放：锁留到 TTL，作为"本时段已跑过"的去重标记（与锚定任务一致）
+        return True
+    except Exception:
+        lock.release(settings.preview_cleanup_lock_key, token)
+        raise
 
 
 _scheduler: AsyncIOScheduler | None = None

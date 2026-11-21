@@ -60,6 +60,7 @@ from app.services import submit_service
 from app.services.audit import verify_chain
 from app.services.report_crypto import open_sealed
 from app.services.storage import get_storage
+from app.services.credential_store import get_credential_store
 from tests.db_helpers import alembic_config, temporary_database
 
 BASE = "/api/v1/reports"
@@ -130,6 +131,7 @@ class FakeStorage:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.deleted: list[str] = []
+        self.modified: dict[str, datetime] = {}
 
     def build_object_key(self) -> str:
         return f"invoices/test/{secrets.token_hex(8)}.bin"
@@ -138,6 +140,7 @@ class FakeStorage:
         data = fileobj.read()
         assert len(data) == length
         self.objects[key] = data
+        self.modified[key] = datetime.now(timezone.utc)
 
     def get_bytes(self, key: str, *, max_bytes: int) -> bytes:
         if key not in self.objects:
@@ -149,10 +152,19 @@ class FakeStorage:
 
     def delete(self, key: str) -> None:
         self.objects.pop(key, None)
+        self.modified.pop(key, None)
         self.deleted.append(key)
 
     def exists(self, key: str) -> bool:
         return key in self.objects
+
+    def list_objects(self, prefix: str) -> list[tuple[str, datetime]]:
+        now = datetime.now(timezone.utc)
+        return [
+            (key, self.modified.get(key, now))
+            for key in sorted(self.objects)
+            if key.startswith(prefix)
+        ]
 
 
 @pytest.fixture()
@@ -160,9 +172,19 @@ def storage() -> FakeStorage:
     return FakeStorage()
 
 
-def _client_for(session_factory, storage, *, algo: str | None = None) -> TestClient:
+def _client_for(
+    session_factory,
+    storage,
+    *,
+    algo: str | None = None,
+    settings_updates: dict | None = None,
+    credential_store=None,
+) -> TestClient:
     base = get_settings()
-    settings = base.model_copy(update={"algo_provider": algo}) if algo else base
+    updates = dict(settings_updates or {})
+    if algo:
+        updates["algo_provider"] = algo
+    settings = base.model_copy(update=updates) if updates else base
     app = create_app(settings=settings)
 
     def _override_db() -> Iterator[Session]:
@@ -175,6 +197,8 @@ def _client_for(session_factory, storage, *, algo: str | None = None) -> TestCli
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_settings] = lambda: settings
+    if credential_store is not None:
+        app.dependency_overrides[get_credential_store] = lambda: credential_store
     return TestClient(app, raise_server_exceptions=False)
 
 

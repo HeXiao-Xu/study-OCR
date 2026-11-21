@@ -10,21 +10,27 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_roles
+from app.api.deps import require_roles
+from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.core.exceptions import ok
 from app.models.users import User
 from app.schemas.common import Envelope, PageResult
 from app.schemas.finance import (
+    DecryptData,
+    DecryptRequest,
     FinanceDetailData,
     FinancePendingItem,
     FinancePendingQuery,
+    VerifyData,
 )
-from app.services import finance_service
+from app.services import finance_service, preview_service, verify_service
+from app.services.credential_store import CredentialStore, get_credential_store
+from app.services.storage import StorageService, get_storage
 from app.utils.time import BUSINESS_TZ
 
 router = APIRouter(prefix="/finance", tags=["finance"])
@@ -79,3 +85,101 @@ def get_finance_detail(
     db: Session = Depends(get_db),
 ) -> dict:
     return ok(finance_service.get_detail(db, user, report_id))
+
+
+@router.post(
+    "/reports/{report_id}/verify",
+    response_model=Envelope[VerifyData],
+    summary="验签（七步；财务私钥口令走环境变量；失败 409 不返回明文）",
+)
+def verify_finance_report(
+    report_id: int,
+    user: User = _REVIEWER,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    store: CredentialStore = Depends(get_credential_store),
+    storage: StorageService = Depends(get_storage),
+) -> dict:
+    return ok(
+        verify_service.verify_report(
+            db, user, report_id, settings=settings, store=store, storage=storage
+        )
+    )
+
+
+@router.post(
+    "/reports/{report_id}/decrypt",
+    response_model=Envelope[DecryptData],
+    summary="解密到临时预览（verify_token 换取 preview_token，30min）",
+)
+def decrypt_finance_report(
+    report_id: int,
+    payload: DecryptRequest,
+    user: User = _REVIEWER,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    store: CredentialStore = Depends(get_credential_store),
+    storage: StorageService = Depends(get_storage),
+) -> dict:
+    return ok(
+        preview_service.decrypt_report(
+            db,
+            user,
+            report_id,
+            payload.verify_token,
+            settings=settings,
+            store=store,
+            storage=storage,
+        )
+    )
+
+
+@router.get(
+    "/preview/{preview_token}",
+    response_class=Response,
+    summary="读取预览（解密后的 report JSON；过期 410）",
+)
+def get_preview(
+    preview_token: str,
+    user: User = _REVIEWER,
+    settings: Settings = Depends(get_settings),
+    store: CredentialStore = Depends(get_credential_store),
+    storage: StorageService = Depends(get_storage),
+) -> Response:
+    content, _meta = preview_service.read_preview(
+        store, storage, preview_token, settings=settings
+    )
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get(
+    "/preview/{preview_token}/files/{file_id}",
+    response_class=Response,
+    summary="读取预览影像（明文，30min 内可重复读取）",
+)
+def get_preview_file(
+    preview_token: str,
+    file_id: int,
+    user: User = _REVIEWER,
+    settings: Settings = Depends(get_settings),
+    store: CredentialStore = Depends(get_credential_store),
+    storage: StorageService = Depends(get_storage),
+) -> Response:
+    content, mime = preview_service.read_preview_file(
+        store, storage, preview_token, file_id, settings=settings
+    )
+    return Response(
+        content=content,
+        media_type=mime,
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
