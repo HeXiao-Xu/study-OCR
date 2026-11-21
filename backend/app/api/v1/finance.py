@@ -26,9 +26,11 @@ from app.schemas.finance import (
     FinanceDetailData,
     FinancePendingItem,
     FinancePendingQuery,
+    ReviewData,
+    ReviewRequest,
     VerifyData,
 )
-from app.services import finance_service, preview_service, verify_service
+from app.services import finance_service, preview_service, review_service, verify_service
 from app.services.credential_store import CredentialStore, get_credential_store
 from app.services.storage import StorageService, get_storage
 from app.utils.time import BUSINESS_TZ
@@ -182,4 +184,21 @@ def get_preview_file(
             "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",
         },
+    )
+
+
+@router.post(
+    "/reports/{report_id}/review",
+    response_model=Envelope[ReviewData],
+    summary="审核决策（approve 需一次性 verify_token；reject 需意见）",
+)
+def review_finance_report(
+    report_id: int,
+    payload: ReviewRequest,
+    user: User = _REVIEWER,
+    db: Session = Depends(get_db),
+    store: CredentialStore = Depends(get_credential_store),
+) -> dict:
+    return ok(
+        review_service.decide_report(db, user, report_id, payload, store=store)
     )

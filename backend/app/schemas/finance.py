@@ -9,7 +9,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, model_validator
 
 from app.schemas.common import PageParams
 from app.schemas.report import EnvelopeOut, ReportOut, SignatureOut, VerifyStatus, money_text
@@ -60,6 +60,8 @@ class FinanceDetailData(BaseModel):
 
     report: ReportOut
     applicant_name: str
+    # 乐观锁版本（S5-5 决策要带）；ReportOut 本身不含 version，故在财务详情里单独给
+    report_version: int = 0
     signature: SignatureOut | None = None
     envelope: EnvelopeOut | None = None
     verify_status: VerifyStatus = "unverified"
@@ -104,3 +106,33 @@ class DecryptData(BaseModel):
     content_type: str
     size: int
     fields_preview: dict[str, Any]
+
+
+# --------------------------------------------------------------------------- #
+# 审核决策（S5-5）
+# --------------------------------------------------------------------------- #
+class ReviewRequest(BaseModel):
+    """审核决策入参（API.md §5）：approve 必须有 verify_token，reject 必须有 comment。"""
+
+    decision: Literal["approve", "reject"]
+    comment: str | None = Field(default=None, max_length=500)
+    version: int = Field(ge=0, description="乐观锁（report_forms.version）")
+    verify_token: str | None = Field(default=None, min_length=8, max_length=128)
+
+    @model_validator(mode="after")
+    def _require_conditionals(self) -> "ReviewRequest":
+        if self.decision == "reject" and not (self.comment or "").strip():
+            raise ValueError("驳回必须填写意见（1–500 字符）")
+        if self.decision == "approve" and not self.verify_token:
+            raise ValueError("通过必须先验签（缺少 verify_token）")
+        return self
+
+
+class ReviewData(BaseModel):
+    """审核决策出参（API.md §5）。"""
+
+    report_id: int
+    report_no: str
+    status: str
+    decision: str
+    reviewed_at: datetime

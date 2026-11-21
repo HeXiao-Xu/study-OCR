@@ -481,7 +481,7 @@
 - 出参：**200**，`data`：
 
 ```json
-{"report": {ReportOut}, "applicant_name": "张三",
+{"report": {ReportOut}, "applicant_name": "张三", "report_version": 3,
  "signature": {SignatureOut} | null, "envelope": {EnvelopeOut} | null,
  "verify_status": "ok",
  "attachments": [{"file_id": 5, "invoice_id": 9, "filename": "a.jpg", "mime": "image/jpeg",
@@ -489,7 +489,7 @@
 ```
 
 - 错误：`404/40400`（不存在，或 reviewer 不可见——例如草稿）；`403/40301`（非 reviewer）
-- 备注：附件**只给元数据**；`attachments[i].envelope` 是文件级信封的元数据（无 `ciphertext_b64`/`wrapped_key_b64`/`ciphertext_storage_key`）；明文影像与字段必须走 S5-4 的 `verify` + `decrypt` 临时凭据，**详情接口不解密**
+- 备注：附件**只给元数据**；`attachments[i].envelope` 是文件级信封的元数据（无 `ciphertext_b64`/`wrapped_key_b64`/`ciphertext_storage_key`）；明文影像与字段必须走 S5-4 的 `verify` + `decrypt` 临时凭据，**详情接口不解密**。`report_version` 是 `report_forms.version`（S5-5 审核决策的乐观锁入参；`ReportOut` 本身不含 version，故在财务详情单列）
 
 ### POST /api/v1/finance/reports/{id}/verify
 - 权限：`reviewer` ｜ 类型：同步 ｜ 幂等：否（每次执行都写审计）｜ 实现：S5-4
@@ -553,7 +553,7 @@
 
 - 出参：**200**，`data` = `{report_id, report_no, status, decision, reviewed_at}`
 - 错误：`409/40900` 未验签直接 approve、凭据已使用/过期、重复决策、版本冲突；`422/42200` reject 缺 comment；`403/40301` 非 reviewer
-- 备注：`approve` 必须先有有效 verify 凭据（Redis 一次性 token，30min，用后即删）；`reject` 后允许申请人修改重提，旧签名置 `void`；写 `review_logs` 与审计 `action=review`
+- 备注：`approve` 必须先有有效 verify 凭据（Redis 一次性 token，30min，用后即删）；`reject` 后允许申请人修改重提，旧签名置 `void`；写 `review_logs` 与审计 `action=review`。**S5-5 实现口径（D-088）**：同一轮只能决策一次靠**单据行 `FOR UPDATE` + `status='submitted'`**（SCHEMA §5.5 明确 `review_logs` 不加唯一约束，驳回重提会有多条审核记录）；approve 在 token 校验之外还要求 active 签名 `verify_result='ok'`；token 在 commit 后删除（删除失败只告警，状态闸门仍阻止重放）；reject 时 active 签名置 `void`（记录保留）；`review_logs.decrypt_ok` 以验签结论为准（verify 已成功拆封并解密）；审计只记 `comment_len`，不写意见正文
 
 ## 6. 证书与密钥（S4-5 / S4-6）
 

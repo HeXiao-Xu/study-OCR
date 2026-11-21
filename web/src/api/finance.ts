@@ -5,6 +5,8 @@ import type {
   FinanceDetail,
   FinancePendingPage,
   FinancePendingParams,
+  ReviewPayload,
+  ReviewResult,
   VerifyResult,
 } from '../types/finance'
 
@@ -67,4 +69,17 @@ export async function getPreviewFileBlob(
   fileId: number,
 ): Promise<Blob> {
   return getBlob(`/finance/preview/${previewToken}/files/${fileId}`, { silent: true })
+}
+
+/** 审核决策（S5-5）：approve 必须带未消费的 verify_token；reject 必须带意见。 */
+export async function reviewReport(
+  reportId: number,
+  payload: ReviewPayload,
+): Promise<ReviewResult> {
+  const envelope = await post<ReviewResult>(
+    `/finance/reports/${reportId}/review`,
+    payload,
+    { silent: true },
+  )
+  return unwrap(envelope)
 }

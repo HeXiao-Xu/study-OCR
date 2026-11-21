@@ -105,6 +105,8 @@ export interface FinanceAttachment {
 export interface FinanceDetail {
   report: FinanceReportOut
   applicant_name: string
+  /** 乐观锁版本（S5-5 决策必带）；ReportOut 不含 version，由财务详情单给 */
+  report_version: number
   signature: FinanceSignatureOut | null
   envelope: FinanceEnvelopeOut | null
   verify_status: VerifyStatus
@@ -135,4 +137,20 @@ export interface DecryptPreview {
   content_type: string
   size: number
   fields_preview: Record<string, unknown>
+}
+
+/** S5-5：审核决策（approve 必须带 verify_token；reject 必须带 comment）。 */
+export interface ReviewPayload {
+  decision: 'approve' | 'reject'
+  comment?: string
+  version: number
+  verify_token?: string
+}
+
+export interface ReviewResult {
+  report_id: number
+  report_no: string
+  status: string
+  decision: string
+  reviewed_at: string
 }

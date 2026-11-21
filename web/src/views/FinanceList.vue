@@ -7,8 +7,9 @@
  */
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter, type LocationQueryValue } from 'vue-router'
+import { ElMessage } from 'element-plus'
 
-import { downloadPendingCsv, decryptReport, getFinanceDetail, getPreviewFileBlob, listPending, verifyReport } from '../api/finance'
+import { downloadPendingCsv, decryptReport, getFinanceDetail, getPreviewFileBlob, listPending, reviewReport, verifyReport } from '../api/finance'
 import { ApiError } from '../api/http'
 import type {
   DecryptPreview,
@@ -58,6 +59,12 @@ const decrypting = ref(false)
 const actionError = ref('')
 const previewUrls = ref<Record<number, string>>({})
 const previewLoadingId = ref<number | null>(null)
+
+// S5-5：审核决策
+const reviewing = ref(false)
+const rejectOpen = ref(false)
+const rejectComment = ref('')
+const rejectError = ref('')
 
 const STEP_LABEL: Record<string, string> = {
   envelope_lookup: '查信封',
@@ -212,6 +219,9 @@ function resetCryptoState(): void {
   verifyResult.value = null
   preview.value = null
   actionError.value = ''
+  rejectOpen.value = false
+  rejectComment.value = ''
+  rejectError.value = ''
 }
 
 function onDrawerClosed(): void {
@@ -264,6 +274,58 @@ async function showPreviewImage(fileId: number): Promise<void> {
     actionError.value = cause instanceof ApiError ? cause.message : '影像加载失败'
   } finally {
     previewLoadingId.value = null
+  }
+}
+
+async function approveReport(): Promise<void> {
+  if (!detail.value || !verifyResult.value || reviewing.value) return
+  reviewing.value = true
+  actionError.value = ''
+  try {
+    await reviewReport(detail.value.report.id, {
+      decision: 'approve',
+      version: detail.value.report_version,
+      verify_token: verifyResult.value.verify_token,
+    })
+    ElMessage.success('复核通过：单据已置为 approved')
+    drawerOpen.value = false
+    await load()
+  } catch (cause) {
+    actionError.value =
+      cause instanceof ApiError
+        ? `${cause.message}${cause.payload?.data ? `（${JSON.stringify(cause.payload.data)}）` : ''}`
+        : '审批失败'
+  } finally {
+    reviewing.value = false
+  }
+}
+
+async function submitReject(): Promise<void> {
+  if (!detail.value || reviewing.value) return
+  const comment = rejectComment.value.trim()
+  if (!comment) {
+    rejectError.value = '驳回必须填写意见'
+    return
+  }
+  reviewing.value = true
+  rejectError.value = ''
+  try {
+    await reviewReport(detail.value.report.id, {
+      decision: 'reject',
+      comment,
+      version: detail.value.report_version,
+    })
+    ElMessage.success('已驳回：申请人可修改后重提')
+    rejectOpen.value = false
+    drawerOpen.value = false
+    await load()
+  } catch (cause) {
+    rejectError.value =
+      cause instanceof ApiError
+        ? `${cause.message}${cause.payload?.data ? `（${JSON.stringify(cause.payload.data)}）` : ''}`
+        : '驳回失败'
+  } finally {
+    reviewing.value = false
   }
 }
 
@@ -574,9 +636,46 @@ watch(
             show-icon
             title="明文只在 30 分钟的临时预览对象里；过期后需重新验签与解密。"
           />
+
+          <h4 class="drawer-title">审核决策（S5-5）</h4>
+          <div class="decision-actions">
+            <el-button
+              type="success"
+              :loading="reviewing"
+              :disabled="!verifyResult"
+              @click="approveReport"
+            >
+              复核通过
+            </el-button>
+            <el-button type="danger" plain :disabled="reviewing" @click="rejectOpen = true">
+              驳回
+            </el-button>
+            <span v-if="!verifyResult" class="decision-hint">通过前必须先在本页完成"验签"</span>
+            <span v-else class="decision-hint ok">已验签，可决策（凭据一次性使用）</span>
+          </div>
         </template>
       </div>
     </el-drawer>
+
+    <el-dialog v-model="rejectOpen" title="驳回单据" width="440px">
+      <el-form label-position="top">
+        <el-form-item label="驳回意见（必填，1–500 字）">
+          <el-input
+            v-model="rejectComment"
+            type="textarea"
+            :rows="4"
+            maxlength="500"
+            show-word-limit
+            placeholder="例如：影像不清晰 / 票据信息与报销事由不符"
+          />
+        </el-form-item>
+      </el-form>
+      <el-alert v-if="rejectError" type="error" :closable="false" show-icon :title="rejectError" />
+      <template #footer>
+        <el-button @click="rejectOpen = false">取消</el-button>
+        <el-button type="danger" :loading="reviewing" @click="submitReject">确认驳回</el-button>
+      </template>
+    </el-dialog>
   </el-space>
 </template>
 
@@ -688,6 +787,19 @@ watch(
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #f8fafc;
+}
+.decision-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.decision-hint {
+  font-size: 12px;
+  color: #b45309;
+}
+.decision-hint.ok {
+  color: #16a34a;
 }
 .mono {
   font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;

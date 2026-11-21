@@ -1980,3 +1980,39 @@
   真机冒烟（开发库 + 真 MinIO/Redis）：提交→verify（7 步全 ok、cert_fp、payload_sha256_match）→
   decrypt（TTL 1800）→ preview JSON 与影像均 200、影像 SHA-256 与 `invoice_files.sha256` 一致、
   预览对象 2 个、submitter 调用 403、审计 36 行链 OK；业务行/对象/预览已清理。
+
+## D-088 审核决策：行锁 + 状态闸门保证"一轮一次"、verify_token 一次性消费、驳回保留签名证据
+
+- **日期**：2026-11-21（S5-5）
+- **背景**：approve 必须发生在验签之后且不能重放；reject 要留痕并让申请人可修改重提。
+  任务卡与契约/SCHEMA 有三处口径差异：路径、`review_logs` 唯一约束、未验签 approve 的错误码。
+  同时审核决策需要 `report_forms.version`，而 `ReportOut` 没暴露它。
+- **决策**：
+  1. **路径按契约** `POST /finance/reports/{id}/review`（任务卡写 `/finance/{id}/decision`）。
+  2. **"同一轮只能决策一次" = 单据行 `FOR UPDATE` + `status='submitted'` 闸门**：
+     SCHEMA §5.5 明确 `review_logs` **不加唯一约束**（驳回重提会产生多条审核记录），
+     因此不建约束；并发第二个请求在行锁后看到 `approved/rejected` → 409。`review_logs` 保持追加写。
+  3. **未验签/无效 token 的 approve 返回 409**（API.md §5），`reason_code=verify_token_invalid`；
+     仅"reject 缺意见"走 `422/42200`（Pydantic 条件必填）。§10 表里 42202 的"审批未带凭据"不是本接口口径。
+  4. **approve 双闸门**：verify_token 有效 **且** active 签名 `verify_result='ok'`（防止 token 有效但签名已失败）。
+  5. **token 一次性**：按 report 存（`finance:verify:{id}`），approve 校验后 **commit 后删除**；
+     删除失败只告警——即便极端窗口里 token 残留，状态已非 `submitted`，重放被状态闸门拒绝。
+  6. **reject 保留证据**：active 签名置 `void`（行不删），`review_logs` 追加；申请人可重新签名
+     （rejected→pending_sign→signed），旧签名记录供审计。
+  7. **`review_logs` 落库**：`decision/comment/verify_result/decrypt_ok`；
+     `decrypt_ok` 以验签结论为准（verify 成功已证明全部信封拆封并解密），不额外要求先调 decrypt。
+  8. **审计 `action=review`**：只记 `report_no/decision/verify_result/review_id/comment_len`，
+     **不写意见正文**（审核意见可能含敏感说明）。
+  9. **契约补充**：`GET /finance/{id}` 出参增加 `report_version`（`report_forms.version`），
+     供前端决策时带乐观锁（`ReportOut` 本身不含 version）。
+- **代价/限制**：
+  - **驳回后重提仍受 S5-2 的信封唯一约束限制（#109）**：可重新签名，但 `submit` 会因
+    `uq_envelopes_form/file` 409。彻底解法（信封版本列 / 用财务私钥解密重封）不在本卡验收内，留 S5-6 或补充卡；
+  - "同一轮一次"是状态语义，不是数据库唯一约束；未来支持重提后同一单会有多条 `review_logs`；
+  - `decrypt_ok` 不区分"审核员是否真的看了预览"；决策后预览明文不主动删除（随 30min TTL）。
+- **验证**：`pytest tests/test_decision.py -m integration` **12 passed**（approve 成功/未验签 409/错 token/
+  token 复用/跨单 token 409/缺意见 422/reject 置 void/repeat 409/version 409/签名结论非 ok 409/权限/并发
+  恰好 1 成功）；全量单测 **751**、集成 **340**、`alembic check` 零差异。
+  真机冒烟（开发库 + 真 MinIO/Redis）：A 单 verify→approve（approved、review_logs 1 行、
+  token 已消费、待审列表 0、详情 version=4）；B 单 reject（rejected、comment 落库、签名 void）；
+  同 token 复用 → 409；审计 47 行链 OK；业务行/对象已清理。

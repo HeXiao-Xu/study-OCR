@@ -88,6 +88,10 @@ def get_detail(db: Session, user: User, report_id: int) -> FinanceDetailData:
             applicant.real_name if applicant is not None else None,
             applicant.username if applicant is not None else None,
         ),
+        report_version=db.scalar(
+            select(ReportForm.version).where(ReportForm.id == report_id)
+        )
+        or 0,
         signature=detail.signature,
         envelope=detail.envelope,
         verify_status=detail.verify_status,
