@@ -36,7 +36,6 @@ const store = useUserStore()
 const filters = reactive({
   status: '',
   extract_status: '',
-  review_status: '',
   invoice_type: '',
   q: '',
   dateRange: [] as string[],
@@ -71,7 +70,6 @@ function syncFromQuery(): void {
   const query = route.query
   filters.status = text(query.status)
   filters.extract_status = text(query.extract_status)
-  filters.review_status = text(query.review_status)
   filters.invoice_type = text(query.invoice_type)
   filters.q = text(query.q)
   filters.dateRange =
@@ -91,9 +89,6 @@ function buildParams(): InvoiceListParams {
   }
   if (filters.status) params.status = filters.status as InvoiceStatus
   if (filters.extract_status) params.extract_status = filters.extract_status as ExtractStatus
-  if (filters.review_status) {
-    params.review_status = filters.review_status as 'pending' | 'reviewed'
-  }
   if (filters.invoice_type) params.invoice_type = filters.invoice_type as InvoiceType
   if (filters.q.trim()) params.q = filters.q.trim()
   if (filters.dateRange.length === 2) {
@@ -157,7 +152,6 @@ function applyFilters(): void {
     {
       status: filters.status,
       extract_status: filters.extract_status,
-      review_status: filters.review_status,
       invoice_type: filters.invoice_type,
       q: filters.q.trim(),
       date_from: filters.dateRange[0] ?? '',
@@ -193,17 +187,8 @@ function invoiceNumber(row: InvoiceOut): string {
 
 const hasFilters = computed(() => Object.keys(cleanQuery(route.query)).length > 0)
 
-const pageTitle = computed(() => {
-  if (route.query.review_status === 'pending') return '票据复核'
-  if (route.query.review_status === 'reviewed') return '已复核票据'
-  return store.role === 'reviewer' ? '票据查询' : '我的票据'
-})
-
-const pageHint = computed(() =>
-  route.query.review_status === 'pending'
-    ? '提交人已整单确认、等待审核人复核的票据；复核通过后状态变为「已复核」。'
-    : '筛选条件会同步到地址栏，刷新或后退不会丢。',
-)
+const pageTitle = computed(() => (store.role === 'reviewer' ? '票据查询' : '我的票据'))
+const pageHint = '筛选条件会同步到地址栏，刷新或后退不会丢。'
 
 watch(
   () => route.query,
@@ -254,10 +239,6 @@ watch(
             :label="EXTRACT_STATUS_LABEL[item]"
             :value="item"
           />
-        </el-select>
-        <el-select v-model="filters.review_status" placeholder="复核状态" clearable class="filter-item">
-          <el-option label="待复核" value="pending" />
-          <el-option label="已复核" value="reviewed" />
         </el-select>
         <el-select v-model="filters.invoice_type" placeholder="票种" clearable class="filter-item">
           <el-option
@@ -319,20 +300,6 @@ watch(
           <template #default="{ row }">
             <el-tag :type="invoiceDisplayStatus(row).tag" effect="plain">
               {{ invoiceDisplayStatus(row).label }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="复核状态" width="100">
-          <template #default="{ row }">
-            <el-tag
-              v-if="row.status === 'draft' || row.status === 'void'"
-              type="info"
-              effect="plain"
-            >
-              —
-            </el-tag>
-            <el-tag v-else :type="row.reviewed_at ? 'success' : 'warning'" effect="plain">
-              {{ row.reviewed_at ? '已复核' : '待复核' }}
             </el-tag>
           </template>
         </el-table-column>

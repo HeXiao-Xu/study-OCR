@@ -96,7 +96,7 @@ const routes: RouteRecordRaw[] = [
       {
         // S3-9 起 reviewer 队列 = "提交人已确认、等待二审"的票据（review_status=pending）
         path: 'review',
-        redirect: '/invoices?review_status=pending',
+        redirect: '/invoices',
       },
       {
         path: 'finance/pending',

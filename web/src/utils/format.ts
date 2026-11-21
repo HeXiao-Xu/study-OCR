@@ -40,6 +40,7 @@ export const EXTRACT_STATUS_LABEL: Record<ExtractStatus, string> = {
  * 不新增数据库枚举；`void`/`in_report`/`archived` 仍按原语义。 */
 export type DisplayStatusKey =
   | 'pending_confirm'
+  | 'confirmed'
   | 'pending_review'
   | 'reviewed'
   | 'in_report'
@@ -53,7 +54,7 @@ export interface DisplayStatus {
 }
 
 export function invoiceDisplayStatus(
-  invoice: Pick<InvoiceOut, 'status' | 'extract_status' | 'reviewed_at'>,
+  invoice: Pick<InvoiceOut, 'status' | 'extract_status'>,
 ): DisplayStatus {
   if (invoice.status === 'void') return { key: 'void', label: '已作废', tag: 'danger' }
   if (invoice.status === 'in_report') {
@@ -61,8 +62,8 @@ export function invoiceDisplayStatus(
   }
   if (invoice.status === 'archived') return { key: 'archived', label: '已归档', tag: 'info' }
   if (invoice.status === 'draft') return { key: 'pending_confirm', label: '待确认', tag: 'warning' }
-  if (invoice.reviewed_at) return { key: 'reviewed', label: '已复核', tag: 'success' }
-  return { key: 'pending_review', label: '待复核', tag: 'warning' }
+  // 复核已退出主流程：确认后的票据就是“已确认”，不再显示“待复核”
+  return { key: 'confirmed', label: '已确认', tag: 'success' }
 }
 
 export const OCR_STATUS_LABEL: Record<OcrStatus, string> = {
