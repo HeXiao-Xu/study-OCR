@@ -27,7 +27,6 @@ declare module 'vue-router' {
 }
 
 const Layout = () => import('../layout/MainLayout.vue')
-const Placeholder = () => import('../views/Placeholder.vue')
 
 const routes: RouteRecordRaw[] = [
   {
@@ -118,14 +117,14 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'certs',
         name: 'certs',
-        component: Placeholder,
-        meta: { title: '证书管理', roles: ['admin'], placeholder: 'S4-6' },
+        component: () => import('../views/CertList.vue'),
+        meta: { title: '证书管理', roles: ['admin'] },
       },
       {
         path: 'audit',
         name: 'audit',
-        component: Placeholder,
-        meta: { title: '审计日志', roles: ['admin'], placeholder: 'S4-7' },
+        component: () => import('../views/AuditList.vue'),
+        meta: { title: '审计日志', roles: ['admin'] },
       },
       {
         path: 'debug',

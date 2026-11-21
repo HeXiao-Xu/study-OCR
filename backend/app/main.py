@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.certs import router as certs_router
 from app.api.v1.files import router as files_router
 from app.api.v1.finance import router as finance_router
 from app.api.v1.health import router as health_router
@@ -127,6 +128,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reports_router, prefix=settings.api_prefix)
     app.include_router(finance_router, prefix=settings.api_prefix)
     app.include_router(templates_router, prefix=settings.api_prefix)
+    app.include_router(certs_router, prefix=settings.api_prefix)
     app.include_router(admin_router, prefix=settings.api_prefix)
 
     return app
