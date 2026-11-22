@@ -206,6 +206,7 @@ study-OCR/
 | [docs/PROGRESS.md](docs/PROGRESS.md) | 进度看板与遗留问题 |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 选型与取舍记录（D-001 ~ D-022），论文"方案选型"的草稿 |
 | [docs/EVAL.md](docs/EVAL.md) | 评测口径与实验数字（只读契约，数字只能手工填） |
+| [docs/ONBOARDING.md](docs/ONBOARDING.md) | **队友新机器从零部署 + 双人 GitHub 协作指南**（全文交给 DSH 执行） |
 | [deploy/README.md](deploy/README.md) | 基础服务的启动/重置/镜像拉取与常见问题 |
 
 ## 9. 已知限制
