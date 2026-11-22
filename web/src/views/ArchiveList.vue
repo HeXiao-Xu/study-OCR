@@ -9,6 +9,7 @@ import { decryptReport, getFinanceDetail, getPreviewFileBlob, verifyReport } fro
 import { ApiError } from '../api/http'
 import type { ReportDetail, ReportOut } from '../types/report'
 import { useUserStore } from '../stores/user'
+import { ArchiveDecryptError, decryptArchiveFile, zipNameOf } from '../utils/archiveCrypto'
 import { formatDateTime, formatMoney } from '../utils/format'
 
 const route = useRoute()
@@ -39,6 +40,12 @@ const exportOpen = ref(false)
 const exportTarget = ref<ReportOut | null>(null)
 const passphrase = ref('')
 const exporting = ref(false)
+
+const openPackOpen = ref(false)
+const packFile = ref<File | null>(null)
+const openPassphrase = ref('')
+const openingPack = ref(false)
+const openPackError = ref('')
 
 function page(): number {
   const raw = route.query.page
@@ -121,6 +128,41 @@ function clearImages(): void {
   imageUrls.value = {}
 }
 
+function onPackFile(event: Event): void {
+  const input = event.target as HTMLInputElement
+  packFile.value = input.files?.[0] ?? null
+  openPackError.value = ''
+}
+
+async function openLocalPack(): Promise<void> {
+  if (!packFile.value) {
+    openPackError.value = '请选择 .zip.enc 归档包'
+    return
+  }
+  if (openPassphrase.value.length < 8) {
+    openPackError.value = '口令至少 8 位'
+    return
+  }
+  openingPack.value = true
+  openPackError.value = ''
+  try {
+    const zipBlob = await decryptArchiveFile(await packFile.value.arrayBuffer(), openPassphrase.value)
+    const url = URL.createObjectURL(zipBlob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = zipNameOf(packFile.value.name)
+    anchor.click()
+    URL.revokeObjectURL(url)
+    openPackOpen.value = false
+    ElMessage.success('已解密为 ZIP，双击即可解压（含清单/签名/信封元数据，不含影像）')
+  } catch (cause) {
+    openPackError.value =
+      cause instanceof ArchiveDecryptError ? cause.message : '解密失败，请确认文件和口令'
+  } finally {
+    openingPack.value = false
+  }
+}
+
 async function doExport(): Promise<void> {
   if (!exportTarget.value) return
   if (passphrase.value.length < 8) {
@@ -169,7 +211,10 @@ watch(
           <h3>归档检索</h3>
           <p class="sub">只列已归档单据；导出为口令加密归档包（不含影像明文）。</p>
         </div>
-        <span class="hint">共 {{ total }} 张</span>
+        <div class="head-actions">
+          <el-button @click="openPackOpen = true">打开本地归档包</el-button>
+          <span class="hint">共 {{ total }} 张</span>
+        </div>
       </div>
     </template>
 
@@ -265,6 +310,26 @@ watch(
       </div>
     </el-drawer>
 
+    <el-dialog v-model="openPackOpen" title="打开本地归档包" width="480px">
+      <p class="dialog-tip">
+        在“导出”得到的是 <code>.zip.enc</code> 加密包。在这里选它、输入同一口令，
+        浏览器会解密并下载标准 <code>.zip</code>，双击就能用系统解压打开（无需命令行）。
+      </p>
+      <input type="file" accept=".enc,.zip.enc,application/octet-stream" @change="onPackFile" />
+      <el-input
+        v-model="openPassphrase"
+        class="pack-pass"
+        type="password"
+        show-password
+        placeholder="归档包口令（导出时设置的那个）"
+      />
+      <el-alert v-if="openPackError" type="error" :closable="false" show-icon :title="openPackError" />
+      <template #footer>
+        <el-button @click="openPackOpen = false">取消</el-button>
+        <el-button type="primary" :loading="openingPack" @click="openLocalPack">解密并下载 ZIP</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="exportOpen" title="导出归档包" width="440px">
       <p class="dialog-tip">设置解包口令（8–128 位）。归档包含清单/签名/信封元数据，不含影像明文。</p>
       <el-input v-model="passphrase" type="password" show-password placeholder="解包口令（至少 8 位）" />
@@ -331,5 +396,13 @@ watch(
   margin: 0 0 10px;
   font-size: 12px;
   color: #64748b;
+}
+.pack-pass {
+  margin-top: 10px;
+}
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 </style>

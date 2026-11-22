@@ -467,7 +467,7 @@
 
 - 出参：**200**，`Content-Type: application/octet-stream`、`Content-Disposition: attachment; filename="<report_no>-archive.zip.enc"`；正文是**口令加密的归档包**（内含标准 ZIP）
 - 错误：`409/40900` 未归档（只有 `archived` 可导出）；`404/40400` 非本人/不存在；`403/40301` admin；`422/42200` 口令长度非法
-- 备注：ZIP 成员固定 `archive.json` / `manifest.csv`（UTF-8 BOM+CRLF）/ `canonical.json` / `signatures/signature.json`（含申请人证书 PEM）；**不含影像明文、不含对象名、不含私钥**；容器格式 `STUDYOCR-ARCHIVE v1`（PBKDF2-HMAC-SHA256 200k + AES-256-GCM），用 `scripts/open_archive.py` 解开（D-089）
+- 备注：ZIP 成员固定 `archive.json` / `manifest.csv`（UTF-8 BOM+CRLF）/ `canonical.json` / `signatures/signature.json`（含申请人证书 PEM）；**不含影像明文、不含对象名、不含私钥**；容器格式 `STUDYOCR-ARCHIVE v1`（PBKDF2-HMAC-SHA256 200k + AES-256-GCM），用 `scripts/open_archive.py` 解开；**前端“归档检索 → 打开本地归档包”可在浏览器内解密并还原标准 ZIP**（D-089/用户反馈）
 
 ### GET /api/v1/reports/mine
 - 权限：`submitter`（仅本人）；`reviewer`/`admin` → 403 ｜ 类型：同步（分页）｜ 幂等：是 ｜ 实现：S5-1
